@@ -25,8 +25,8 @@ artifacts under [`docs/`](docs/). See [Security](#security) for residual risks.
 ## Requirements
 
 * 64-bit Linux (amd64/arm64). Anything else that runs Go works too.
-* An OpenAI-compatible endpoint for the model. Note: gabkeep is **text-only**
-  — the chat model does not need (and will not use) image input.
+* An OpenAI-compatible endpoint for the model. v1 is text-only (current
+  deployments use text chat models; image input support may come later).
 * To build: Go ≥ 1.24 (Ubuntu's `apt install golang-go` is fine if recent
   enough; otherwise grab the latest from https://go.dev/dl/).
 
@@ -169,8 +169,6 @@ per line, false-positive justifications included, is
   worst cases; they are not antivirus.
 * **Single process, single SQLite.** Rate limits and per-user caps blunt DoS,
   but one heavy user can degrade everyone; there is no horizontal scaling.
-* **Model has no vision.** Image input is deliberately unsupported; the UI
-  never sends images to the endpoint.
 
 ## Development
 
