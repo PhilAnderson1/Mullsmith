@@ -25,6 +25,17 @@ RestartSec=2s
 KillSignal=SIGTERM
 TimeoutStopSec=45
 
+# TLS key material via tmpfs (§9.12): certbot keeps privkeys 0600 root:root
+# and gabkeep runs unprivileged, and we want no long-lived second copy of the
+# key on disk. RuntimeDirectory creates /run/gabkeep (RAM-only, mode per
+# below, removed on stop); the "+"-prefixed ExecStartPre runs as root and
+# hands over gabkeep-only copies. Point server.tls.cert_file/key_file at
+# /run/gabkeep/{cert,key}.pem in the config. A certbot deploy hook should
+# `systemctl try-restart gabkeep` so renewals take effect.
+RuntimeDirectory=gabkeep
+RuntimeDirectoryMode=0700
+ExecStartPre=+/bin/sh -c 'install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem)" /run/gabkeep/key.pem && install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem)" /run/gabkeep/cert.pem'
+
 # Sandboxing (§9). ProtectHome is NOT used: the scratchpad may live under
 # /home on small installs — ProtectSystem=strict + explicit ReadWritePaths
 # still confine all writes.

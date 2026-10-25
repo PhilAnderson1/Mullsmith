@@ -77,6 +77,13 @@ Encrypt via `certbot` if public), or terminate TLS in a reverse proxy
 bound to a non-loopback address without TLS — on a trusted LAN that may be
 acceptable; read [Security](#security) first.
 
+Let's Encrypt keys stay `0600 root:root` by certbot policy, and gabkeep runs
+unprivileged. The shipped unit solves this without a second on-disk copy:
+`ExecStartPre` (root) stages cert+key into the RAM-only `RuntimeDirectory`
+`/run/gabkeep`, and a certbot *deploy hook* (`systemctl try-restart gabkeep`)
+picks up renewals. If you terminate TLS at a proxy instead, bind gabkeep to
+loopback and skip all of it.
+
 ### CLI
 
 ```text

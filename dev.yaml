@@ -1,15 +1,15 @@
-# Gabkeep — development config (M0+). Run: gabkeep -config dev.yaml
-# Values reflect the verified environment; see spec.md §2.2 for the reference.
+# Gabkeep — LOCAL DEV sandbox config. Run: gabkeep -config dev.yaml
+# NOT the production instance: that is systemd gabkeep.service with
+# /etc/gabkeep/config.yaml (TLS :8443, /var/lib/gabkeep). Keep this on
+# loopback so the two can run side by side without confusion or exposure.
 
 server:
-  listen: ":8443"                 # all interfaces, IPv4 + IPv6 (dual-stack socket)
-  public_url: "https://34nra.freeddns.org:8443"
+  listen: "127.0.0.1:8081"        # loopback only; production owns :8443
+  public_url: "http://127.0.0.1:8081"
   tls:
-    enabled: true                 # Let's Encrypt for 34nra.freeddns.org; certbot
-    cert_file: "/etc/gabkeep/tls/fullchain.pem"   # deploy hook refreshes these
-    key_file: "/etc/gabkeep/tls/privkey.pem"      # on renewal (root:ssl-cert)
+    enabled: false
   trusted_proxies: []
-  hsts_max_age: 31536000          # real cert → HSTS on (§9.10)
+  hsts_max_age: 0                 # dev: no TLS, so no HSTS
 
 database:
   dir: "./data/db"
@@ -69,7 +69,7 @@ auth:
   session_ttl: 24h
   remember_ttl: 720h
   remember_absolute_ttl: 2160h
-  cookie_secure: true             # TLS now on (34nra.freeddns.org) — secure cookies
+  cookie_secure: false            # loopback http dev; production config sets true
   max_failed_logins: 10
 
 limits:
