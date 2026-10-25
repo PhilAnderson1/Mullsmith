@@ -155,6 +155,50 @@ func TestIndexServed(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "Gabkeep") {
 		t.Errorf("index: status %d, body missing brand", resp.StatusCode)
 	}
+	// The SPA loads as an external ES module and carries no inline scripts
+	// or handlers — CSP is script-src 'self' (spec §9.8).
+	html := string(body)
+	if !strings.Contains(html, `type="module" src="/assets/app/app.js"`) {
+		t.Error("index missing module entrypoint")
+	}
+	if strings.Contains(html, "<script>") || strings.Contains(html, " onclick=") {
+		t.Error("index contains inline script/handler violating CSP")
+	}
+}
+
+func TestUIAssetsServed(t *testing.T) {
+	ts := newTestServer(t, testCfg())
+	defer ts.Close()
+	for _, tc := range []struct{ path, marker string }{
+		{"/assets/styles.css", "--thread-max"},
+		{"/assets/app/api.js", "X-Gabkeep-CSRF"},
+		{"/assets/app/app.js", "api.listConversations"},
+	} {
+		resp, err := http.Get(ts.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Errorf("%s: status %d", tc.path, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/") {
+			t.Errorf("%s: Content-Type = %q", tc.path, ct)
+		}
+		if !strings.Contains(string(body), tc.marker) {
+			t.Errorf("%s: marker %q missing", tc.path, tc.marker)
+		}
+	}
+	// Path traversal must not escape the embed (spec §9.2).
+	resp, err := http.Get(ts.URL + "/assets/../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == 200 {
+		t.Error("traversal served a file")
+	}
 }
 
 func TestNoDirectoryListing(t *testing.T) {

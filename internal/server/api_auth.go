@@ -17,6 +17,12 @@ import (
 // --- helpers ---------------------------------------------------------------
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if !strings.EqualFold(strings.TrimSpace(ct), "application/json") {
+		writeAPIError(w, r, http.StatusUnsupportedMediaType,
+			"unsupported_media_type", "Content-Type must be application/json")
+		return false
+	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {

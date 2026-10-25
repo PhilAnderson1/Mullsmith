@@ -49,6 +49,12 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *
 	mux.Handle("POST /api/v1/auth/logout", s.authRequired(s.handleLogout))
 	mux.Handle("GET /api/v1/auth/me", s.authRequired(s.handleMe))
 	mux.Handle("POST /api/v1/auth/password", s.authRequired(s.handleChangePassword))
+	mux.Handle("GET /api/v1/conversations", s.authRequired(s.handleConversationsList))
+	mux.Handle("POST /api/v1/conversations", s.authRequired(s.handleConversationCreate))
+	mux.Handle("GET /api/v1/conversations/{id}", s.authRequired(s.handleConversationGet))
+	mux.Handle("PATCH /api/v1/conversations/{id}", s.authRequired(s.handleConversationPatch))
+	mux.Handle("DELETE /api/v1/conversations/{id}", s.authRequired(s.handleConversationDelete))
+	mux.Handle("GET /api/v1/conversations/{id}/messages", s.authRequired(s.handleConversationMessages))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
 	// Bare "/" is the lowest-priority sink: it catches "/" (index), unknown
 	// paths (JSON 404) and wrong verbs on known paths (JSON 405). Go's

@@ -5,12 +5,141 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Gabkeep</title>
   <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 </head>
 <body>
-  <main class="placeholder">
-    <h1>Gabkeep</h1>
-    <p>The server is running. The chat interface arrives in milestone&nbsp;M3.</p>
-    <p class="muted">M0 skeleton &mdash; config, security headers, health endpoint.</p>
-  </main>
+  <!-- ============================ Auth view ============================ -->
+  <div id="view-auth" class="view" hidden>
+    <main class="auth-card">
+      <h1 class="brand">Gabkeep</h1>
+      <p class="auth-mode" id="auth-mode-note" hidden>Registrations are invite-only.</p>
+
+      <form id="form-login" novalidate>
+        <h2 id="login-heading">Sign in</h2>
+        <p class="form-error" id="login-error" role="alert" hidden></p>
+        <label for="login-email">Email</label>
+        <input id="login-email" name="email" type="email" autocomplete="username" required>
+        <label for="login-password">Password</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        <label class="checkbox-row" id="login-remember-row">
+          <input id="login-remember" type="checkbox">
+          <span>Stay logged in on this computer</span>
+        </label>
+        <button type="submit" class="btn primary">Sign in</button>
+        <p class="switch-line">No account yet?
+          <a href="#register" id="link-register">Create one</a>
+        </p>
+      </form>
+
+      <form id="form-register" novalidate hidden>
+        <h2>Create account</h2>
+        <p class="form-error" id="register-error" role="alert" hidden></p>
+        <label for="register-name">Name</label>
+        <input id="register-name" name="name" type="text" autocomplete="name" required>
+        <label for="register-email">Email</label>
+        <input id="register-email" name="email" type="email" autocomplete="username" required>
+        <label for="register-password">Password</label>
+        <input id="register-password" name="password" type="password" autocomplete="new-password" required
+               minlength="10">
+        <div id="register-invite-wrap">
+          <label for="register-invite">Invite code</label>
+          <input id="register-invite" name="invite" type="text" autocomplete="off" required>
+        </div>
+        <label class="checkbox-row" id="register-remember-row">
+          <input id="register-remember" type="checkbox">
+          <span>Stay logged in on this computer</span>
+        </label>
+        <button type="submit" class="btn primary">Create account</button>
+        <p class="switch-line">Already registered?
+          <a href="#login" id="link-login">Sign in</a>
+        </p>
+      </form>
+    </main>
+  </div>
+
+  <!-- ============================ Chat view ============================ -->
+  <div id="view-chat" class="view" hidden>
+    <header class="topbar">
+      <button id="btn-menu" class="icon-btn" aria-label="Open conversation list" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+      </button>
+      <span class="topbar-title" id="topbar-title">Gabkeep</span>
+      <select id="model-picker" class="model-picker" title="Model for this conversation" aria-label="Model" disabled></select>
+      <button id="btn-theme" class="icon-btn" aria-label="Toggle color theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2m9-9h-2M5 12H3m14.5-6.5-1.4 1.4M7.9 16.1l-1.4 1.4m11 0-1.4-1.4M7.9 7.9 6.5 6.5M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+      </button>
+      <span class="user-chip" id="user-chip" title="Signed-in user"></span>
+      <button id="btn-logout" class="icon-btn" aria-label="Sign out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 12H4m0 0 4-4m-4 4 4 4M10 4h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      </button>
+    </header>
+
+    <aside id="sidebar" aria-label="Conversations">
+      <div class="sidebar-head">
+        <button id="btn-new-chat" class="btn primary wide">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+          New chat
+        </button>
+      </div>
+      <div class="sidebar-search">
+        <input id="conv-search" type="search" placeholder="Search chats" aria-label="Search conversations">
+      </div>
+      <ul id="conv-list" class="conv-list"></ul>
+      <button id="btn-more" class="btn ghost wide" hidden>Load older</button>
+    </aside>
+    <div id="backdrop" hidden></div>
+
+    <main class="chat-main">
+      <div id="thread" class="thread" aria-live="polite">
+        <div class="empty-state" id="empty-state">
+          <h2>Gabkeep</h2>
+          <p>Pick a conversation on the left or start a new one.</p>
+          <p class="muted">Message streaming lands in milestone M3.</p>
+        </div>
+      </div>
+      <div class="composer">
+        <textarea id="composer-input" rows="1" placeholder="Chat streaming arrives in M3" disabled></textarea>
+        <button id="btn-send" class="btn primary" disabled title="Wired in milestone M3">Send</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- Shared confirm dialog -->
+  <dialog id="confirm-dialog">
+    <form method="dialog">
+      <p id="confirm-text"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost">Cancel</button>
+        <button value="ok" id="confirm-ok" class="btn danger">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- One conversation row in the sidebar list -->
+  <template id="tpl-conv-item">
+    <li class="conv-item">
+      <button class="conv-open" type="button"><span class="conv-title"></span></button>
+      <form class="conv-rename" hidden>
+        <input type="text" maxlength="200" aria-label="New title">
+      </form>
+      <button class="icon-btn tiny conv-rename-btn" type="button" aria-label="Rename">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19l-4 1z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"/></svg>
+      </button>
+      <button class="icon-btn tiny conv-delete-btn" type="button" aria-label="Delete">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V5h6v2m-7 0 1 13h6l1-13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      </button>
+    </li>
+  </template>
+
+  <!-- One message bubble -->
+  <template id="tpl-message">
+    <article class="msg">
+      <header class="msg-meta"><span class="msg-role"></span><time class="msg-time"></time></header>
+      <div class="msg-body"></div>
+      <p class="muted msg-status" hidden></p>
+    </article>
+  </template>
+
+  <script type="module" src="/assets/app/app.js"></script>
 </body>
 </html>
