@@ -30,9 +30,16 @@ var ErrBusy = errors.New("another code run is already in flight")
 // Runner and Binary always comes from the server's own config, never the
 // model (§9.9 layer 2).
 type Request struct {
-	RuntimeID   string
-	Binary      string        // allowlisted absolute path (host path)
-	WorkDir     string        // absolute; the user's work/ dir, mounted at /work
+	RuntimeID string
+	Binary    string // allowlisted absolute path (host path)
+	// ScratchDir is the user's scratchpad root (host path). The jail mounts
+	// it read-write at /scratchpad — the payload sees uploads/, artifacts/
+	// and work/ exactly as the fs_* tools do — with uploads/ overlaid
+	// read-only so script output can never mutate originals (§9.4).
+	ScratchDir string
+	// WorkDir (host path, inside ScratchDir) is the run's scratch space:
+	// the payload's TMPDIR points at its jail location.
+	WorkDir     string
 	Script      string        // fed to the interpreter on stdin
 	Timeout     time.Duration // wall clock; process group killed past it
 	MaxOutput   int           // bytes retained per stream (stdout/stderr)

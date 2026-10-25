@@ -151,7 +151,7 @@ func codeRunArgs(script string) string {
 
 func TestChatCodeRunDeniedDoesNotExecute(t *testing.T) {
 	a, _, script, cfg := newCodeChatServer(t, [][]string{
-		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo ran > gate.txt")), finishChunk("tool_calls")},
+		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo ran > work/gate.txt")), finishChunk("tool_calls")},
 		{answerChunk("as you wish"), finishChunk("stop")},
 	})
 	rd, _ := startCodeChat(t, a, "gate", "run something")
@@ -181,7 +181,7 @@ func TestChatCodeRunDeniedDoesNotExecute(t *testing.T) {
 
 func TestChatCodeRunApprovedExecutes(t *testing.T) {
 	a, _, _, cfg := newCodeChatServer(t, [][]string{
-		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo ran > gate.txt; echo hi")), finishChunk("tool_calls")},
+		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo ran > work/gate.txt; echo hi")), finishChunk("tool_calls")},
 		{answerChunk("done"), finishChunk("stop")},
 	})
 	rd, _ := startCodeChat(t, a, "gate", "run it")
@@ -204,11 +204,11 @@ func TestChatCodeRunApprovedExecutes(t *testing.T) {
 
 func TestChatCodeRunRememberSkipsLaterPrompts(t *testing.T) {
 	a, s, _, cfg := newCodeChatServer(t, [][]string{
-		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo one > m1.txt")), finishChunk("tool_calls")},
-		{toolCallChunk(0, "c2", "code_run", codeRunArgs("echo two > m2.txt")), finishChunk("tool_calls")},
+		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo one > work/m1.txt")), finishChunk("tool_calls")},
+		{toolCallChunk(0, "c2", "code_run", codeRunArgs("echo two > work/m2.txt")), finishChunk("tool_calls")},
 		{answerChunk("both ran"), finishChunk("stop")},
 		// Second conversation replays from the top: it must re-prompt.
-		{toolCallChunk(0, "c3", "code_run", codeRunArgs("echo three > m3.txt")), finishChunk("tool_calls")},
+		{toolCallChunk(0, "c3", "code_run", codeRunArgs("echo three > work/m3.txt")), finishChunk("tool_calls")},
 		{answerChunk("ran again"), finishChunk("stop")},
 	})
 	rd, c := startCodeChat(t, a, "remember", "run two scripts")
@@ -273,7 +273,7 @@ func TestChatCodeRunRememberFalseReprompts(t *testing.T) {
 func TestChatApprovalBypassAndTimeoutDeny(t *testing.T) {
 	// The queue has NO decisions: a prompt must time out and deny (§6.1).
 	a, _, _, cfg := newCodeChatServer(t, [][]string{
-		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo ran > gate.txt")), finishChunk("tool_calls")},
+		{toolCallChunk(0, "c1", "code_run", codeRunArgs("echo ran > work/gate.txt")), finishChunk("tool_calls")},
 		{answerChunk("no run then"), finishChunk("stop")},
 	})
 	// Shrink after construction so the helper's cleanup still restores the

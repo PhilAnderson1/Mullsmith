@@ -56,13 +56,25 @@ func newJail(t *testing.T) *runner.Bwrap {
 	return b
 }
 
-func mustEval(t *testing.T, p string) string {
+// dirs mirrors the production scratch layout: <scratch>/{uploads,artifacts,work}.
+type dirs struct{ scratch, work string }
+
+func scratchDirs(t *testing.T) dirs {
 	t.Helper()
-	r, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		t.Fatal(err)
+	s := t.TempDir()
+	for _, sub := range []string{"uploads", "artifacts", "work"} {
+		if err := os.Mkdir(filepath.Join(s, sub), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return r
+	return dirs{scratch: s, work: filepath.Join(s, "work")}
+}
+
+func (d dirs) req(script string) runner.Request {
+	return runner.Request{
+		RuntimeID: "sh", Binary: "/bin/sh",
+		ScratchDir: d.scratch, WorkDir: d.work, Script: script,
+	}
 }
 
 func waitForFile(t *testing.T, path string, d time.Duration) {
@@ -83,12 +95,9 @@ func waitForFile(t *testing.T, path string, d time.Duration) {
 
 func TestJailRunExitCodeAndCwd(t *testing.T) {
 	b := newJail(t)
-	wd := t.TempDir()
+	d := scratchDirs(t)
 
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		RuntimeID: "sh", Binary: "/bin/sh", WorkDir: wd,
-		Script: "pwd; echo hello; exit 3",
-	})
+	out, err := b.Run(t.Context(), "userA", d.req("pwd; echo hello; exit 3"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,32 +107,71 @@ func TestJailRunExitCodeAndCwd(t *testing.T) {
 	if !strings.Contains(out.Stdout, "hello") {
 		t.Errorf("stdout = %q", out.Stdout)
 	}
-	if got, want := strings.TrimSpace(strings.Split(out.Stdout, "\n")[0]), "/work"; got != want {
+	if got, want := strings.TrimSpace(strings.Split(out.Stdout, "\n")[0]), "/scratchpad"; got != want {
 		t.Errorf("cwd inside jail = %q, want %q", got, want)
 	}
 }
 
-func TestJailWorkDirWritableHostOutsideVisible(t *testing.T) {
+func TestJailScratchWritableAndVisibleOnHost(t *testing.T) {
 	b := newJail(t)
-	wd := t.TempDir()
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: wd,
-		Script: `echo inside > wrote.txt`,
-	})
+	d := scratchDirs(t)
+	out, err := b.Run(t.Context(), "userA", d.req(
+		`echo inside > work/wrote.txt; echo root too > "loose file.txt"`))
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
 	}
-	got, err := os.ReadFile(filepath.Join(wd, "wrote.txt"))
-	if err != nil || strings.TrimSpace(string(got)) != "inside" {
-		t.Errorf("write inside jail not visible at host work dir: %q %v", got, err)
+	for host, want := range map[string]string{
+		filepath.Join(d.work, "wrote.txt"):         "inside",
+		filepath.Join(d.scratch, "loose file.txt"): "root too",
+	} {
+		got, err := os.ReadFile(host)
+		if err != nil || strings.TrimSpace(string(got)) != want {
+			t.Errorf("write inside jail not visible at %s: %q %v", host, got, err)
+		}
+	}
+}
+
+func TestJailUploadsReadOnlyArtifactsWritable(t *testing.T) {
+	b := newJail(t)
+	d := scratchDirs(t)
+	orig := filepath.Join(d.scratch, "uploads", "data.csv")
+	if err := os.WriteFile(orig, []byte("a,b,c\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.Run(t.Context(), "userA", d.req(`
+cat uploads/data.csv                    # readable in place
+	echo "mutated" > uploads/data.csv 2>/dev/null && echo "WRITE-UPLOADS(!)"
+	rm -f uploads/data.csv 2>/dev/null && [ ! -e uploads/data.csv ] && echo "DELETE-UPLOADS(!)"
+	touch artifacts/generated.txt && echo artifacts-ok
+	echo x > uploads/new-upload.txt 2>/dev/null && echo "CREATE-UPLOADS(!)"
+	exit 0   # the refused writes above must not set the run's exit status
+`))
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("run failed: %v %+v", err, out)
+	}
+	if !strings.Contains(out.Stdout, "a,b,c") {
+		t.Errorf("uploads not readable in jail: %q", out.Stdout)
+	}
+	for _, forbidden := range []string{"WRITE-UPLOADS(!)", "DELETE-UPLOADS(!)", "CREATE-UPLOADS(!)"} {
+		if strings.Contains(out.Stdout, forbidden) {
+			t.Errorf("uploads overlay was not read-only (%s): stdout %q", forbidden, out.Stdout)
+		}
+	}
+	if !strings.Contains(out.Stdout, "artifacts-ok") {
+		t.Errorf("artifacts should be writable: %q", out.Stdout)
+	}
+	if _, err := os.Stat(filepath.Join(d.scratch, "artifacts", "generated.txt")); err != nil {
+		t.Errorf("artifact not visible on host: %v", err)
+	}
+	if b, err := os.ReadFile(orig); err != nil || string(b) != "a,b,c\n" {
+		t.Errorf("original upload mutated on host: %q %v", b, err)
 	}
 }
 
 func TestJailSignalExitNormalized(t *testing.T) {
 	b := newJail(t)
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: t.TempDir(), Script: `kill -TERM $$`,
-	})
+	d := scratchDirs(t)
+	out, err := b.Run(t.Context(), "userA", d.req(`kill -TERM $$`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,18 +184,16 @@ func TestJailSignalExitNormalized(t *testing.T) {
 
 func TestJailCannotSeeHostFiles(t *testing.T) {
 	b := newJail(t)
-	wd := t.TempDir()
-	// A canary outside the work dir: the jail must not know it exists.
+	d := scratchDirs(t)
+	// A canary outside the scratchpad: the jail must not know it exists.
 	outside := filepath.Join(t.TempDir(), "canary-outside.txt")
 	if err := os.WriteFile(outside, []byte("SECRET"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: wd,
-		Script: `for p in ` + outside + ` /etc/gabkeep/env /var/lib/gabkeep/db/gabkeep.db /etc/passwd /home; do
+	out, err := b.Run(t.Context(), "userA", d.req(`for p in `+outside+` /etc/gabkeep/env /var/lib/gabkeep/db/gabkeep.db /etc/passwd /home; do
   if [ -e "$p" ]; then echo "VISIBLE: $p"; else echo "no-path: $p"; fi
-done`,
-	})
+done
+echo "scratch-entries: $(ls /scratchpad | tr '\n' ' ')"`))
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
 	}
@@ -159,14 +205,15 @@ done`,
 			t.Errorf("missing observation %q in %q", want, out.Stdout)
 		}
 	}
+	if got := findLine(t, out.Stdout, "scratch-entries:"); !strings.Contains(got, "artifacts") ||
+		!strings.Contains(got, "uploads") || !strings.Contains(got, "work") {
+		t.Errorf("scratchpad mount incomplete inside jail: %q", got)
+	}
 }
 
 func TestJailRootIsReadOnly(t *testing.T) {
 	b := newJail(t)
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: t.TempDir(),
-		Script: `touch /bin/evil && echo "WRITE-TO-/(!)"`,
-	})
+	out, err := b.Run(t.Context(), "userA", scratchDirs(t).req(`touch /bin/evil && echo "WRITE-TO-/(!)"`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,17 +228,16 @@ func TestJailNetworkBlockedByDefault(t *testing.T) {
 		t.Skip("python3 not installed")
 	}
 	b := newJail(t)
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: py, WorkDir: t.TempDir(), Timeout: 20 * time.Second,
-		Script: `
+	r := scratchDirs(t).req(`
 import socket
 try:
     socket.create_connection(("192.168.0.2", 80), timeout=3)
     print("NETWORK(!)")
 except OSError as e:
     print("blocked:", e.strerror or e)
-`,
-	})
+`)
+	r.Binary = py
+	out, err := b.Run(t.Context(), "userA", r)
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
 	}
@@ -218,28 +264,22 @@ func TestJailNetworkAllowedWhenConfigured(t *testing.T) {
 	}()
 
 	requireBwrap(t)
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	o := bwrapOptions(t)
-	o.LauncherPath = exe
 	o.NetworkOpen = true
 	b, err := runner.NewBwrap(o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: py, WorkDir: t.TempDir(), Timeout: 20 * time.Second,
-		Script: `
-import socket, sys
+	r := scratchDirs(t).req(`
+import socket
 try:
     socket.create_connection(("127.0.0.1", ` + strings.Split(ln.Addr().String(), ":")[1] + `, ), timeout=3)
     print("reachable")
 except OSError as e:
     print("unreachable:", e)
-`,
-	})
+`)
+	r.Binary = py
+	out, err := b.Run(t.Context(), "userA", r)
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
 	}
@@ -253,37 +293,37 @@ except OSError as e:
 func TestJailEnvIsScrubbed(t *testing.T) {
 	t.Setenv("GABKEEP_LLM_API_KEY", "SECRET-KEY")
 	b := newJail(t)
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: t.TempDir(),
-		Script: `echo "S=[${GABKEEP_LLM_API_KEY}]"; echo "P=${PATH}"; echo "H=${HOME}"`,
-	})
+	out, err := b.Run(t.Context(), "userA", scratchDirs(t).req(
+		`echo "S=[${GABKEEP_LLM_API_KEY}]"; echo "P=${PATH}"; echo "H=${HOME}"; echo "T=${TMPDIR}"`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.Stdout, "SECRET-KEY") {
 		t.Error("host environment leaked into the jail")
 	}
-	if !strings.Contains(out.Stdout, "P=/usr/bin:/bin") {
-		t.Errorf("PATH allowlist missing: %q", out.Stdout)
-	}
-	if !strings.Contains(out.Stdout, "H=/work") {
-		t.Errorf("HOME should be /work: %q", out.Stdout)
+	for _, want := range []string{"P=/usr/bin:/bin", "H=/scratchpad", "T=/scratchpad/work"} {
+		if !strings.Contains(out.Stdout, want) {
+			t.Errorf("env allowlist missing %q: %q", want, out.Stdout)
+		}
 	}
 }
 
 func TestJailLauncherLayersLand(t *testing.T) {
 	b := newJail(t)
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: t.TempDir(), Timeout: 7 * time.Second,
-		MaxMemory: 64 << 20, MaxFileSize: 1 << 20,
-		Script: `grep NoNewPrivs /proc/self/status
+	out, err := b.Run(t.Context(), "userA", func() runner.Request {
+		r := scratchDirs(t).req(`grep NoNewPrivs /proc/self/status
 echo "V=$(ulimit -v)"
 echo "F=$(ulimit -f)"
 echo "C=$(ulimit -c)"
 echo "T=$(ulimit -t)"
 echo "ENVN=$(env | grep -vE '^(_|PWD)=' | wc -l)"   # '_' and 'PWD' are the shell's own exports
-echo "ARG0=$0"`,
-	})
+echo "ARG0=$0"
+echo "TMPWRITE=$(tmp=$(mktemp) && echo yes || echo no)"`)
+		r.Timeout = 7 * time.Second
+		r.MaxMemory = 64 << 20
+		r.MaxFileSize = 1 << 20
+		return r
+	}())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,6 +337,7 @@ echo "ARG0=$0"`,
 		"C=":          "0",     // no core dumps
 		"T=":          "7",     // RLIMIT_CPU = wall timeout
 		"ENVN=":       "5",     // --clearenv + exactly the five --setenv vars
+		"TMPWRITE=":   "yes",   // TMPDIR (work dir) is writable
 	}
 	for k, v := range want {
 		line := findLine(t, out.Stdout, k)
@@ -328,14 +369,14 @@ func TestJailMemoryCapKillsGreedyScript(t *testing.T) {
 		t.Skip("python3 not installed")
 	}
 	b := newJail(t)
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: py, WorkDir: t.TempDir(), Timeout: 20 * time.Second,
-		MaxMemory: 256 << 20,
-		Script: `
+	r := scratchDirs(t).req(`
 b = bytearray(1024 * 1024 * 1024)   # 1 GiB under a 256 MiB RLIMIT_AS
 print("allocated", len(b))          # must never execute
-`,
-	})
+`)
+	r.Binary = py
+	r.Timeout = 20 * time.Second
+	r.MaxMemory = 256 << 20
+	out, err := b.Run(t.Context(), "userA", r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,10 +390,9 @@ print("allocated", len(b))          # must never execute
 
 func TestJailOutputCap(t *testing.T) {
 	b := newJail(t)
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: t.TempDir(), MaxOutput: 1000,
-		Script: `head -c 100000 /dev/zero | tr '\0' 'x'`,
-	})
+	r := scratchDirs(t).req(`head -c 100000 /dev/zero | tr '\0' 'x'`)
+	r.MaxOutput = 1000
+	out, err := b.Run(t.Context(), "userA", r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,12 +408,11 @@ func TestJailOutputCap(t *testing.T) {
 // effect, an ever-growing file, is what we check.)
 func TestJailTimeoutKillsWholeTree(t *testing.T) {
 	b := newJail(t)
-	wd := t.TempDir()
+	d := scratchDirs(t)
 	start := time.Now()
-	out, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: wd, Timeout: 1 * time.Second,
-		Script: `sh -c 'while :; do printf x >> beats.log; sleep 0.2; done' & wait`,
-	})
+	r := d.req(`sh -c 'while :; do printf x >> work/beats.log; sleep 0.2; done' & wait`)
+	r.Timeout = 1 * time.Second
+	out, err := b.Run(t.Context(), "userA", r)
 	elapsed := time.Since(start)
 	if !out.TimedOut {
 		t.Fatalf("TimedOut = false (out %+v, err %v)", out, err)
@@ -381,7 +420,7 @@ func TestJailTimeoutKillsWholeTree(t *testing.T) {
 	if elapsed > 8*time.Second {
 		t.Errorf("timeout took %v, want ~1s", elapsed)
 	}
-	beats := filepath.Join(wd, "beats.log")
+	beats := filepath.Join(d.work, "beats.log")
 	if _, err := os.Stat(beats); err != nil {
 		t.Fatalf("grandchild never started beating: %v", err)
 	}
@@ -399,10 +438,11 @@ func TestJailCancelKillsRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		_, err := b.Run(ctx, "userCancel", runner.Request{
-			Binary: "/bin/sh", WorkDir: t.TempDir(), Timeout: 30 * time.Second,
-			Script: "sleep 20",
-		})
+		_, err := b.Run(ctx, "userCancel", func() runner.Request {
+			r := scratchDirs(t).req("sleep 20")
+			r.Timeout = 30 * time.Second
+			return r
+		}())
 		done <- err
 	}()
 	time.Sleep(400 * time.Millisecond)
@@ -421,16 +461,15 @@ func TestJailCancelKillsRun(t *testing.T) {
 // flight before the contention attempts start (a bare sleep race lost).
 func TestPerUserBusy(t *testing.T) {
 	b := newJail(t)
-	wd := t.TempDir()
+	d := scratchDirs(t)
 	ctx := t.Context()
 
-	marker := filepath.Join(wd, "running.marker")
+	marker := filepath.Join(d.work, "running.marker")
 	first := make(chan error, 1)
 	go func() {
-		_, err := b.Run(ctx, "userBusy", runner.Request{
-			Binary: "/bin/sh", WorkDir: wd, Timeout: 15 * time.Second,
-			Script: "echo started > running.marker; sleep 1.5",
-		})
+		r := d.req("echo started > work/running.marker; sleep 1.5")
+		r.Timeout = 15 * time.Second
+		_, err := b.Run(ctx, "userBusy", r)
 		first <- err
 	}()
 	waitForFile(t, marker, 8*time.Second) // generous: includes jail startup
@@ -438,26 +477,22 @@ func TestPerUserBusy(t *testing.T) {
 	// Same user while their run is in flight ⇒ refused, never queued (§9.9).
 	deadline := time.Now().Add(time.Second) // safely inside the 1.5 s sleep
 	for time.Now().Before(deadline) {
-		if _, err := b.Run(ctx, "userBusy", runner.Request{
-			Binary: "/bin/sh", WorkDir: wd, Timeout: 1 * time.Second, Script: "true",
-		}); !errors.Is(err, runner.ErrBusy) {
+		r := d.req("true")
+		r.Timeout = 1 * time.Second
+		if _, err := b.Run(ctx, "userBusy", r); !errors.Is(err, runner.ErrBusy) {
 			t.Fatalf("same-user run during in-flight run: err = %v, want ErrBusy", err)
 		}
 	}
 
 	// A different user is unaffected by userBusy's slot.
-	if _, err := b.Run(ctx, "userOther", runner.Request{
-		Binary: "/bin/sh", WorkDir: wd, Timeout: 15 * time.Second, Script: "true",
-	}); err != nil {
+	if _, err := b.Run(ctx, "userOther", d.req("true")); err != nil {
 		t.Errorf("other user blocked by userBusy's run: %v", err)
 	}
 	if err := <-first; err != nil {
 		t.Fatalf("slow run failed: %v", err)
 	}
 	// The slot frees when the run finishes.
-	if _, err := b.Run(ctx, "userBusy", runner.Request{
-		Binary: "/bin/sh", WorkDir: wd, Timeout: 15 * time.Second, Script: "true",
-	}); err != nil {
+	if _, err := b.Run(ctx, "userBusy", d.req("true")); err != nil {
 		t.Errorf("user still busy after their run completed: %v", err)
 	}
 }
@@ -466,33 +501,55 @@ func TestPerUserBusy(t *testing.T) {
 
 func TestRunRefusesBinaryOutsideUsr(t *testing.T) {
 	b := newJail(t)
-	// Copy a working interpreter somewhere off /usr: even though it runs
-	// fine on the host, the jail only mounts /usr, so it must be refused
-	// with a clear error instead of a dangling-path failure inside bwrap.
-	wd := t.TempDir()
-	shCopy := filepath.Join(wd, "pocket-interpreter")
+	d := scratchDirs(t)
+	// Copy a working interpreter somewhere off /usr AND outside the
+	// scratchpad: even though it runs fine on the host, the jail only
+	// mounts /usr, so it must be refused with a clear error instead of a
+	// dangling-path failure inside bwrap.
+	hostile := filepath.Join(t.TempDir(), "pocket-interpreter")
 	src, err := os.ReadFile("/bin/sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(shCopy, src, 0o755); err != nil {
+	if err := os.WriteFile(hostile, src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err = b.Run(t.Context(), "userA", runner.Request{
-		Binary: shCopy, WorkDir: wd, Script: "true",
-	})
-	if err == nil || !strings.Contains(err.Error(), "/usr") {
+	r := d.req("true")
+	r.Binary = hostile
+	if _, err := b.Run(t.Context(), "userA", r); err == nil || !strings.Contains(err.Error(), "/usr") {
 		t.Fatalf("runtime outside /usr must be refused mentioning /usr, got %v", err)
 	}
 }
 
 func TestRunRefusesMissingWorkDir(t *testing.T) {
 	b := newJail(t)
-	missing := filepath.Join(t.TempDir(), "nope")
-	if _, err := b.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: missing, Script: "true",
-	}); err == nil || !strings.Contains(err.Error(), "work dir") {
+	d := scratchDirs(t)
+	r := d.req("true")
+	r.WorkDir = filepath.Join(d.scratch, "nope")
+	if _, err := b.Run(t.Context(), "userA", r); err == nil || !strings.Contains(err.Error(), "work dir") {
 		t.Fatalf("missing work dir must be refused, got %v", err)
+	}
+}
+
+func TestRunRefusesWorkDirOutsideScratch(t *testing.T) {
+	b := newJail(t)
+	d := scratchDirs(t)
+	r := d.req("true")
+	r.WorkDir = t.TempDir() // sibling, not inside the scratch mount
+	if _, err := b.Run(t.Context(), "userA", r); err == nil ||
+		!strings.Contains(err.Error(), "inside the scratch") {
+		t.Fatalf("work dir outside scratch must be refused, got %v", err)
+	}
+}
+
+func TestRunRefusesMissingScratchDir(t *testing.T) {
+	b := newJail(t)
+	d := scratchDirs(t)
+	r := d.req("true")
+	r.ScratchDir = filepath.Join(t.TempDir(), "gone")
+	if _, err := b.Run(t.Context(), "userA", r); err == nil ||
+		!strings.Contains(err.Error(), "scratch dir") {
+		t.Fatalf("missing scratch dir must be refused, got %v", err)
 	}
 }
 
@@ -538,9 +595,7 @@ func TestNewForConfigEnabledBuildsJail(t *testing.T) {
 	if r == nil {
 		t.Fatal("enabled code exec must yield a runner")
 	}
-	out, err := r.Run(t.Context(), "userA", runner.Request{
-		Binary: "/bin/sh", WorkDir: t.TempDir(), Script: `ls / | tr '\n' ' '`,
-	})
+	out, err := r.Run(t.Context(), "userA", scratchDirs(t).req(`ls / | tr '\n' ' '`))
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("production-built runner failed: %v %+v", err, out)
 	}

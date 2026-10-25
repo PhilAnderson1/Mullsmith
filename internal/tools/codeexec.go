@@ -21,11 +21,12 @@ const maxScriptBytes = 128 << 10
 
 const maxStagedFiles = 16
 
-// CodeRun executes a model-authored script inside the user's work/ dir via
-// an allowlisted runtime (§7.2, §9.9). The runtime BINARY comes only from
-// config — the model names a runtime id and supplies a script, never a
-// path or argv. Enforcement (uid drop, rlimits, network-off, caps) lives in
-// the injected Runner; this adapter just validates and shapes the result.
+// CodeRun executes a model-authored script with the user's scratchpad
+// mounted (§7.2, §9.9) at /scratchpad — uploads/ read-only, work/ and
+// artifacts/ writable — via an allowlisted runtime. The runtime BINARY comes
+// only from config — the model names a runtime id and supplies a script,
+// never a path or argv. Enforcement (jail, rlimits, network-off, caps) lives
+// in the injected Runner; this adapter just validates and shapes the result.
 type CodeRun struct {
 	Runner    runner.Runner
 	Runtimes  []config.Runtime
@@ -37,12 +38,15 @@ type CodeRun struct {
 func (CodeRun) Name() string { return "code_run" }
 
 func (CodeRun) Description() string {
-	return "Run a script in the user's scratchpad work/ directory with an allowlisted " +
-		"runtime (see the runtime enum). The script has NO network and no secrets; it can " +
-		"read/write only inside the scratchpad. Optionally stage existing scratchpad files " +
-		"(e.g. an upload) into work/ by relPath so the script opens them by file name. " +
-		"Returns exit_code, stdout and stderr (both truncated). Files the script writes " +
-		"stay in work/ — share one with files_share to deliver it."
+	return "Run a script in the user's scratchpad with an allowlisted runtime " +
+		"(see the runtime enum). Inside the run the scratchpad is mounted at /scratchpad " +
+		"(also the working directory) with the same layout as the fs_* tools: uploads/ " +
+		"is readable but read-only, work/ and artifacts/ are writable. The script has " +
+		"NO network and no secrets. Existing files (e.g. an upload) are already visible " +
+		"at their relative path, such as uploads/sales.csv; the optional files argument " +
+		"additionally copies them into work/ to open as work/<name>. Write generated " +
+		"output to work/ — share one with files_share to deliver it. Returns exit_code, " +
+		"stdout and stderr (both truncated)."
 }
 
 func (c CodeRun) Parameters() map[string]any {
@@ -66,7 +70,8 @@ func (c CodeRun) Parameters() map[string]any {
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 				"description": "Optional scratchpad-relative paths (e.g. \"uploads/sales.csv\") " +
-					"copied into work/ before the run so the script opens them by base name.",
+					"also copied into work/ before the run, so the script can open them as " +
+					"work/<base name>. They are already readable in place under /scratchpad.",
 			},
 		},
 		"required": []string{"runtime", "script"},
@@ -125,12 +130,13 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	}
 
 	out, err := c.Runner.Run(ctx, inv.UserID, runner.Request{
-		RuntimeID: args.Runtime,
-		Binary:    binary,
-		WorkDir:   workDir,
-		Script:    args.Script,
-		Timeout:   c.Timeout,
-		MaxOutput: c.MaxOutput,
+		RuntimeID:  args.Runtime,
+		Binary:     binary,
+		ScratchDir: userRoot,
+		WorkDir:    workDir,
+		Script:     args.Script,
+		Timeout:    c.Timeout,
+		MaxOutput:  c.MaxOutput,
 	})
 	if err != nil {
 		// Runner errors are already operator-sanitized (busy, sandbox
@@ -191,9 +197,9 @@ func runtimeIDs(rs []config.Runtime) []string {
 }
 
 // stageFiles copies scratchpad-relative source files into work/ so the
-// script opens them by base name. Sources go through the sandbox (§9.7), so
-// a staged path can never escape the user's tree; the run then sees only
-// plain files in its own cwd.
+// script also finds them as work/<base name> (they remain readable in place
+// under /scratchpad/uploads). Sources go through the sandbox (§9.7), so a
+// staged path can never escape the user's tree.
 func stageFiles(root, userID, workDir string, rels []string) ([]string, error) {
 	var done []string
 	for _, rel := range rels {

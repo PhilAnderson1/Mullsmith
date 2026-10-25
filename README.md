@@ -170,8 +170,9 @@ per line, false-positive justifications included, is
 * **Code execution is defence-in-depth, not a VM.** Every run is jailed by
   [bubblewrap](https://github.com/containers/bubblewrap): its own
   user/mount/PID/net namespaces, a root filesystem containing only a
-  read-only `/usr` plus the one user `work/` dir (writable) — the database,
-  other users' files and server configs have no path inside the jail — with
+  read-only `/usr` plus the user's own scratchpad at `/scratchpad` — `work/`
+  and `artifacts/` writable, `uploads/` read-only — the database, other
+  users' files and server configs have no path inside the jail — with
   rlimits, a scrubbed environment and no-new-privs underneath, and no
   network unless you set `allow_network: true` (gabkeep warns when you do).
   `bwrap` is a hard requirement when code execution is on: missing or

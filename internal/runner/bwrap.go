@@ -4,8 +4,9 @@ package runner
 // runs inside a per-run bwrap jail: fresh user/mount/PID/net/IPC/UTS/cgroup
 // namespaces, a root filesystem containing nothing but the read-only host
 // /usr (interpreter + libraries + zoneinfo), a minimal /dev and /proc, and
-// the user's scratchpad work/ dir bind-mounted read-write at /work. The
-// network namespace is dropped unless allow_network is set explicitly.
+// the user's own scratchpad mounted at /scratchpad — work/ and artifacts/
+// read-write, uploads/ overlaid read-only. The network namespace is dropped
+// unless allow_network is set explicitly.
 //
 // The jail's visibility limits are the security boundary: the database,
 // other users' scratchpads, server configs and secrets are not merely
@@ -26,6 +27,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -102,24 +104,33 @@ func NewBwrap(opts Options) (*Bwrap, error) {
 	return &Bwrap{opts: opts, gate: newGate(opts.GlobalCap)}, nil
 }
 
-// bwrapArgs builds the jail specification. workDir is the HOST path that
-// becomes /work; target is the interpreter's host-resolved path (must be
-// under /usr). Pure function: unit-testable without executing anything.
-func bwrapArgs(workDir, target string, networkOpen bool) []string {
+// bwrapArgs builds the jail specification. scratchDir/workDir are HOST
+// paths: the user's scratchpad root (mounted rw at /scratchpad, uploads
+// overlaid read-only) and its work dir (becomes the payload's TMPDIR).
+// target is the interpreter's host-resolved path (must be under /usr).
+// Pure function: unit-testable without executing anything.
+func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
+	// Where workDir sits inside the jail, computed from the caller's own
+	// paths so the runner stays layout-agnostic (tmpfiles land on the
+	// quota'd filesystem, not the jail's RAM).
+	tmpInJail := "/scratchpad/work"
+	if rel, err := filepath.Rel(scratchDir, workDir); err == nil {
+		tmpInJail = path.Join("/scratchpad", filepath.ToSlash(rel))
+	}
 	args := []string{
 		"--die-with-parent", // bwrap's parent is our launcher; server death reaches us
 		"--unshare-all",     // user+ipc+net+pid+cgroup+uts+mount (§9.9)
 		"--new-session",     // detach from any controlling terminal
 		"--clearenv",        // payload env is exactly what we set below
 		"--setenv", "PATH", "/usr/bin:/bin",
-		"--setenv", "HOME", "/work",
-		"--setenv", "TMPDIR", "/work", // scratch stays on the quota'd filesystem
+		"--setenv", "HOME", "/scratchpad",
+		"--setenv", "TMPDIR", tmpInJail,
 		"--setenv", "LANG", "C",
 		"--setenv", "LC_ALL", "C",
 
 		// The entire visible world: /usr holds interpreters, shared
-		// libraries, terminfo and zoneinfo. Everything else simply has
-		// no path inside the jail.
+		// libraries, terminfo and zoneinfo; /scratchpad is the user's own
+		// file tree. Everything else simply has no path inside the jail.
 		"--ro-bind", "/usr", "/usr",
 		"--symlink", "usr/bin", "/bin", // usr-merged layout, recreated inside
 		"--symlink", "usr/lib", "/lib",
@@ -147,9 +158,16 @@ func bwrapArgs(workDir, target string, networkOpen bool) []string {
 		)
 	}
 
+	// The user's own file tree, mounted exactly as the fs_* tools see it:
+	// root read-write (work/, artifacts/ writable), uploads/ overlaid
+	// READ-ONLY so scripts can read originals but never mutate them (§9.4).
+	// The overlay is deliberately a hard bind (no -try): the tool layer has
+	// run scratch.EnsureUserDirs, so a missing uploads dir means a broken
+	// layout — fail closed rather than hand the payload a writable uploads/.
 	return append(args,
-		"--bind", workDir, "/work", // the one writable location
-		"--chdir", "/work",
+		"--bind", scratchDir, "/scratchpad",
+		"--ro-bind", filepath.Join(scratchDir, "uploads"), "/scratchpad/uploads",
+		"--chdir", "/scratchpad",
 		target, "-", // interpreter; script arrives on stdin
 	)
 }
@@ -161,11 +179,18 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 	}
 	defer release()
 
-	if req.Binary == "" || req.WorkDir == "" {
-		return Outcome{}, errors.New("runner: binary and work dir are required")
+	if req.Binary == "" || req.ScratchDir == "" || req.WorkDir == "" {
+		return Outcome{}, errors.New("runner: binary, scratch dir and work dir are required")
+	}
+	if fi, err := os.Stat(req.ScratchDir); err != nil || !fi.IsDir() {
+		return Outcome{}, errors.New("runner: scratch dir does not exist")
 	}
 	if fi, err := os.Stat(req.WorkDir); err != nil || !fi.IsDir() {
 		return Outcome{}, errors.New("runner: work dir does not exist")
+	}
+	if rel, err := filepath.Rel(req.ScratchDir, req.WorkDir); err != nil ||
+		filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return Outcome{}, errors.New("runner: work dir must live inside the scratch dir")
 	}
 	// Resolve the allowlisted binary to its real path and require it to
 	// live under /usr — that is the only tree the jail mounts. Handles
@@ -201,9 +226,9 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 
 	spec := sandboxSpec{
 		Binary: b.opts.BwrapBin,
-		Args:   bwrapArgs(req.WorkDir, target, b.opts.NetworkOpen),
-		Env:    minimalEnv(req.WorkDir), // bwrap inherits; payload gets --clearenv
-		Cwd:    req.WorkDir,             // superseded by --chdir /work, but keep cwd sane if bwrap fails early
+		Args:   bwrapArgs(req.ScratchDir, req.WorkDir, target, b.opts.NetworkOpen),
+		Env:    minimalEnv(req.ScratchDir, req.WorkDir), // bwrap inherits; payload gets --clearenv
+		Cwd:    req.ScratchDir,                          // superseded by --chdir /scratchpad, but keep cwd sane if bwrap fails early
 		UID:    -1,
 		GID:    -1,
 		As:     mem,
@@ -316,10 +341,10 @@ func exitCode(ps *os.ProcessState) int {
 // minimalEnv is the environment the LAUNCHER hands to bwrap (the payload's
 // own env is rebuilt by --clearenv/--setenv inside bwrapArgs). Nothing from
 // gabkeep's own environment — config secrets, API keys — ever gets here.
-func minimalEnv(workDir string) []string {
+func minimalEnv(scratchDir, workDir string) []string {
 	return []string{
 		"PATH=/usr/bin:/bin",
-		"HOME=" + workDir,
+		"HOME=" + scratchDir,
 		"TMPDIR=" + workDir,
 		"LANG=C",
 		"LC_ALL=C",

@@ -102,6 +102,9 @@ func TestCodeRunResolvesRuntimeFromConfig(t *testing.T) {
 	if got := fr.gotReq.WorkDir; got != wantDir {
 		t.Errorf("work dir = %q, want %q", got, wantDir)
 	}
+	if got, want := fr.gotReq.ScratchDir, filepath.Join(root, toolUser); got != want {
+		t.Errorf("scratch dir = %q, want the user root %q", got, want)
+	}
 	if fi, err := os.Stat(wantDir); err != nil || !fi.IsDir() {
 		t.Errorf("work dir not provisioned: %v", err)
 	}

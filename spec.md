@@ -659,10 +659,14 @@ Layers:
 3. **The jail (always):** a per-run `bwrap --unshare-all --new-session --clearenv`
    with fresh user/mount/PID/IPC/net/UTS/cgroup namespaces. The visible filesystem
    is exactly: read-only host `/usr` (interpreters + libraries), minimal `/dev`
-   and `/proc`, and the user's `work/` dir bind-mounted read-write at `/work` —
-   the one writable location. The database, other users' scratchpads and server
+   and `/proc`, and the user's own scratchpad mounted read-write at `/scratchpad`
+   (also the working directory): `work/` and `artifacts/` writable, `uploads/`
+   overlaid **read-only** so runs can read originals but never mutate them
+   (§9.4) — jail paths match the fs_* tools' relative paths exactly.
+   The database, other users' scratchpads and server
    config/secrets have **no path** inside the jail; a fresh PID namespace cannot
-   see or signal server processes. `HOME`/`TMPDIR` = `/work`; environment is
+   see or signal server processes. `HOME` = `/scratchpad`, `TMPDIR` = its `work/`
+   dir (quota'd filesystem); environment is
    rebuilt from a five-variable allowlist. Network: the net namespace is dropped
    unless `allow_network: true`, which instead shares the host netns plus
    read-only resolver/CA files and logs a startup warning.
