@@ -1,0 +1,88 @@
+[gosec] 2026/10/25 12:57:50 Including rules: default
+[gosec] 2026/10/25 12:57:50 Excluding rules: default
+[gosec] 2026/10/25 12:57:50 Including analyzers: default
+[gosec] 2026/10/25 12:57:50 Excluding analyzers: default
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/web
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/llm
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/store
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/server
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/tools
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/runner
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/cmd/gabkeep
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/scratch
+[gosec] 2026/10/25 12:57:50 Checking package: web
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/web/embed.go
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/agent
+[gosec] 2026/10/25 12:57:50 Checking package: store
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/conversations.go
+[gosec] 2026/10/25 12:57:50 Checking package: scratch
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/scratch/disk.go
+[gosec] 2026/10/25 12:57:50 Checking package: runner
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/runner/capped.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/scratch/path.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/runner/docker.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/files.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/runner/host.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/scratch/scratch.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/runner/runner.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/invites.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/messages.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/runner/sandbox.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/sessions.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/store.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/toolcalls.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/store/users.go
+[gosec] 2026/10/25 12:57:50 Checking package: tools
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/tools/build.go
+[gosec] 2026/10/25 12:57:50 Checking package: llm
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/tools/codeexec.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/llm/complete.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/llm/probe.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/llm/stream.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/tools/egress.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/tools/files.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/tools/tools.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/tools/webfetch.go
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/auth
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/tools/websearch.go
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/config
+[gosec] 2026/10/25 12:57:50 Import directory: /home/philip/gabkeep/internal/id
+[gosec] 2026/10/25 12:57:50 Checking package: server
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/api_auth.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/api_chat.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/api_conversations.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/api_files.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/approval_memory.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/artifacts.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/auth_middleware.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/generations.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/maintenance.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/middleware.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/server.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/server/sse.go
+[gosec] 2026/10/25 12:57:50 Checking package: agent
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/agent/context.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/agent/generate.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/agent/title.go
+[gosec] 2026/10/25 12:57:50 Checking package: main
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/cmd/gabkeep/main.go
+[gosec] 2026/10/25 12:57:50 Checking package: id
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/id/ulid.go
+[gosec] 2026/10/25 12:57:50 Checking package: config
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/config/config.go
+[gosec] 2026/10/25 12:57:50 Checking package: auth
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/auth/argon2.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/auth/cookies.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/auth/passwords.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/auth/ratelimit.go
+[gosec] 2026/10/25 12:57:50 Checking file: /home/philip/gabkeep/internal/auth/tokens.go
+Results:
+
+
+[1;36mSummary:[0m
+  Gosec  : dev
+  Files  : 50
+  Lines  : 9415
+  Nosec  : 29
+  Issues : [1;32m0[0m
+

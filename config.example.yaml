@@ -1,0 +1,97 @@
+# Gabkeep — production config template (spec.md §2.2).
+# Copy, edit, then verify with:  gabkeep -config /etc/gabkeep/config.yaml -check-config
+# Relative paths resolve against this file's directory. Secrets go in via
+# ${ENV_VAR} / ${ENV_VAR:-default} expansion (§9.12) — never commit them.
+
+server:
+  listen: "127.0.0.1:8080"        # keep behind a TLS-terminating reverse proxy,
+                                  # or set tls.enabled below and bind directly
+  public_url: "https://chat.example.org"
+  tls:
+    enabled: false                # true + cert/key here, or terminate at proxy
+    cert_file: "/etc/gabkeep/tls/cert.pem"
+    key_file: "/etc/gabkeep/tls/key.pem"
+  trusted_proxies: []             # CIDRs of your proxies ONLY (§9.11 spoofing)
+  hsts_max_age: 31536000          # effective only when TLS is enabled
+
+database:
+  dir: "/var/lib/gabkeep/db"
+
+scratchpad:
+  root: "/var/lib/gabkeep/scratchpad"
+  max_file_size: 25MiB
+  user_quota: 1GiB
+  artifact_ttl: 168h              # shared artifacts expire after 7 days
+  # Uploaded extensions that must never land in the store (§9.4). HTML/SVG
+  # are allowed but always served as attachment downloads.
+  block_extensions: [exe, dll, so, bat, cmd, com, scr, msi, js, jar]
+  code_execution:                 # §9.9 — OFF by default; enable deliberately
+    enabled: false
+    mode: "container"             # container (needs docker) | isolated (root)
+    container_image: "gabkeep-runner:latest"
+    run_as_user: "gabkeep-runner"
+    allowed_runtimes:
+      - { id: python3, binary: /usr/bin/python3 }
+    timeout: 30s
+    max_output: 32KiB
+    max_memory: 256MiB
+    allow_network: false
+  # Approval policy per tool: auto | confirm (unknown tool ⇒ confirm).
+  # code_run is always confirm-capable; keep it that way unless you know
+  # exactly what you are doing (§9.9/§9.13).
+
+llm:
+  endpoint: "http://127.0.0.1:8081/v1"   # your OpenAI-compatible server
+  api_key: "${GABKEEP_LLM_API_KEY:-}"
+  model: "your-model-name"
+  models: []                             # allowlist users may pick; empty = model only
+  max_context_tokens: 32768
+  default_temperature: 0.7
+  request_timeout: 5m
+  max_tokens_response: 4096
+  show_reasoning: false
+
+tools:
+  web_search:
+    enabled: false                # true + brave key to enable "search the web"
+    provider: "brave"
+    api_key: "${GABKEEP_SEARCH_API_KEY:-}"
+    max_results: 8
+  web_fetch:
+    enabled: true                 # SSRF-guarded egress (§9.6); public web only
+    max_bytes: 512KiB
+    timeout: 15s
+  agent:
+    max_tool_rounds: 8
+    approval:
+      web_search: auto
+      web_fetch: auto
+      fs_list: auto
+      fs_read: auto
+      fs_write: auto
+      files_share: auto
+      code_run: confirm
+
+auth:
+  registration: invite-only       # open | invite-only | closed (admin CLI users)
+  remember_login: true            # shows the "Stay logged in" checkbox
+  session_ttl: 24h
+  remember_ttl: 720h              # with the checkbox ticked
+  remember_absolute_ttl: 2160h
+  cookie_secure: true             # false ONLY for a loopback http dev box
+  max_failed_logins: 10
+
+limits:
+  max_body_bytes: 1MiB
+  max_message_chars: 32000
+  max_attachments: 8
+  concurrent_streams_per_user: 2
+
+rate_limit:
+  requests_per_minute: 120
+  chat_messages_per_hour: 60
+
+logging:
+  level: info                     # debug | info | warn | error
+  format: text                    # json for log pipelines
+  file: ""                        # empty = stderr (let journald capture it)
