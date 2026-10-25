@@ -17,19 +17,58 @@ import (
 	"gabkeep/internal/config"
 )
 
-// ChatMessage is one message in a chat/completions request. Only the plain
-// text form is needed before the tool loop lands in M4.
+// ChatMessage is one message in a chat/completions request. The tool fields
+// carry the OpenAI tool protocol (spec §6.1 step 5): assistant rows replay
+// their ToolCalls, and role "tool" rows answer one call via ToolCallID.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	ToolCalls  []ChatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// ChatToolCall is a function call as replayed inside an assistant message.
+type ChatToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"` // always "function"
+	Function ChatToolCallFunc `json:"function"`
+}
+
+type ChatToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // raw JSON string from the model
+}
+
+// ToolSpec advertises one tool to the model (OpenAI function-calling form).
+type ToolSpec struct {
+	Type     string       `json:"type"` // "function"
+	Function ToolFunction `json:"function"`
+}
+
+type ToolFunction struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Parameters  any    `json:"parameters"` // JSON Schema
 }
 
 // Delta is one parsed streaming update.
 type Delta struct {
 	Content   string // answer text
 	Reasoning string // chain-of-thought, never part of Content (spec §6.2)
+	ToolCalls []ToolCallDelta
+	Finish    string // finish_reason when seen ("stop", "tool_calls", …)
 	Done      bool   // finish_reason seen
 	Usage     int64  // total tokens if the upstream reported one
+}
+
+// ToolCallDelta is a fragment of a streamed tool call. Fragments of the same
+// call share Index; the first carries ID/Name, later ones append Arguments
+// (OpenAI streaming convention).
+type ToolCallDelta struct {
+	Index     int
+	ID        string
+	Name      string
+	Arguments string
 }
 
 // Client talks to one OpenAI-compatible endpoint (spec §6.2).
@@ -74,6 +113,13 @@ var (
 func (c *Client) Stream(ctx context.Context, model string, msgs []ChatMessage,
 	onDelta func(Delta) error,
 ) error {
+	return c.StreamTools(ctx, model, msgs, nil, onDelta)
+}
+
+// StreamTools is Stream with tool specs advertised (spec §6.1 step 3).
+func (c *Client) StreamTools(ctx context.Context, model string, msgs []ChatMessage,
+	tools []ToolSpec, onDelta func(Delta) error,
+) error {
 	if model == "" {
 		model = c.model
 	}
@@ -83,8 +129,8 @@ func (c *Client) Stream(ctx context.Context, model string, msgs []ChatMessage,
 	)
 	for attempt := 0; attempt < 2; attempt++ {
 		sawDelta = false
-		err = c.streamOnce(ctx, model, msgs, func(d Delta) error {
-			if d.Content != "" || d.Reasoning != "" {
+		err = c.streamOnce(ctx, model, msgs, tools, func(d Delta) error {
+			if d.Content != "" || d.Reasoning != "" || len(d.ToolCalls) > 0 {
 				sawDelta = true
 			}
 			return onDelta(d)
@@ -112,7 +158,7 @@ func isConnRefused(err error) bool {
 }
 
 func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessage,
-	onDelta func(Delta) error,
+	tools []ToolSpec, onDelta func(Delta) error,
 ) error {
 	payload := map[string]any{
 		"model":          model,
@@ -120,6 +166,10 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 		"stream":         true,
 		"max_tokens":     c.maxTokens,
 		"stream_options": map[string]any{"include_usage": true},
+	}
+	if len(tools) > 0 {
+		payload["tools"] = tools
+		payload["tool_choice"] = "auto"
 	}
 	if c.temperature > 0 {
 		payload["temperature"] = c.temperature
@@ -165,6 +215,15 @@ type chunk struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
 			Role             string `json:"role"`
+			ToolCalls        []struct {
+				Index    *int   `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -204,12 +263,25 @@ func parseSSE(r io.Reader, onDelta func(Delta) error, abort func() error) error 
 		for _, cch := range ch.Choices {
 			d.Content = cch.Delta.Content
 			d.Reasoning = cch.Delta.ReasoningContent
+			for pos, tc := range cch.Delta.ToolCalls {
+				idx := pos // servers may omit index on the first fragment
+				if tc.Index != nil {
+					idx = *tc.Index
+				}
+				d.ToolCalls = append(d.ToolCalls, ToolCallDelta{
+					Index:     idx,
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				})
+			}
 			if cch.FinishReason != "" {
 				d.Done = true
+				d.Finish = cch.FinishReason
 				finished = true
 			}
 		}
-		if d.Content == "" && d.Reasoning == "" && d.Usage == 0 && !d.Done {
+		if d.Content == "" && d.Reasoning == "" && d.Usage == 0 && !d.Done && len(d.ToolCalls) == 0 {
 			return nil
 		}
 		return onDelta(d)

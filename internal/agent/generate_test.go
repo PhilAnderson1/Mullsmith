@@ -1,0 +1,134 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"gabkeep/internal/config"
+	"gabkeep/internal/llm"
+)
+
+// sseServer serves a canned OpenAI-style SSE body.
+func sseServer(t *testing.T, chunks ...string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range chunks {
+			fmt.Fprint(w, "data: ", c, "\n\n")
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func genFor(t *testing.T, ts *httptest.Server) *Generator {
+	t.Helper()
+	cfg := &config.Config{}
+	cfg.LLM.Endpoint = ts.URL + "/v1"
+	cfg.LLM.Model = "test-model"
+	cfg.LLM.MaxTokensResponse = 128
+	return &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+}
+
+func TestRoundAccumulatesToolCallsByIndex(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"web_fetch","arguments":"{\"u"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"web_search","arguments":"{\"q"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"rl\":\"x\"}"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"uery\":\"hi\"}"}}]}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	)
+	g := genFor(t, ts)
+
+	var deltaEvents int
+	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil },
+		func(_ int, d llm.ToolCallDelta) {
+			if d.ID != "" || d.Name != "" || d.Arguments != "" {
+				deltaEvents++
+			}
+		})
+	if res.Status != "complete" {
+		t.Fatalf("status = %s (err %v)", res.Status, res.Err)
+	}
+	if res.Finish != "tool_calls" {
+		t.Errorf("finish = %q, want tool_calls", res.Finish)
+	}
+	if len(res.ToolCalls) != 2 {
+		t.Fatalf("calls = %+v, want 2", res.ToolCalls)
+	}
+	// Order follows the index even though index 1 streamed first.
+	if res.ToolCalls[0].ID != "call_a" || res.ToolCalls[1].ID != "call_b" {
+		t.Errorf("order wrong: %s then %s", res.ToolCalls[0].ID, res.ToolCalls[1].ID)
+	}
+	if got := res.ToolCalls[0].Function.Arguments; got != `{"query":"hi"}` {
+		t.Errorf("args[0] = %s", got)
+	}
+	if got := res.ToolCalls[1].Function.Arguments; got != `{"url":"x"}` {
+		t.Errorf("args[1] = %s", got)
+	}
+	if deltaEvents != 4 {
+		t.Errorf("toolDelta saw %d events, want 4 (raw pass-through)", deltaEvents)
+	}
+}
+
+func TestRoundDropsNamelessCall(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"ghost","function":{"arguments":"junk"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"real","function":{"name":"web_search","arguments":"{}"}}]}}]}`,
+	)
+	g := genFor(t, ts)
+	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil }, nil)
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "real" {
+		t.Fatalf("calls = %+v, want only [real]", res.ToolCalls)
+	}
+	// Presence of a complete call implies the finish reason.
+	if res.Finish != "tool_calls" {
+		t.Errorf("finish = %q, want implied tool_calls", res.Finish)
+	}
+}
+
+func TestRoundContentAndReasoningSeparate(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"reasoning_content":"think "}}]}`,
+		`{"choices":[{"delta":{"content":"answer"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":42}}`,
+	)
+	g := genFor(t, ts)
+	var got []string
+	res := g.Round(context.Background(), "", nil, nil, func(kind, text string) error {
+		got = append(got, kind+":"+text)
+		return nil
+	}, nil)
+	if res.Content != "answer" || res.Reasoning != "think " {
+		t.Fatalf("content=%q reasoning=%q", res.Content, res.Reasoning)
+	}
+	want := []string{EventReasoning + ":think ", EventToken + ":answer"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("events = %v, want %v", got, want)
+	}
+	if res.Usage != 42 {
+		t.Errorf("usage = %d, want 42", res.Usage)
+	}
+	if len(res.ToolCalls) != 0 {
+		t.Errorf("unexpected tool calls: %+v", res.ToolCalls)
+	}
+}
+
+func TestRoundClientGoneIsAborted(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"content":"x"}}]}`,
+		`{"choices":[{"delta":{"content":"y"}}]}`,
+	)
+	g := genFor(t, ts)
+	res := g.Round(context.Background(), "", nil, nil, func(string, string) error {
+		return ErrClientGone
+	}, nil)
+	if res.Status != "aborted" {
+		t.Fatalf("status = %s, want aborted", res.Status)
+	}
+}

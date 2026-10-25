@@ -2,11 +2,19 @@
 // construction: output is built exclusively with createElement/textContent,
 // never innerHTML, so untrusted model text can never introduce markup.
 // Supported: fenced code (+copy), # headings, **bold**, *italic*, `code`,
-// [links](http/https only), - / * / 1. lists, > quotes. Anything else is
-// literal text.
+// [links](http/https only), bare http(s) URLs (autolink), - / * / 1. lists,
+// > quotes. Anything else is literal text.
 
 const INLINE_RE =
-  /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"'`[\])]+)/g;
+
+// Trailing sentence punctuation never belongs to a URL (balanced-paren
+// endings like …) are already excluded by the character class).
+function trimUrlTail(url) {
+  let end = url.length;
+  while (end > 0 && /[.,;:!?"'»…]/.test(url[end - 1])) end--;
+  return url.slice(0, end);
+}
 
 function renderInline(text) {
   const frag = document.createDocumentFragment();
@@ -27,13 +35,22 @@ function renderInline(text) {
       const em = document.createElement("em");
       em.textContent = m[3];
       frag.append(em);
-    } else {
+    } else if (m[4] !== undefined) {
       const a = document.createElement("a");
       a.href = m[5]; // regex admits only http(s) URLs
       a.textContent = m[4];
       a.rel = "noopener noreferrer nofollow";
       a.target = "_blank";
       frag.append(a);
+    } else {
+      // Bare autolink: sentence punctuation stays text, the URL is the link.
+      const url = trimUrlTail(m[6]);
+      const a = document.createElement("a");
+      a.href = url;
+      a.textContent = url;
+      a.rel = "noopener noreferrer nofollow";
+      a.target = "_blank";
+      frag.append(a, m[6].slice(url.length));
     }
     last = INLINE_RE.lastIndex;
   }

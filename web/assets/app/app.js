@@ -311,6 +311,15 @@ function msgNode(m) {
     body.textContent = m.content;
   }
 
+  // Tool cards from the audit projection (§10.2): collapsed by default,
+  // placed above the answer like their live counterparts. A calls-only
+  // assistant row has no prose: the empty body folds away.
+  if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+    const host = toolCardsHost(el);
+    for (const c of m.tool_calls) host.append(toolCardFromAudit(c));
+    if (!m.content) body.hidden = true;
+  }
+
   if (m.status === "aborted") {
     showStatusNote(el, "Stopped before finishing.");
   } else if (m.status === "error") {
@@ -362,7 +371,9 @@ async function loadFirstMessages() {
     thread.appendChild(initialEmptyState());
   } else {
     if (data.next_cursor) thread.appendChild(earlierButton(data.next_cursor));
-    for (const m of data.items) thread.appendChild(msgNode(m));
+    // role='tool' rows carry model-facing payloads; the UI shows them as
+    // tool cards attached to the assistant message that proposed the call.
+    for (const m of data.items) if (m.role !== "tool") thread.appendChild(msgNode(m));
   }
   state.messagesCursor = data.next_cursor;
   refreshLastAssistant();
@@ -383,7 +394,7 @@ function earlierButton(cursor) {
       // The page is chronological (oldest first); insert each item before the
       // same ref so the whole page lands between the button and what was there.
       const ref = nextBtn ? nextBtn.nextSibling : host.firstChild;
-      for (const m of data.items) host.insertBefore(msgNode(m), ref);
+      for (const m of data.items) if (m.role !== "tool") host.insertBefore(msgNode(m), ref);
       state.messagesCursor = data.next_cursor;
       refreshLastAssistant();
     } catch (err) {
@@ -530,6 +541,181 @@ function ensureThinking(st) {
   st.nodes.thinkSummary = summary;
 }
 
+// --- tool cards (spec §7, §10.2) ------------------------------------------------
+// One card per model-proposed tool call, attached to the assistant
+// <article> — deliberately OUTSIDE .msg-body, which finishGeneration
+// clears when the markdown answer lands. Built live from the
+// tool_start/tool_args/tool_end/awaiting_approval SSE events, and from
+// the persisted tool_calls projection on reload.
+
+function toolCardsHost(el) {
+  let host = el.querySelector(".tool-cards");
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "tool-cards";
+    el.querySelector(".msg-body").before(host);
+  }
+  return host;
+}
+
+const TOOL_STATE_LABELS = {
+  ok: "done",
+  denied: "denied",
+  error: "failed",
+  running: "interrupted",
+  approved: "ran",
+  pending_approval: "approval expired",
+};
+
+function toolStateLabel(status) {
+  if (status === "ok") return "done";
+  if (status === "denied") return "denied";
+  if (status === "error") return "failed";
+  return TOOL_STATE_LABELS[status] || status || "unknown";
+}
+
+function toolCardNode(callId, tool) {
+  const d = document.createElement("details");
+  d.className = "tool-card st-running";
+  d.dataset.call = callId || "";
+  const sum = document.createElement("summary");
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = tool || "tool";
+  const state = document.createElement("span");
+  state.className = "tool-state";
+  state.textContent = "running…";
+  sum.append(name, state);
+  const args = document.createElement("pre");
+  args.className = "tool-args";
+  args.hidden = true;
+  const results = document.createElement("div");
+  results.className = "tool-results";
+  d.append(sum, args, results);
+  return d;
+}
+
+function formatToolArgs(raw) {
+  let s = String(raw || "");
+  try {
+    s = JSON.stringify(JSON.parse(s)); // canonical one-liner when complete
+  } catch {
+    /* partial JSON mid-stream: show as it came in */
+  }
+  const runes = Array.from(s);
+  return runes.length > 600 ? runes.slice(0, 600).join("") + "…" : s;
+}
+
+// safeLink is the only way a tool result URL reaches an <a href>: anything
+// that is not http(s) (javascript:, data:, …) is dropped.
+function safeLink(u) {
+  if (typeof u !== "string") return null;
+  try {
+    const url = new URL(u, location.origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function renderToolResults(container, data) {
+  // web_search → [{title,url,snippet,age}]; web_fetch → {url,title}.
+  const items = Array.isArray(data) ? data : data && data.url ? [data] : [];
+  for (const it of items) {
+    const href = it && typeof it.url === "string" ? safeLink(it.url) : null;
+    if (!href) continue;
+    const a = document.createElement("a");
+    a.className = "tool-link";
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    const title = document.createElement("span");
+    title.className = "tool-link-title";
+    title.textContent = String(it.title || href).slice(0, 160);
+    const host = document.createElement("span");
+    host.className = "tool-link-host";
+    host.textContent = new URL(href).host;
+    a.append(title, host);
+    container.append(a);
+  }
+}
+
+function setToolSummary(card, text) {
+  if (!text) return;
+  let p = card.querySelector(".tool-summary");
+  if (!p) {
+    p = document.createElement("p");
+    p.className = "tool-summary";
+    card.querySelector(".tool-results").before(p);
+  }
+  p.textContent = text;
+}
+
+function attachApproval(card, st, d) {
+  card.classList.remove("st-running");
+  card.classList.add("st-awaiting");
+  card.open = true;
+  card.querySelector(".tool-state").textContent = "needs approval";
+  const argsEl = card.querySelector(".tool-args");
+  argsEl.textContent = formatToolArgs(d.arguments);
+  argsEl.hidden = false;
+  if (card.querySelector(".approval-row")) return; // duplicate event: idempotent
+
+  const row = document.createElement("div");
+  row.className = "approval-row";
+  const label = document.createElement("span");
+  label.className = "approval-label";
+  label.textContent = `Allow ${d.tool || "the tool"} to run?`;
+  const allow = document.createElement("button");
+  allow.type = "button";
+  allow.className = "btn small primary approval-allow";
+  allow.textContent = "Allow";
+  const deny = document.createElement("button");
+  deny.type = "button";
+  deny.className = "btn small ghost approval-deny";
+  deny.textContent = "Deny";
+  const decide = async (approve) => {
+    for (const b of row.querySelectorAll("button")) b.disabled = true;
+    try {
+      await api.resolveApproval(st.genId, d.approval_id, approve);
+    } catch {
+      toast("That approval is no longer pending.");
+    }
+  };
+  allow.addEventListener("click", () => decide(true));
+  deny.addEventListener("click", () => decide(false));
+  row.append(label, allow, deny);
+  card.append(row);
+}
+
+// toolCardFromAudit rebuilds a card from the persisted projection
+// (messageJSON.tool_calls) when a conversation is loaded fresh.
+function toolCardFromAudit(c) {
+  const card = toolCardNode(c.id, c.tool);
+  card.classList.remove("st-running");
+  card.classList.add("st-" + (c.status || "ok"));
+  card.querySelector(".tool-state").textContent = toolStateLabel(c.status);
+  if (c.arguments) {
+    const argsEl = card.querySelector(".tool-args");
+    argsEl.textContent = formatToolArgs(c.arguments);
+    argsEl.hidden = false;
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(c.result);
+  } catch {
+    /* plain text or empty result */
+  }
+  if (parsed && parsed.error) setToolSummary(card, String(parsed.error));
+  if (parsed && Array.isArray(parsed.results)) {
+    renderToolResults(card.querySelector(".tool-results"), parsed.results);
+  } else if (parsed && typeof parsed.url === "string") {
+    renderToolResults(card.querySelector(".tool-results"), parsed);
+  }
+  return card;
+}
+
 /**
  * Run one assistant turn against `url` and stream it into the thread.
  * `rollback` undoes optimistic UI when the server rejects before starting.
@@ -545,6 +731,7 @@ async function startGeneration(url, body, rollback) {
     started: false,
     errorData: null,
     nodes: null,
+    cards: {}, // call_id → { card, args } for the live tool cards
   };
   state.inflight = st;
   syncComposerButtons();
@@ -579,6 +766,44 @@ async function startGeneration(url, body, rollback) {
           ensureThinking(st);
           st.nodes.thinkPre.textContent = st.reasoning;
           maybeScroll();
+        },
+        onToolStart(d) {
+          if (!st.nodes) return;
+          const card = toolCardNode(d.call_id, d.tool);
+          toolCardsHost(st.nodes.el).append(card);
+          st.cards[d.call_id] = { card, args: "" };
+          maybeScroll();
+        },
+        onToolArgs(d) {
+          const c = st.cards[d.call_id];
+          if (!c) return;
+          c.args += d.t || "";
+          const pre = c.card.querySelector(".tool-args");
+          pre.textContent = formatToolArgs(c.args);
+          pre.hidden = false;
+        },
+        onToolEnd(d) {
+          const c = st.cards[d.call_id];
+          if (!c) return;
+          c.card.classList.remove("st-running", "st-awaiting");
+          c.card.classList.add("st-" + (d.status || "ok"));
+          c.card.querySelector(".tool-state").textContent = toolStateLabel(d.status);
+          const row = c.card.querySelector(".approval-row"); // answered: buttons expire
+          if (row) row.remove();
+          if (d.summary) setToolSummary(c.card, d.summary);
+          if (d.data) renderToolResults(c.card.querySelector(".tool-results"), d.data);
+          maybeScroll();
+        },
+        onAwaitingApproval(d) {
+          if (!st.nodes) return;
+          let c = st.cards[d.call_id];
+          if (!c) {
+            const card = toolCardNode(d.call_id, d.tool);
+            toolCardsHost(st.nodes.el).append(card);
+            c = st.cards[d.call_id] = { card, args: d.arguments || "" };
+          }
+          attachApproval(c.card, st, d);
+          maybeScroll(true);
         },
         onError(d) {
           st.errorData = d;
@@ -630,6 +855,9 @@ function finishGeneration(st, done) {
   nodes.body.classList.remove("streaming");
   nodes.body.classList.add("md");
   nodes.body.replaceChildren(renderMarkdown(st.raw)); // full markdown once done
+  // Any approval prompt still on screen is dead: the loop moved on
+  // (timeout, deny or abort). Retire the buttons.
+  for (const btn of nodes.el.querySelectorAll(".approval-row button")) btn.disabled = true;
   const status = done.status || "";
   if (status === "aborted") {
     showStatusNote(nodes.el, "Stopped.");

@@ -18,6 +18,58 @@ type generation struct {
 	ConvID string
 	UserID string
 	cancel context.CancelFunc
+
+	// approvals tracks outstanding awaiting_approval requests (§6.1 step 5):
+	// approval id → decision channel the tool loop waits on.
+	approvals map[string]chan bool
+}
+
+// AddApproval registers a pending approval for a live generation.
+func (r *genRegistry) AddApproval(genID string) (string, <-chan bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.byID[genID]
+	if !ok {
+		return "", nil, false
+	}
+	if g.approvals == nil {
+		g.approvals = map[string]chan bool{}
+	}
+	id := id.New()
+	ch := make(chan bool, 1)
+	g.approvals[id] = ch
+	return id, ch, true
+}
+
+// ResolveApproval delivers a user decision; the caller must own the
+// generation. Unknown ids (already answered, timed out, gone) → false.
+func (r *genRegistry) ResolveApproval(genID, approvalID, userID string, approve bool) bool {
+	r.mu.Lock()
+	g, ok := r.byID[genID]
+	if !ok || g.UserID != userID {
+		r.mu.Unlock()
+		return false
+	}
+	ch, open := g.approvals[approvalID]
+	if open {
+		delete(g.approvals, approvalID)
+	}
+	r.mu.Unlock()
+	if !open {
+		return false
+	}
+	ch <- approve // buffered: never blocks on the loop having moved on
+	return true
+}
+
+// RemoveApproval drops an unresolved approval when the loop gives up
+// (timeout or abort) so late POSTs cannot fill a dead channel.
+func (r *genRegistry) RemoveApproval(genID, approvalID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if g, ok := r.byID[genID]; ok {
+		delete(g.approvals, approvalID)
+	}
 }
 
 // genRegistry tracks live generations. It doubles as the concurrency

@@ -16,6 +16,7 @@ import (
 	"gabkeep/internal/config"
 	"gabkeep/internal/llm"
 	"gabkeep/internal/store"
+	"gabkeep/internal/tools"
 	"gabkeep/web"
 )
 
@@ -29,6 +30,7 @@ type Server struct {
 	locks     *auth.LoginLocks
 	gens      *genRegistry
 	generator *agent.Generator
+	tools     *tools.Registry
 	httpSrv   *http.Server
 }
 
@@ -45,6 +47,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *
 		locks:     auth.NewLoginLocks(),
 		gens:      newGenRegistry(),
 		generator: &agent.Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)},
+		tools:     tools.BuildFor(cfg, logger, nil),
 	}
 
 	mux := http.NewServeMux()
@@ -64,6 +67,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *
 	mux.Handle("POST /api/v1/conversations/{id}/messages", s.authRequired(s.handleChatSend))
 	mux.Handle("POST /api/v1/messages/{id}/regenerate", s.authRequired(s.handleRegenerate))
 	mux.Handle("POST /api/v1/generations/{id}/abort", s.authRequired(s.handleAbort))
+	mux.Handle("POST /api/v1/generations/{id}/approvals", s.authRequired(s.handleApproval))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
 	// Bare "/" is the lowest-priority sink: it catches "/" (index), unknown
 	// paths (JSON 404) and wrong verbs on known paths (JSON 405). Go's

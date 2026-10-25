@@ -82,6 +82,18 @@ function handleFrame(frame, h) {
     case "reasoning":
       h.onReasoning && h.onReasoning(data.t || "");
       break;
+    case "tool_start":
+      h.onToolStart && h.onToolStart(data);
+      break;
+    case "tool_args":
+      h.onToolArgs && h.onToolArgs(data);
+      break;
+    case "tool_end":
+      h.onToolEnd && h.onToolEnd(data);
+      break;
+    case "awaiting_approval":
+      h.onAwaitingApproval && h.onAwaitingApproval(data);
+      break;
     case "error":
       h.onError && h.onError(data);
       break;

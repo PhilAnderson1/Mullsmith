@@ -546,3 +546,83 @@ details.thinking pre {
 
 .stop-btn { color: var(--danger); }
 .stop-btn:disabled { opacity: 0.5; }
+
+/* --- tool cards (spec §7, §10.2) ------------------------------------------------
+   One card per tool call inside the assistant article: summary line, raw
+   arguments when expanded, result links, and live approval controls. */
+
+.tool-cards { display: flex; flex-direction: column; gap: 0.4rem; margin: 0 0 0.5rem; }
+
+details.tool-card {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  padding: 0.35rem 0.7rem;
+  color: var(--fg-muted);
+}
+details.tool-card summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.88em;
+  list-style: none;
+}
+details.tool-card summary::-webkit-details-marker { display: none; }
+.tool-card .tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--fg);
+}
+.tool-card .tool-state { white-space: nowrap; }
+.tool-card.st-running { border-left-color: var(--accent); }
+.tool-card.st-running .tool-state { color: var(--accent); }
+.tool-card.st-ok { border-left-color: #2e8b57; }
+.tool-card.st-awaiting { border-left-color: #b8860b; }
+.tool-card.st-awaiting .tool-state { color: #b8860b; font-weight: 600; }
+.tool-card.st-denied { border-left-color: var(--fg-muted); }
+.tool-card.st-error { border-left-color: var(--danger); }
+.tool-card.st-error .tool-state { color: var(--danger); }
+
+.tool-card .tool-args {
+  margin: 0.4rem 0 0.1rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.85em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--bg-sunken);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+.tool-card .tool-summary { margin: 0.35rem 0 0; font-size: 0.85em; }
+.tool-results { display: flex; flex-direction: column; gap: 0.15rem; }
+.tool-card a.tool-link {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85em;
+  color: var(--accent);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  padding: 0.15rem 0;
+}
+.tool-card a.tool-link:hover { text-decoration: underline; }
+.tool-link-host { color: var(--fg-muted); font-size: 0.85em; }
+
+/* approval: 44 px touch targets (§10.1) even inside a compact card */
+.approval-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+}
+.approval-label { flex: 1 1 10rem; font-size: 0.9em; color: var(--fg); }
+.btn.small { padding: 0.2rem 0.9rem; min-height: var(--tap); }
+.approval-row .btn:disabled { opacity: 0.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-card summary { transition: none; }
+}

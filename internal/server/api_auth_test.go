@@ -44,6 +44,14 @@ func authCfg(t *testing.T) *config.Config {
 func newAuthTest(t *testing.T, cfg *config.Config) *authTest {
 	t.Helper()
 	ts, db := newTestServerWithDB(t, cfg)
+	return newAuthTestOn(t, ts, db)
+}
+
+// newAuthTestOn bootstraps CSRF cookies on an already-built test server so
+// suites with custom wiring (e.g. injected tool registries) share the jar
+// setup.
+func newAuthTestOn(t *testing.T, ts *httptest.Server, db *store.DB) *authTest {
+	t.Helper()
 	t.Cleanup(ts.Close)
 	a := &authTest{t: t, ts: ts, db: db, cookies: map[string]string{}}
 	resp := a.raw(http.MethodGet, "/", nil, "")

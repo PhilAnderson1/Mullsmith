@@ -285,3 +285,109 @@ func TestStreamRequestBody(t *testing.T) {
 		t.Errorf("Authorization = %q", gotAuth)
 	}
 }
+
+// --- M4: tool protocol -----------------------------------------------------------
+
+func TestStreamToolCallFragments(t *testing.T) {
+	// Two calls delivered OpenAI-style: fragments share index, the first
+	// carries id+name, later ones append arguments. Both fragments of a
+	// two-call chunk may omit index — position within the chunk then wins.
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_A","type":"function","function":{"name":"web_search","arguments":"{\"que"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ry\":\"hello\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_A2","function":{"arguments":"tail"}},{"id":"call_B","function":{"name":"web_fetch","arguments":"{\"url\":\"http://x/\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+	ts := sseServer(t, body)
+	c := clientFor(ts, nil)
+
+	var frags []ToolCallDelta
+	var finish string
+	var done bool
+	err := c.Stream(context.Background(), "", nil, func(d Delta) error {
+		frags = append(frags, d.ToolCalls...)
+		if d.Finish != "" {
+			finish = d.Finish
+		}
+		done = d.Done
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finish != "tool_calls" || !done {
+		t.Fatalf("finish=%q done=%v", finish, done)
+	}
+	if len(frags) != 4 {
+		t.Fatalf("frags = %+v, want 4", frags)
+	}
+	// Indexless two-call chunk: positions distinguish the calls.
+	if frags[2].Index != 0 || frags[2].ID != "call_A2" {
+		t.Errorf("indexless fragment 0 parsed wrong: %+v", frags[2])
+	}
+	if frags[3].Index != 1 || frags[3].ID != "call_B" || frags[3].Name != "web_fetch" {
+		t.Errorf("indexless fragment 1 parsed wrong: %+v", frags[3])
+	}
+	if frags[0].ID != "call_A" || frags[0].Name != "web_search" {
+		t.Errorf("first fragment = %+v", frags[0])
+	}
+}
+
+func TestStreamToolsPayload(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer ts.Close()
+	c := clientFor(ts, nil)
+
+	tools := []ToolSpec{{Type: "function", Function: ToolFunction{
+		Name: "web_search", Description: "search", Parameters: map[string]any{"type": "object"},
+	}}}
+	msgs := []ChatMessage{
+		{Role: "assistant", ToolCalls: []ChatToolCall{{ID: "c1", Type: "function",
+			Function: ChatToolCallFunc{Name: "web_search", Arguments: `{"query":"x"}`}}}},
+		{Role: "tool", ToolCallID: "c1", Content: "{}"},
+	}
+	if err := c.StreamTools(context.Background(), "m", msgs, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if tc, ok := gotBody["tools"].([]any); !ok || len(tc) != 1 {
+		t.Fatalf("tools not in payload: %v", gotBody["tools"])
+	}
+	if gotBody["tool_choice"] != "auto" {
+		t.Errorf("tool_choice = %v", gotBody["tool_choice"])
+	}
+	// Replay rows must serialize with protocol field names.
+	raw, _ := json.Marshal(gotBody["messages"])
+	s := string(raw)
+	for _, want := range []string{`"tool_calls"`, `"tool_call_id"`, `"c1"`, `"web_search"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("messages payload missing %s: %s", want, s)
+		}
+	}
+}
+
+func TestStreamWithoutToolsOmitsFields(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer ts.Close()
+	c := clientFor(ts, nil)
+	if err := c.Stream(context.Background(), "m", []ChatMessage{{Role: "user", Content: "hi"}},
+		func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gotBody["tools"]; ok {
+		t.Error("tools present with no tool specs — confuses non-tool endpoints")
+	}
+	if _, ok := gotBody["tool_choice"]; ok {
+		t.Error("tool_choice present with no tool specs")
+	}
+}

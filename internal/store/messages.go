@@ -19,6 +19,11 @@ type Message struct {
 	Status         string // streaming | complete | error | aborted
 	TokenCount     *int64
 	CreatedAt      time.Time
+	// ToolCallID is set on role='tool' rows: the call this result answers.
+	ToolCallID string
+	// Calls holds the audit rows for assistant messages that proposed tool
+	// calls (context replay + reload rendering). Read-only projection.
+	Calls []ToolCall
 }
 
 // AddMessage inserts a message and bumps the conversation's updated_at in one
@@ -56,9 +61,9 @@ func (d *DB) AddMessage(ctx context.Context, userID string, m *Message) error {
 		tok = *m.TokenCount
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ConversationID, m.Role, m.Content, m.Status, tok, m.CreatedAt.Unix()); err != nil {
+		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at, tool_call_id)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, m.Role, m.Content, m.Status, tok, m.CreatedAt.Unix(), m.ToolCallID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -144,10 +149,12 @@ func (d *DB) SweepStreaming(ctx context.Context) (int64, error) {
 
 // ContextHistory returns the conversation's completed messages (chronological,
 // excluding excludeID) for prompt assembly. A generous row cap; the token
-// budget in agent.BuildContext does the real trimming.
+// budget in agent.BuildContext does the real trimming. Assistant rows carry
+// their Calls and tool rows their ToolCallID so the agent can replay the
+// OpenAI tool protocol faithfully.
 func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Message, error) {
 	rows, err := d.sqlDB.QueryContext(ctx,
-		`SELECT id, conversation_id, role, content, status, token_count, created_at
+		`SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id
 		 FROM messages
 		 WHERE conversation_id = ? AND id <> ? AND status = 'complete'
 		 ORDER BY created_at ASC, id ASC LIMIT 4000`,
@@ -163,7 +170,7 @@ func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Me
 			tok     sql.NullInt64
 			created int64
 		)
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created, &m.ToolCallID); err != nil {
 			return nil, err
 		}
 		if tok.Valid {
@@ -173,7 +180,36 @@ func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Me
 		m.CreatedAt = time.Unix(created, 0)
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.attachCalls(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// attachCalls fills .Calls on assistant messages that have tool_calls rows.
+func (d *DB) attachCalls(ctx context.Context, msgs []Message) error {
+	var ids []string
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	byMsg, err := d.ToolCallsForMessages(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		if c, ok := byMsg[msgs[i].ID]; ok {
+			msgs[i].Calls = c
+		}
+	}
+	return nil
 }
 
 // ListMessages returns one page of a conversation's history in chronological
@@ -191,7 +227,7 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 		limit = 200
 	}
 	sb := strings.Builder{}
-	sb.WriteString(`SELECT id, conversation_id, role, content, status, token_count, created_at
+	sb.WriteString(`SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id
 	                 FROM messages WHERE conversation_id = ?`)
 	args := []any{convID}
 	if cursor != "" {
@@ -216,7 +252,7 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 			tok     sql.NullInt64
 			created int64
 		)
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created, &m.ToolCallID); err != nil {
 			return nil, "", err
 		}
 		if tok.Valid {
@@ -236,6 +272,9 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 	// Flip the DESC page into chronological order for the client.
 	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
 		items[i], items[j] = items[j], items[i]
+	}
+	if err := d.attachCalls(ctx, items); err != nil {
+		return nil, "", err
 	}
 	if hasMore && len(items) > 0 {
 		oldest := items[0]

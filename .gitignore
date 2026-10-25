@@ -8,3 +8,4 @@
 # Editor/OS noise
 .DS_Store
 *.swp
+/secrets.env

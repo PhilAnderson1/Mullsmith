@@ -42,6 +42,22 @@ func messageJSON(m *store.Message) map[string]any {
 	if m.TokenCount != nil {
 		j["token_count"] = *m.TokenCount
 	}
+	if m.ToolCallID != "" {
+		j["tool_call_id"] = m.ToolCallID
+	}
+	if len(m.Calls) > 0 {
+		calls := make([]map[string]any, 0, len(m.Calls))
+		for _, tc := range m.Calls {
+			calls = append(calls, map[string]any{
+				"id":        tc.LLMCallID,
+				"tool":      tc.Tool,
+				"arguments": tc.Arguments,
+				"status":    tc.Status,
+				"result":    tc.Result,
+			})
+		}
+		j["tool_calls"] = calls
+	}
 	return j
 }
 

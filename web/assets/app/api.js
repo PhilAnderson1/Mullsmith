@@ -81,4 +81,9 @@ export const api = {
   },
   abortGeneration: (id) =>
     request("POST", `/api/v1/generations/${encodeURIComponent(id)}/abort`),
+  resolveApproval: (genId, approvalId, approve) =>
+    request("POST", `/api/v1/generations/${encodeURIComponent(genId)}/approvals`, {
+      approval_id: approvalId,
+      approve,
+    }),
 };

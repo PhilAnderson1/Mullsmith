@@ -40,7 +40,7 @@ llm:
 
 tools:
   web_search:
-    enabled: false                # set true once GABKEEP_SEARCH_API_KEY exists
+    enabled: true                 # Brave key via secrets.env (GABKEEP_SEARCH_API_KEY)
     provider: "brave"
     api_key: "${GABKEEP_SEARCH_API_KEY:-}"
     max_results: 8

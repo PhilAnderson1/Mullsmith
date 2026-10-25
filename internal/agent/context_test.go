@@ -96,17 +96,17 @@ func TestBuildContextNeverDropsCurrentMessage(t *testing.T) {
 }
 
 func TestBuildContextWholeTurnGranularity(t *testing.T) {
-	// If the newest pair does not both fit, the loop stops at the first
-	// miss: no split-turn partial windows from the middle of history.
+	// Dropping stops at turn boundaries: when the newest turn does not fit
+	// alongside older ones, nothing from the middle of history leaks in —
+	// but the trailing turn itself (user + its tool furniture) is kept
+	// whole, even over budget, because a request without the current user
+	// message is meaningless and split tool groups break the protocol.
 	history := []llm.ChatMessage{
 		msg("user", strings.Repeat("m", 40)),       // 10 tokens
 		msg("assistant", strings.Repeat("m", 400)), // 100 > 60-token budget
 	}
 	out := BuildContext("", history, 100, 40)
-	// assistant (newest) alone busts the budget; but it is NOT the current
-	// user message… BuildContext keeps the last message unconditionally,
-	// then walks oldest-ward: nothing else fits.
-	if len(out) != 1 || out[0].Role != "assistant" {
-		t.Fatalf("out = %+v, want just the newest (last) message", out)
+	if len(out) != 2 || out[0].Role != "user" || out[1].Role != "assistant" {
+		t.Fatalf("out = %+v, want the whole trailing turn (user + assistant)", out)
 	}
 }
