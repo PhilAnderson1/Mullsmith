@@ -57,6 +57,10 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute must beat every display rule above it (the auth and
+   chat views set display via higher-specificity selectors). */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
