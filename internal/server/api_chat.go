@@ -365,6 +365,9 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		round++
 		am = &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
 		if err := s.store.AddMessage(genCtx, user.ID, am); err != nil {
+			if genCtx.Err() != nil {
+				break // abort/shutdown: not a storage failure, finalize below
+			}
 			s.logger.Error("placeholder for tool round failed", "error", err)
 			break
 		}
