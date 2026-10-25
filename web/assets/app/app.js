@@ -13,6 +13,9 @@ const state = {
   convCursor: "",
   query: "",
   currentId: "",
+  // one-shot: set when entering chat / new chat so selectConversation focuses
+  // the composer once the conversation is actually open (spec §10 UX).
+  focusOnOpen: false,
   currentConv: null,
   messagesCursor: "",
   inflight: null, // live generation: { controller, genId, msgId, raw, ... }
@@ -97,7 +100,7 @@ function showAuth() {
   $("#login-email").focus();
 }
 
-function enterChat(user) {
+async function enterChat(user) {
   state.me = user;
   show($("#view-auth"), false);
   show($("#view-chat"), true);
@@ -106,14 +109,28 @@ function enterChat(user) {
     location.hash = ""; // drop #login/#register leftovers
   }
   if (location.hash.startsWith("#/c/")) {
-    // Let the hash drive the initial selection.
-    onHashChange();
+    // Let the hash drive the initial selection (awaited: the auto-select
+    // below must not race an in-flight deep-link open).
+    state.focusOnOpen = true;
+    await onHashChange();
   }
   if (!state.currentId) {
     location.hash = "";
     renderConversation();
   }
-  loadConversations().catch((e) => handleErr(e, "load conversations"));
+  try {
+    await loadConversations();
+  } catch (e) {
+    handleErr(e, "load conversations");
+    return;
+  }
+  // Fresh entry without a deep link: land in the most recent conversation
+  // (the list is ordered by updated_at DESC) ready for typing.
+  if (!state.currentId && state.convs.length) {
+    state.focusOnOpen = true;
+    await selectConversation(state.convs[0].id);
+    location.hash = `#/c/${state.convs[0].id}`;
+  }
 }
 
 // --- auth view -------------------------------------------------------------------
@@ -351,6 +368,10 @@ async function selectConversation(id) {
     await loadFirstMessages();
     markActive();
     renderConversation();
+    if (state.focusOnOpen) {
+      state.focusOnOpen = false;
+      focusComposer();
+    }
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
       toast("That conversation no longer exists.");
@@ -439,6 +460,14 @@ function syncComposerButtons() {
   const busy = Boolean(state.inflight);
   $("#btn-send").disabled = busy || !state.currentId;
   $("#btn-stop").hidden = !busy;
+}
+
+function focusComposer() {
+  // On phones focusing the composer pops the soft keyboard over the thread;
+  // the keyboard pops naturally when the user taps to type anyway.
+  if (isPhone()) return;
+  const input = $("#composer-input");
+  if (!input.disabled) input.focus({ preventScroll: true });
 }
 
 function autosizeComposer() {
@@ -972,6 +1001,10 @@ async function newChat() {
     const list = $("#conv-list");
     list.prepend(convRow(c));
     markActive();
+    // Open directly (awaited) so the composer is enabled and focused before
+    // the hashchange round-trip; the later handler call is a no-op.
+    state.focusOnOpen = true;
+    await selectConversation(c.id);
     location.hash = `#/c/${c.id}`;
     if (isPhone()) closeDrawer();
   } catch (err) {
