@@ -131,12 +131,23 @@ type Database struct {
 	Dir string `yaml:"dir"`
 }
 
+// defaultBlockExtensions: §9.4 active-content types; scratchpad.block_extensions
+// in config appends to this list.
+var defaultBlockExtensions = []string{
+	".html", ".htm", ".svg", ".xhtml", ".xml", ".js", ".exe", ".sh", ".bat",
+	".cmd", ".com", ".scr", ".jar", ".vbs", ".ps1", ".apk", ".dmg",
+}
+
 type Scratchpad struct {
-	Root        string        `yaml:"root"`
-	MaxFileSize Size          `yaml:"max_file_size"`
-	UserQuota   Size          `yaml:"user_quota"`
-	ArtifactTTL Duration      `yaml:"artifact_ttl"`
-	CodeExec    CodeExecution `yaml:"code_execution"`
+	Root        string   `yaml:"root"`
+	MaxFileSize Size     `yaml:"max_file_size"`
+	UserQuota   Size     `yaml:"user_quota"`
+	ArtifactTTL Duration `yaml:"artifact_ttl"`
+	// BlockExtensions rejects uploads whose (final) extension matches —
+	// active-content types that must never sit in a user's uploads dir
+	// (§9.4). Config values extend the built-in default list.
+	BlockExtensions []string      `yaml:"block_extensions"`
+	CodeExec        CodeExecution `yaml:"code_execution"`
 }
 
 type CodeExecution struct {
@@ -327,6 +338,26 @@ func (c *Config) setDefaults() {
 	if c.Scratchpad.ArtifactTTL == 0 {
 		c.Scratchpad.ArtifactTTL = Duration(168 * time.Hour)
 	}
+	// §9.4: config entries EXTEND the built-in active-content blocklist.
+	{
+		seen := map[string]bool{}
+		merged := make([]string, 0, len(defaultBlockExtensions)+len(c.Scratchpad.BlockExtensions))
+		for _, e := range append(append([]string{}, defaultBlockExtensions...),
+			c.Scratchpad.BlockExtensions...) {
+			e = strings.ToLower(strings.TrimSpace(e))
+			if e == "" {
+				continue
+			}
+			if !strings.HasPrefix(e, ".") {
+				e = "." + e
+			}
+			if !seen[e] {
+				seen[e] = true
+				merged = append(merged, e)
+			}
+		}
+		c.Scratchpad.BlockExtensions = merged
+	}
 	if c.Scratchpad.CodeExec.Mode == "" {
 		c.Scratchpad.CodeExec.Mode = "isolated"
 	}
@@ -370,7 +401,7 @@ func (c *Config) setDefaults() {
 		c.Tools.Agent.Approval = map[string]string{}
 	}
 	for tool, def := range map[string]string{
-		"web_search": "auto", "web_fetch": "auto", "fs_read": "auto",
+		"web_search": "auto", "web_fetch": "auto", "fs_list": "auto", "fs_read": "auto",
 		"fs_write": "auto", "files_share": "auto", "code_run": "confirm",
 	} {
 		if _, ok := c.Tools.Agent.Approval[tool]; !ok {
