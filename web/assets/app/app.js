@@ -426,6 +426,29 @@ function autosizeComposer() {
   el.style.height = Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.3)) + "px";
 }
 
+// The composer entry point: optimistic user bubble, then the streamed reply.
+// The rollback restores the draft if the server rejects before starting.
+async function sendFromComposer() {
+  const input = $("#composer-input");
+  const text = input.value;
+  if (!state.currentId || state.inflight || !text.trim()) return;
+  const placeholder = $("#thread .empty-state");
+  if (placeholder) placeholder.remove();
+  const userEl = appendUserBubble(text.trim());
+  input.value = "";
+  autosizeComposer();
+  await startGeneration(
+    `/api/v1/conversations/${encodeURIComponent(state.currentId)}/messages`,
+    { content: text.trim() },
+    () => {
+      userEl.remove();
+      input.value = text;
+      autosizeComposer();
+      input.focus();
+    }
+  );
+}
+
 function appendUserBubble(text) {
   const el = msgNode({
     role: "user",
