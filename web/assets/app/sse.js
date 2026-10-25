@@ -85,6 +85,9 @@ function handleFrame(frame, h) {
     case "error":
       h.onError && h.onError(data);
       break;
+    case "title":
+      h.onTitle && h.onTitle(data);
+      break;
     case "done":
       h.onDone && h.onDone(data);
       break;

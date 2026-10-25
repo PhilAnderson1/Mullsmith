@@ -8,11 +8,13 @@ import (
 )
 
 // sseConn writes Server-Sent Events frames (spec §6.1 step 4). All writes go
-// through one mutex so the heartbeat cannot interleave with token frames.
+// through one mutex so the heartbeat and the auto-titler cannot interleave
+// with token frames.
 type sseConn struct {
-	w  http.ResponseWriter
-	rc *http.ResponseController
-	mu sync.Mutex
+	w      http.ResponseWriter
+	rc     *http.ResponseController
+	mu     sync.Mutex
+	closed bool
 }
 
 // newSSE sets streaming headers, lifts the server-wide write deadline for
@@ -39,6 +41,9 @@ func (c *sseConn) Event(name string, data any) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return http.ErrHandlerTimeout
+	}
 	frame := append([]byte("event: "+name+"\ndata: "), b...)
 	frame = append(frame, '\n', '\n')
 	if _, err := c.w.Write(frame); err != nil {
@@ -47,11 +52,23 @@ func (c *sseConn) Event(name string, data any) error {
 	return c.rc.Flush()
 }
 
+// Close marks the connection finished so late background writers (the
+// auto-titler) fail fast instead of writing into a recycled ResponseWriter.
+// The handler calls it just before returning, after the done event.
+func (c *sseConn) Close() {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+}
+
 // Comment writes an SSE comment line (": ping") — keeps proxies warm and
 // reveals dead clients through a write error.
 func (c *sseConn) Comment(text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return http.ErrHandlerTimeout
+	}
 	if _, err := c.w.Write([]byte(": " + text + "\n\n")); err != nil {
 		return err
 	}

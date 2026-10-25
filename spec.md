@@ -375,9 +375,16 @@ registration mode — used by the login/register screens), everything else behin
    - append tool result to messages, re-invoke the model; loop up to `max_tool_rounds`.
 6. Persist final assistant message; bump `conversations.updated_at`; emit `done`
    (with token usage estimates) and close SSE.
+7. **Auto-title** (alongside the first exchange of a conversation still named
+   `New chat`): a small non-streaming side request to the model turns the first user
+   message into a ≤5-word topic. Written only if the row is still unnamed (a guarded
+   `UPDATE` — the user's own rename always wins), then emitted as a `title` event so
+   the sidebar updates live. Strictly best-effort: any failure leaves the placeholder
+   and retries on the next message; regenerate never retitles.
 
-Event taxonomy (SSE `event:` field): `token`, `tool_start`, `tool_args`, `tool_end`,
-`awaiting_approval`, `artifact`, `error`, `done`.
+Event taxonomy (SSE `event:` field): `start`, `token`, `reasoning`, `title`,
+`tool_start`, `tool_args`, `tool_end`, `awaiting_approval`, `artifact`, `error`,
+`done`.
 
 ### 6.2 LLM client requirements
 

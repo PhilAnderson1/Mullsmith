@@ -42,8 +42,9 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the user turn first (spec §6.1 step 1), then stream.
-	s.streamAssistant(w, r, conv, func(bg context.Context) error {
+	// Persist the user turn first (spec §6.1 step 1), then stream. The user
+	// text also seeds auto-titling when the conversation is still unnamed.
+	s.streamAssistant(w, r, conv, content, func(bg context.Context) error {
 		return s.store.AddMessage(bg, user.ID, &store.Message{
 			ConversationID: conv.ID, Role: "user", Content: content,
 			TokenCount: int64ptr(int64(agent.EstimateTokens(content))),
@@ -79,8 +80,9 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// streamAssistant secures the per-conversation slot BEFORE prepare runs,
-	// so a 409 leaves the existing reply untouched.
-	s.streamAssistant(w, r, conv, func(bg context.Context) error {
+	// so a 409 leaves the existing reply untouched. Regeneration never
+	// retitles: the conversation already has its name.
+	s.streamAssistant(w, r, conv, "", func(bg context.Context) error {
 		return s.store.DeleteMessage(bg, m.ID)
 	})
 }
@@ -103,11 +105,14 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 // or regenerate delete), creates the streaming placeholder, then pumps SSE
 // until completion, abort or upstream failure.
 //
+// autoTitle is the user text that may name an still-unnamed conversation
+// (empty from regenerate; see nameConversation).
+//
 // All persistence happens on a context detached from the browser request so
 // that disconnect-triggered aborts can still save the partial answer
 // (spec §6.2).
 func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
-	conv *store.Conversation, prepare func(bg context.Context) error,
+	conv *store.Conversation, autoTitle string, prepare func(bg context.Context) error,
 ) {
 	user := UserFrom(r.Context())
 
@@ -176,8 +181,23 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		"message_id":      am.ID,
 		"conversation_id": conv.ID,
 	}); err != nil {
+		conn.Close()
 		s.finishMessage(genCtx, am.ID, "", "aborted", 0)
 		return
+	}
+
+	// Auto-title quest (spec §12): name the conversation from this first
+	// message while the reply streams. Runs on its own context so a browser
+	// disconnect cannot strand the rename; the store write is guarded so a
+	// user's manual rename always wins.
+	titleDone := make(chan struct{})
+	if autoTitle != "" && (conv.Title == "" || conv.Title == store.DefaultTitle) {
+		go func() {
+			defer close(titleDone)
+			s.nameConversation(conv, autoTitle, conn)
+		}()
+	} else {
+		close(titleDone)
 	}
 
 	// Heartbeat every 15 s: keeps proxies warm and surfaces dead clients via
@@ -224,11 +244,41 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			"request_id": RequestIDFrom(r.Context()),
 		})
 	}
+	// Give an in-flight title quest a short grace period so its event
+	// arrives before EOF (the client stops reading at EOF). Beyond that the
+	// rename still lands in the database; the browser sees it on next load.
+	select {
+	case <-titleDone:
+	case <-time.After(3 * time.Second):
+	}
 	_ = conn.Event("done", map[string]any{
 		"message_id":   am.ID,
 		"status":       res.Status,
 		"usage_tokens": res.Usage,
 	})
+	conn.Close()
+}
+
+// nameConversation asks the model for a topic title for conv, stores it if
+// the conversation is still unnamed, and announces it over the live stream
+// when possible. Purely best-effort: every failure only means the chat
+// keeps its placeholder title and gets retried on the next message.
+func (s *Server) nameConversation(conv *store.Conversation, firstUser string, conn *sseConn) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	title, err := s.generator.Title(ctx, conv.Model, firstUser)
+	if err != nil {
+		s.logger.Info("auto-title skipped", "conversation", conv.ID, "error", err)
+		return
+	}
+	ok, err := s.store.SetTitleIfDefault(ctx, conv.ID, title)
+	if err != nil || !ok {
+		if err != nil {
+			s.logger.Warn("auto-title store write failed", "conversation", conv.ID, "error", err)
+		}
+		return
+	}
+	_ = conn.Event("title", map[string]any{"conversation_id": conv.ID, "title": title})
 }
 
 // finishMessage persists the final state on a short background context: the

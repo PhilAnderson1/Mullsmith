@@ -255,6 +255,16 @@ function convRow(c) {
   return li;
 }
 
+// applyTitle reflects a server-generated title (SSE "title" event) into the
+// list row, the cached conversation object and the topbar, without a reload.
+function applyTitle(id, title) {
+  const c = state.convs.find((x) => x.id === id);
+  if (c) c.title = title;
+  const row = document.querySelector(`#conv-list .conv-item[data-id="${CSS.escape(id)}"]`);
+  if (row) row.querySelector(".conv-title").textContent = title;
+  if (id === state.currentId) $("#topbar-title").textContent = title;
+}
+
 async function loadConversations() {
   const data = await api.listConversations(state.query, "");
   state.convs = data.items;
@@ -538,6 +548,9 @@ async function startGeneration(url, body, rollback) {
         },
         onError(d) {
           st.errorData = d;
+        },
+        onTitle(d) {
+          if (d.title) applyTitle(d.conversation_id || state.currentId, d.title);
         },
         onDone(d) {
           finishGeneration(st, d);

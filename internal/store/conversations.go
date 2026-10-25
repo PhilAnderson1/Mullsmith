@@ -60,12 +60,16 @@ func escapeLike(q string) string {
 
 // --- conversations -----------------------------------------------------------
 
+// DefaultTitle is the placeholder a conversation carries until its first
+// exchange names it (auto-titling) or the user renames it.
+const DefaultTitle = "New chat"
+
 func (d *DB) CreateConversation(ctx context.Context, c *Conversation) error {
 	if c.ID == "" {
 		c.ID = id.New()
 	}
 	if c.Title == "" {
-		c.Title = "New chat"
+		c.Title = DefaultTitle
 	}
 	now := time.Now()
 	if c.CreatedAt.IsZero() {
@@ -144,6 +148,21 @@ func (d *DB) UpdateConversation(ctx context.Context, userID, convID string, p Co
 
 // SoftDeleteConversation stamps deleted_at; returns ErrConversationNotFound
 // when there is nothing live to delete.
+// SetTitleIfDefault names a conversation that is still unnamed. The guard
+// runs inside the UPDATE so a title the user typed (rename) can never be
+// overwritten by the concurrent auto-titler. Reports whether it wrote.
+func (d *DB) SetTitleIfDefault(ctx context.Context, convID, title string) (bool, error) {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE conversations SET title = ?, updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL AND (title = '' OR title = ?)`,
+		title, time.Now().Unix(), convID, DefaultTitle)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 func (d *DB) SoftDeleteConversation(ctx context.Context, userID, convID string) error {
 	res, err := d.sqlDB.ExecContext(ctx,
 		`UPDATE conversations SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
