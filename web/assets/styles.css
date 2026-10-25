@@ -193,6 +193,8 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   padding-top: calc(0.35rem + env(safe-area-inset-top));
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
+  min-width: 0; /* grid items default to min-width:auto: the nowrap topbar
+                   children used to stretch the whole app past 320 px (§10.1) */
 }
 .topbar-title {
   font-weight: 700;
@@ -202,7 +204,7 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.model-picker { width: auto; max-width: 34vw; padding: 0.35rem 0.5rem; }
+.model-picker { width: auto; min-width: 0; max-width: 34vw; padding: 0.35rem 0.5rem; }
 .topbar > :nth-child(4) { margin-left: auto; }
 .user-chip {
   color: var(--fg-muted);
@@ -289,6 +291,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0; /* same grid auto-min-size trap as .topbar (§10.1) */
 }
 
 .thread {
@@ -347,6 +350,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .composer textarea {
   flex: 1;
+  min-width: 0; /* allow shrinking below the placeholder's intrinsic width */
   resize: none;
   max-height: 30vh;
   min-height: var(--tap);
@@ -402,6 +406,13 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 
 @media (min-width: 640px) {
   .model-picker { max-width: 24vw; }
+}
+
+/* Phone: the identity chip and title compete for the same 320 px; the
+   sidebar (drawer) shows the user, so the chip yields. */
+@media (max-width: 639px) {
+  .user-chip { display: none; }
+  .model-picker { max-width: 30vw; }
 }
 
 /* ---------- desktop ≥1024: persistent sidebar grid ---------- */
