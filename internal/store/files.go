@@ -67,6 +67,29 @@ func (d *DB) CreateFile(ctx context.Context, f *File) error {
 	return err
 }
 
+// FindArtifactByPath returns the newest artifact row for user+rel_path —
+// files_share dedupe so re-sharing a rewritten file refreshes one row instead
+// of accumulating duplicates. Returns ErrFileNotFound when absent.
+func (d *DB) FindArtifactByPath(ctx context.Context, userID, relPath string) (File, error) {
+	f, err := scanFile(d.sqlDB.QueryRowContext(ctx,
+		`SELECT `+fileCols+` FROM files WHERE user_id = ? AND kind = 'artifact' AND rel_path = ?
+		 ORDER BY created_at DESC, id DESC LIMIT 1`, userID, relPath))
+	if errors.Is(err, ErrNoRows) {
+		return f, ErrFileNotFound
+	}
+	return f, err
+}
+
+// UpdateArtifactOnShare refreshes size/hash and slides the TTL window forward
+// (§8: artifact_ttl expires from last use).
+func (d *DB) UpdateArtifactOnShare(ctx context.Context, fileID, mediaType string,
+	size int64, sha256 []byte, expiresAt time.Time) error {
+	_, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE files SET media_type = ?, size = ?, sha256 = ?, expires_at = ? WHERE id = ?`,
+		mediaType, size, sha256, expiresAt.Unix(), fileID)
+	return err
+}
+
 // GetFileForUser fetches a file scoped to its owner — a different user's id
 // is indistinguishable from a nonexistent one (§9.2).
 func (d *DB) GetFileForUser(ctx context.Context, userID, fileID string) (File, error) {

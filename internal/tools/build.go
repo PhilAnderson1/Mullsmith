@@ -11,8 +11,9 @@ import (
 // BuildFor assembles the registry from config (§7.1: registration is driven
 // by tools.*.enabled). Disabled or misconfigured tools are skipped with a
 // log line — the chat still runs, just without that capability (§14:
-// search stays disabled until the key exists).
-func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client) *Registry {
+// search stays disabled until the key exists). The fs_* tools ride the
+// scratchpad and are always available; files_share needs an ArtifactSink.
+func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client, artifacts ArtifactSink) *Registry {
 	reg := NewRegistry(func(name string) string {
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {
 			return p
@@ -44,6 +45,16 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 			timeout = 15 * time.Second
 		}
 		reg.Register(NewWebFetch(NewGuardedClient(timeout), int64(cfg.Tools.WebFetch.MaxBytes)))
+	}
+
+	// Scratchpad file tools (§7.2): always available, the root exists by
+	// construction (config validation + EnsureDirs at startup).
+	reg.Register(FsList{})
+	reg.Register(FsRead{})
+	reg.Register(FsWrite{UserQuota: int64(cfg.Scratchpad.UserQuota)})
+	reg.Register(FsDelete{})
+	if artifacts != nil {
+		reg.Register(FilesShare{Sink: artifacts})
 	}
 
 	if reg.Enabled() {

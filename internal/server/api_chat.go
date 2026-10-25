@@ -521,7 +521,8 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	started := time.Now()
 	execCtx, execCancel := context.WithTimeout(ctx, 30*time.Second)
 	tres, err := tool.Execute(execCtx, tools.Invocation{
-		UserID: userID, LLMCallID: callID, Arguments: call.Function.Arguments,
+		UserID: userID, Conversation: convID, LLMCallID: callID,
+		Arguments: call.Function.Arguments, Scratchpad: s.cfg.Scratchpad.Root,
 	})
 	execCancel()
 	dur := time.Since(started).Milliseconds()

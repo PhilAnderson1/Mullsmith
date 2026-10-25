@@ -287,7 +287,7 @@ func TestChatContextSentUpstream(t *testing.T) {
 		t.Errorf("upstream model/stream = %q/%v", last.Model, last.Stream)
 	}
 	if len(last.Messages) != 2 || last.Messages[0].Role != "system" ||
-		last.Messages[0].Content != "Be terse." || last.Messages[1].Content != "first question" {
+		!strings.HasPrefix(last.Messages[0].Content, "Be terse.") || last.Messages[1].Content != "first question" {
 		t.Errorf("turn 1 messages = %+v", last.Messages)
 	}
 

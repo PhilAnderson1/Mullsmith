@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -84,17 +83,7 @@ func uploadExtension(name string, blocked []string) (string, bool) {
 	return ext, false
 }
 
-// diskFloorOK reports whether free space above root is above the 5% floor
-// (§9.7); stat failures fail open here — quota still bounds growth.
-func diskFloorOK(dir string) bool {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return true
-	}
-	total := st.Blocks * uint64(st.Bsize)
-	free := st.Bavail * uint64(st.Bsize)
-	return total == 0 || free*20 >= total // free >= 5 %
-}
+// diskFloorOK moved to scratch.DiskFloorOK (§9.7, shared with the fs tools).
 
 func fileJSON(f *store.File) map[string]any {
 	j := map[string]any{
@@ -118,7 +107,7 @@ func fileJSON(f *store.File) map[string]any {
 // because the applicable cap is max_file_size, not max_body_bytes).
 func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
-	if !diskFloorOK(s.cfg.Scratchpad.Root) {
+	if !scratch.DiskFloorOK(s.cfg.Scratchpad.Root) {
 		writeAPIError(w, r, http.StatusServiceUnavailable, "storage_low", "server storage is nearly full")
 		return
 	}
@@ -212,7 +201,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	// Re-check the floor after landing bytes: refuse service for the next
 	// upload rather than corrupt state mid-write (§9.7).
-	if !diskFloorOK(s.cfg.Scratchpad.Root) {
+	if !scratch.DiskFloorOK(s.cfg.Scratchpad.Root) {
 		s.logger.Warn("disk floor breached right after upload", "rid", RequestIDFrom(r.Context()))
 	}
 

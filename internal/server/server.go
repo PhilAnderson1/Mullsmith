@@ -47,7 +47,9 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *
 		locks:     auth.NewLoginLocks(),
 		gens:      newGenRegistry(),
 		generator: &agent.Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)},
-		tools:     tools.BuildFor(cfg, logger, nil),
+		tools: tools.BuildFor(cfg, logger, nil, &artifactSink{
+			db: db, ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),
+		}),
 	}
 
 	mux := http.NewServeMux()
