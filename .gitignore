@@ -9,3 +9,8 @@
 .DS_Store
 *.swp
 /secrets.env
+
+# curl cookie jars and scratch
+j.txt
+*.cookiejar
+cookies.txt
