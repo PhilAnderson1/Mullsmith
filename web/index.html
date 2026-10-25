@@ -94,12 +94,15 @@
         <div class="empty-state" id="empty-state">
           <h2>Gabkeep</h2>
           <p>Pick a conversation on the left or start a new one.</p>
-          <p class="muted">Message streaming lands in milestone M3.</p>
+          <p class="muted">Everything stays on this server, yours alone.</p>
         </div>
       </div>
       <div class="composer">
-        <textarea id="composer-input" rows="1" placeholder="Chat streaming arrives in M3" disabled></textarea>
-        <button id="btn-send" class="btn primary" disabled title="Wired in milestone M3">Send</button>
+        <textarea id="composer-input" rows="1" placeholder="Start or pick a chat first" disabled></textarea>
+        <button id="btn-stop" class="icon-btn stop-btn" type="button" title="Stop generating" aria-label="Stop generating" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
+        </button>
+        <button id="btn-send" class="btn primary" disabled>Send</button>
       </div>
     </main>
   </div>
@@ -137,6 +140,11 @@
       <header class="msg-meta"><span class="msg-role"></span><time class="msg-time"></time></header>
       <div class="msg-body"></div>
       <p class="muted msg-status" hidden></p>
+      <div class="msg-actions">
+        <button class="icon-btn tiny regen-btn" type="button" aria-label="Regenerate reply" title="Regenerate">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1M20.5 4v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        </button>
+      </div>
     </article>
   </template>
 

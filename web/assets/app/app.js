@@ -1,9 +1,10 @@
-// Gabkeep SPA shell — M2: auth screens + conversation management.
-// Message streaming, markdown, tools and files arrive in M3+.
-// No framework, no build step (spec §10). DOM helpers are local; views are
-// plain functions over a single state object.
+// Gabkeep SPA — M3: auth, conversations and live streamed chat.
+// Tools and files arrive in M4/M5. No framework, no build step (spec §10).
+// DOM helpers are local; views are plain functions over a single state object.
 
 import { api, ApiError } from "/assets/app/api.js";
+import { streamChat } from "/assets/app/sse.js";
+import { renderMarkdown } from "/assets/app/markdown.js";
 
 const state = {
   meta: null,
@@ -14,6 +15,7 @@ const state = {
   currentId: "",
   currentConv: null,
   messagesCursor: "",
+  inflight: null, // live generation: { controller, genId, msgId, raw, ... }
 };
 
 // --- tiny DOM helpers -------------------------------------------------------
@@ -86,6 +88,7 @@ function cycleTheme() {
 // --- view switching ------------------------------------------------------------
 
 function showAuth() {
+  abandonInflight();
   state.me = null;
   state.currentId = "";
   show($("#view-chat"), false);
@@ -236,6 +239,7 @@ function convRow(c) {
   li.querySelector(".conv-delete-btn").addEventListener("click", async () => {
     const ok = await confirmDialog(`Delete "${c.title}"?`);
     if (!ok) return;
+    if (c.id === state.currentId) await abandonInflight();
     try {
       await api.deleteConversation(c.id);
       li.remove();
@@ -283,23 +287,44 @@ function markActive() {
 function msgNode(m) {
   const el = clone("tpl-message");
   el.classList.add(m.role === "user" ? "from-user" : "from-assistant");
-  el.querySelector(".msg-role").textContent =
-    m.role === "user" ? "You" : m.role[0].toUpperCase() + m.role.slice(1);
+  el.dataset.id = m.id || "";
+  el.querySelector(".msg-role").textContent = m.role === "user" ? "You" : "Gabkeep";
   const time = el.querySelector("time");
   time.dateTime = m.created_at;
   time.textContent = new Date(m.created_at).toLocaleString();
-  // Plain text for now (M2). Markdown rendering — sanitized — arrives in M3.
-  el.querySelector(".msg-body").textContent = m.content;
-  if (m.status !== "complete") {
-    const st = el.querySelector(".msg-status");
-    st.textContent = `status: ${m.status}`;
-    show(st, true);
+
+  const body = el.querySelector(".msg-body");
+  if (m.role === "assistant" && m.content) {
+    body.classList.add("md");
+    body.append(renderMarkdown(m.content)); // XSS-safe: DOM-only builder
+  } else {
+    body.textContent = m.content;
+  }
+
+  if (m.status === "aborted") {
+    showStatusNote(el, "Stopped before finishing.");
+  } else if (m.status === "error") {
+    showStatusNote(el, "The model endpoint failed for this reply.");
+  } else if (m.status && m.status !== "complete") {
+    showStatusNote(el, `status: ${m.status}`);
+  }
+
+  const regen = el.querySelector(".regen-btn");
+  if (regen && m.role === "assistant" && m.id) {
+    regen.addEventListener("click", () => regenerateFrom(el, m.id));
   }
   return el;
 }
 
+function showStatusNote(el, text) {
+  const st = el.querySelector(".msg-status");
+  st.textContent = text;
+  show(st, true);
+}
+
 async function selectConversation(id) {
   if (id === state.currentId) return;
+  await abandonInflight(); // a live stream belongs to the old thread
   try {
     state.currentConv = await api.getConversation(id);
     state.currentId = id;
@@ -330,6 +355,7 @@ async function loadFirstMessages() {
     for (const m of data.items) thread.appendChild(msgNode(m));
   }
   state.messagesCursor = data.next_cursor;
+  refreshLastAssistant();
   scrollThreadToBottom();
 }
 
@@ -349,6 +375,7 @@ function earlierButton(cursor) {
       const ref = nextBtn ? nextBtn.nextSibling : host.firstChild;
       for (const m of data.items) host.insertBefore(msgNode(m), ref);
       state.messagesCursor = data.next_cursor;
+      refreshLastAssistant();
     } catch (err) {
       handleErr(err, "load earlier messages");
     }
@@ -361,12 +388,246 @@ function scrollThreadToBottom() {
   t.scrollTop = t.scrollHeight;
 }
 
+// --- live generation (spec §6.1 streaming, §6.2 abort) ------------------------
+
+function isNearBottom() {
+  const t = $("#thread");
+  return t.scrollHeight - t.scrollTop - t.clientHeight < 90;
+}
+
+function maybeScroll(force = false) {
+  if (force || isNearBottom()) scrollThreadToBottom();
+}
+
+// Only the newest finished assistant bubble offers regenerate.
+function refreshLastAssistant() {
+  const thread = $("#thread");
+  for (const el of thread.querySelectorAll(".msg")) el.classList.remove("last-assistant");
+  const msgs = thread.querySelectorAll(".msg");
+  const last = msgs[msgs.length - 1];
+  if (
+    last &&
+    last.classList.contains("from-assistant") &&
+    !last.querySelector(".msg-body.streaming")
+  ) {
+    last.classList.add("last-assistant");
+  }
+}
+
+function syncComposerButtons() {
+  const busy = Boolean(state.inflight);
+  $("#btn-send").disabled = busy || !state.currentId;
+  $("#btn-stop").hidden = !busy;
+}
+
+function autosizeComposer() {
+  const el = $("#composer-input");
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.3)) + "px";
+}
+
+function appendUserBubble(text) {
+  const el = msgNode({
+    role: "user",
+    content: text,
+    status: "complete",
+    created_at: new Date().toISOString(),
+  });
+  $("#thread").append(el);
+  maybeScroll(true);
+  return el;
+}
+
+function streamNode() {
+  const el = clone("tpl-message");
+  el.classList.add("from-assistant");
+  el.querySelector(".msg-role").textContent = "Gabkeep";
+  const time = el.querySelector("time");
+  const now = new Date();
+  time.dateTime = now.toISOString();
+  time.textContent = now.toLocaleString();
+  el.querySelector(".msg-body").classList.add("streaming");
+  return el;
+}
+
+// Collapsed-by-default chain-of-thought disclosure (only when the server
+// streams reasoning at all — llm.show_reasoning, spec §6.2).
+function ensureThinking(st) {
+  if (st.nodes.think) return;
+  const d = document.createElement("details");
+  d.className = "thinking";
+  d.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = "Thinking…";
+  const pre = document.createElement("pre");
+  d.append(summary, pre);
+  st.nodes.body.parentNode.insertBefore(d, st.nodes.body);
+  st.nodes.think = d;
+  st.nodes.thinkPre = pre;
+  st.nodes.thinkSummary = summary;
+}
+
+/**
+ * Run one assistant turn against `url` and stream it into the thread.
+ * `rollback` undoes optimistic UI when the server rejects before starting.
+ */
+async function startGeneration(url, body, rollback) {
+  const controller = new AbortController();
+  const st = {
+    controller,
+    genId: "",
+    msgId: "",
+    raw: "",
+    reasoning: "",
+    started: false,
+    errorData: null,
+    nodes: null,
+  };
+  state.inflight = st;
+  syncComposerButtons();
+  try {
+    await streamChat(
+      url,
+      body,
+      {
+        onStart(d) {
+          st.started = true;
+          st.genId = d.generation_id || "";
+          st.msgId = d.message_id || "";
+          const el = streamNode();
+          $("#thread").append(el);
+          st.nodes = { el, body: el.querySelector(".msg-body") };
+          maybeScroll(true);
+        },
+        onToken(t) {
+          st.raw += t;
+          if (st.nodes) {
+            st.nodes.body.textContent = st.raw; // plain text while streaming
+            maybeScroll();
+          }
+        },
+        onReasoning(t) {
+          st.reasoning += t;
+          if (!state.meta || !state.meta.show_reasoning || !st.nodes) return;
+          ensureThinking(st);
+          st.nodes.thinkPre.textContent = st.reasoning;
+          maybeScroll();
+        },
+        onError(d) {
+          st.errorData = d;
+        },
+        onDone(d) {
+          finishGeneration(st, d);
+        },
+      },
+      controller.signal
+    );
+    // Upstream closed cleanly but never said done: treat as interrupted.
+    if (state.inflight === st) finishGeneration(st, { status: "lost" });
+  } catch (err) {
+    if (err.name === "AbortError") return; // deliberately abandoned
+    if (err instanceof ApiError && err.status === 401) {
+      state.inflight = null;
+      syncComposerButtons();
+      handleErr(err, "send");
+      return;
+    }
+    if (st.started) {
+      finishGeneration(st, { status: "lost" });
+    } else {
+      if (rollback) rollback();
+      toast(err.message || "Could not start a reply.");
+      state.inflight = null;
+      syncComposerButtons();
+    }
+  }
+}
+
+function finishGeneration(st, done) {
+  if (state.inflight !== st) return; // abandoned mid-flight; bubble is gone
+  state.inflight = null;
+  syncComposerButtons();
+  const nodes = st.nodes;
+  if (!nodes) return;
+  if (nodes.think) {
+    nodes.think.open = false;
+    nodes.thinkSummary.textContent = "Thought process";
+  }
+  nodes.body.classList.remove("streaming");
+  nodes.body.classList.add("md");
+  nodes.body.replaceChildren(renderMarkdown(st.raw)); // full markdown once done
+  const status = done.status || "";
+  if (status === "aborted") {
+    showStatusNote(nodes.el, "Stopped.");
+  } else if (status === "error") {
+    showStatusNote(
+      nodes.el,
+      (st.errorData && st.errorData.message) || "The model endpoint failed; use regenerate to retry."
+    );
+  } else if (status === "lost") {
+    showStatusNote(nodes.el, "Connection lost — the reply was interrupted.");
+  }
+  nodes.el.dataset.id = done.message_id || st.msgId || "";
+  refreshLastAssistant();
+  maybeScroll();
+}
+
+async function stopStream() {
+  const st = state.inflight;
+  if (!st) return;
+  $("#btn-stop").disabled = true;
+  try {
+    // Server-side abort persists the partial answer and closes with done.
+    await api.abortGeneration(st.genId);
+  } catch {
+    st.controller.abort(); // endpoint gone anyway: just detach the stream
+  } finally {
+    $("#btn-stop").disabled = false;
+  }
+}
+
+async function regenerateFrom(el, msgId) {
+  if (state.inflight || !msgId) return;
+  el.remove();
+  await startGeneration(
+    `/api/v1/messages/${encodeURIComponent(msgId)}/regenerate`,
+    undefined,
+    () => loadFirstMessages().catch((e) => handleErr(e, "reload messages"))
+  );
+}
+
+// Stop the running generation (the UI thread is going away). Null the
+// inflight state first so finishGeneration leaves the old bubbles alone.
+async function abandonInflight() {
+  const st = state.inflight;
+  if (!st) return;
+  state.inflight = null;
+  if (st.genId) {
+    try {
+      await api.abortGeneration(st.genId);
+    } catch {
+      /* already finished or gone */
+    }
+  }
+  st.controller.abort();
+  syncComposerButtons();
+}
+
 function renderConversation() {
   const c = state.currentId ? state.currentConv : null;
   $("#topbar-title").textContent = c ? c.title : "Gabkeep";
   const sel = $("#model-picker");
   sel.disabled = !state.currentId;
   if (c) sel.value = c.model;
+
+  const input = $("#composer-input");
+  input.disabled = !state.currentId;
+  input.placeholder = state.currentId
+    ? "Message Gabkeep… (Enter sends, Shift+Enter newline)"
+    : "Start or pick a chat first";
+  if (!state.currentId) input.value = "";
+  syncComposerButtons();
+
   if (!state.currentId) {
     state.currentConv = null;
     $("#thread").replaceChildren(initialEmptyState());
@@ -382,7 +643,7 @@ function initialEmptyState() {
   p1.textContent = "Pick a conversation on the left or start a new one.";
   const p2 = document.createElement("p");
   p2.className = "muted";
-  p2.textContent = "Message streaming lands in milestone M3.";
+  p2.textContent = "Everything stays on this server, yours alone.";
   el.append(h, p1, p2);
   return el;
 }
@@ -390,6 +651,7 @@ function initialEmptyState() {
 // --- new chat / model picker -------------------------------------------------------------
 
 async function newChat() {
+  await abandonInflight();
   try {
     const c = await api.createConversation("");
     state.convs.unshift(c);
@@ -453,6 +715,7 @@ function onHashChange() {
   if (m) {
     selectConversation(m[1]);
   } else if (state.currentId && location.hash === "") {
+    abandonInflight();
     state.currentId = "";
     renderConversation();
   }
@@ -479,6 +742,16 @@ async function boot() {
     document.body.classList.contains("drawer-open") ? closeDrawer() : openDrawer()
   );
   $("#backdrop").addEventListener("click", closeDrawer);
+  $("#btn-send").addEventListener("click", () => sendFromComposer());
+  $("#btn-stop").addEventListener("click", stopStream);
+  $("#composer-input").addEventListener("input", autosizeComposer);
+  $("#composer-input").addEventListener("keydown", (ev) => {
+    // Enter sends, Shift+Enter inserts a newline; IME composition excluded.
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+      ev.preventDefault();
+      sendFromComposer();
+    }
+  });
   $("#conv-search").addEventListener(
     "input",
     debounce((ev) => {

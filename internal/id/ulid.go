@@ -1,28 +1,59 @@
 // Package id generates ULIDs — 128-bit, time-ordered, Crockford-base32
 // identifiers (spec §4). The time component makes ids sortable by creation;
 // the 80-bit random component comes from crypto/rand.
+//
+// Within a process the ids are strictly monotonic: ids minted in the same
+// millisecond (or during a clock rewind) increment the entropy instead of
+// re-rolling it, so "newer row has the larger id" always holds. Message
+// ordering (created_at DESC, id DESC) relies on that when two rows land in
+// the same unix second.
 package id
 
 import (
 	"crypto/rand"
+	"sync"
 	"time"
 )
 
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-// New returns a new ULID (26 characters).
+var (
+	mu      sync.Mutex
+	lastMS  int64
+	entropy [10]byte
+)
+
+// New returns a new ULID (26 characters), strictly greater than any id this
+// process returned before.
 func New() string {
+	mu.Lock()
+	defer mu.Unlock()
+
+	ms := time.Now().UnixMilli()
+	if ms <= lastMS {
+		// Same millisecond (or clock skew): bump the big-endian entropy.
+		ms = lastMS
+		for i := len(entropy) - 1; i >= 0; i-- {
+			entropy[i]++
+			if entropy[i] != 0 {
+				break
+			}
+		}
+	} else {
+		if _, err := rand.Read(entropy[:]); err != nil { // crypto/rand does not fail on linux
+			panic("id: crypto/rand unavailable: " + err.Error())
+		}
+		lastMS = ms
+	}
+
 	var b [16]byte
-	ms := uint64(time.Now().UnixMilli())
 	b[0] = byte(ms >> 40)
 	b[1] = byte(ms >> 32)
 	b[2] = byte(ms >> 24)
 	b[3] = byte(ms >> 16)
 	b[4] = byte(ms >> 8)
 	b[5] = byte(ms)
-	if _, err := rand.Read(b[6:]); err != nil { // crypto/rand does not fail on linux
-		panic("id: crypto/rand unavailable: " + err.Error())
-	}
+	copy(b[6:], entropy[:])
 
 	var out [26]byte
 	// Encode 128 bits big-endian, 5 bits per character (125 used, 3 zero-pad).

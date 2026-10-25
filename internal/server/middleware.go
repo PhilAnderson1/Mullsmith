@@ -184,7 +184,7 @@ func securityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 			h.Set("X-Frame-Options", "DENY")
 			h.Set("Referrer-Policy", "no-referrer")
 			h.Set("Permissions-Policy",
-				"camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-write=()")
+				"camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-write=(self)")
 			h.Set("Cross-Origin-Resource-Policy", "same-origin")
 			if cfg.Server.TLS.Enabled && cfg.Server.HSTSMaxAge > 0 {
 				h.Set("Strict-Transport-Security",

@@ -11,21 +11,25 @@ import (
 	"strings"
 	"time"
 
+	"gabkeep/internal/agent"
 	"gabkeep/internal/auth"
 	"gabkeep/internal/config"
+	"gabkeep/internal/llm"
 	"gabkeep/internal/store"
 	"gabkeep/web"
 )
 
 // Server is the assembled gabkeep HTTP application.
 type Server struct {
-	cfg     *config.Config
-	store   *store.DB
-	logger  *slog.Logger
-	appVer  string
-	limiter *auth.Limiter
-	locks   *auth.LoginLocks
-	httpSrv *http.Server
+	cfg       *config.Config
+	store     *store.DB
+	logger    *slog.Logger
+	appVer    string
+	limiter   *auth.Limiter
+	locks     *auth.LoginLocks
+	gens      *genRegistry
+	generator *agent.Generator
+	httpSrv   *http.Server
 }
 
 // New builds the full handler chain. Middleware order (outermost first):
@@ -33,12 +37,14 @@ type Server struct {
 // bodyLimit → mux.
 func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *Server {
 	s := &Server{
-		cfg:     cfg,
-		store:   db,
-		logger:  logger,
-		appVer:  appVer,
-		limiter: auth.NewLimiter(),
-		locks:   auth.NewLoginLocks(),
+		cfg:       cfg,
+		store:     db,
+		logger:    logger,
+		appVer:    appVer,
+		limiter:   auth.NewLimiter(),
+		locks:     auth.NewLoginLocks(),
+		gens:      newGenRegistry(),
+		generator: &agent.Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)},
 	}
 
 	mux := http.NewServeMux()
@@ -55,6 +61,9 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *
 	mux.Handle("PATCH /api/v1/conversations/{id}", s.authRequired(s.handleConversationPatch))
 	mux.Handle("DELETE /api/v1/conversations/{id}", s.authRequired(s.handleConversationDelete))
 	mux.Handle("GET /api/v1/conversations/{id}/messages", s.authRequired(s.handleConversationMessages))
+	mux.Handle("POST /api/v1/conversations/{id}/messages", s.authRequired(s.handleChatSend))
+	mux.Handle("POST /api/v1/messages/{id}/regenerate", s.authRequired(s.handleRegenerate))
+	mux.Handle("POST /api/v1/generations/{id}/abort", s.authRequired(s.handleAbort))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
 	// Bare "/" is the lowest-priority sink: it catches "/" (index), unknown
 	// paths (JSON 404) and wrong verbs on known paths (JSON 405). Go's
@@ -91,6 +100,11 @@ func (s *Server) ServeTLS(ln net.Listener, certFile, keyFile string) error {
 
 func (s *Server) Shutdown(ctx context.Context) error { return s.httpSrv.Shutdown(ctx) }
 
+// WaitIdle blocks until in-flight generations have finished (or ctx is
+// done). Called after Shutdown so streams can persist partial answers
+// before the database closes.
+func (s *Server) WaitIdle(ctx context.Context) { s.gens.waitIdle(ctx) }
+
 // --- handlers ---------------------------------------------------------------
 
 // handleHealth is information-free on purpose (spec §5.4).
@@ -108,6 +122,10 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"models":         s.cfg.LLM.Models,
 		"registration":   s.cfg.Auth.Registration,
 		"remember_login": s.cfg.Auth.RememberLogin,
+		"show_reasoning": s.cfg.LLM.ShowReasoning,
+		"limits": map[string]any{
+			"max_message_chars": s.cfg.Limits.MaxMessageChars,
+		},
 		"tools": map[string]bool{
 			"web_search": s.cfg.Tools.WebSearch.Enabled,
 			"web_fetch":  s.cfg.Tools.WebFetch.Enabled,

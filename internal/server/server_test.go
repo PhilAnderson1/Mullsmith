@@ -173,6 +173,8 @@ func TestUIAssetsServed(t *testing.T) {
 		{"/assets/styles.css", "--thread-max"},
 		{"/assets/app/api.js", "X-Gabkeep-CSRF"},
 		{"/assets/app/app.js", "api.listConversations"},
+		{"/assets/app/sse.js", "event:"},
+		{"/assets/app/markdown.js", "renderMarkdown"},
 	} {
 		resp, err := http.Get(ts.URL + tc.path)
 		if err != nil {

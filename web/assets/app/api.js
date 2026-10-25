@@ -11,7 +11,7 @@ export class ApiError extends Error {
   }
 }
 
-function cookieValue(name) {
+export function cookieValue(name) {
   for (const pair of document.cookie.split("; ")) {
     if (pair.startsWith(name + "=")) {
       return decodeURIComponent(pair.slice(name.length + 1));
@@ -79,4 +79,6 @@ export const api = {
       `/api/v1/conversations/${encodeURIComponent(id)}/messages` + (qs ? "?" + qs : "")
     );
   },
+  abortGeneration: (id) =>
+    request("POST", `/api/v1/generations/${encodeURIComponent(id)}/abort`),
 };

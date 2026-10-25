@@ -122,6 +122,14 @@ func run(args []string) int {
 	}
 	defer db.Close()
 
+	// A previous crash can leave messages stuck in "streaming"; mark them
+	// aborted before serving (spec §6.2).
+	if n, err := db.SweepStreaming(context.Background()); err != nil {
+		logger.Warn("startup streaming sweep failed", "error", err)
+	} else if n > 0 {
+		logger.Info("marked interrupted generations as aborted", "count", n)
+	}
+
 	ln, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
 		logger.Error("cannot bind listen address", "addr", cfg.Server.Listen, "error", err)
@@ -165,6 +173,12 @@ func run(args []string) int {
 		if err := srv.Shutdown(sctx); err != nil {
 			logger.Warn("shutdown incomplete within grace period", "error", err)
 		}
+		// Let in-flight generations save their partial state before the DB
+		// closes (streams detached from browser requests outlive Shutdown).
+		wctx, wcancel := context.WithTimeout(context.Background(),
+			cfg.Server.ShutdownGrace.D())
+		srv.WaitIdle(wctx)
+		wcancel()
 		logger.Info("bye")
 		return 0
 	}
