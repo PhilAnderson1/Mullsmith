@@ -514,12 +514,15 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 
 /* ---------- streaming & thinking affordances ---------- */
 
-.msg-body.streaming::after {
-  content: "▍";
+/* Braille-dot busy spinner (frames cycled from app.js, opencode-style).
+   The font stack guarantees U+28xx glyphs even when the body font lacks
+   them. */
+.msg-body .spinner {
+  margin-left: 0.35em;
   color: var(--accent);
-  animation: gk-blink 1s steps(2, start) infinite;
+  font-family: "DejaVu Sans", "Segoe UI Symbol", "Apple Symbols",
+    "Noto Sans Symbols 2", sans-serif;
 }
-@keyframes gk-blink { 50% { opacity: 0; } }
 
 details.thinking {
   margin: 0 0 0.5rem;

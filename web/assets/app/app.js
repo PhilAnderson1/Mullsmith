@@ -471,6 +471,36 @@ function appendUserBubble(text) {
   return el;
 }
 
+// --- busy spinner (opencode-style braille dots) ---------------------------------
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// spinnerNode returns an inline span whose glyph cycles every 100 ms; the
+// timer handle is parked on st so finish/abandon can stop it.
+function spinnerNode(st) {
+  const span = document.createElement("span");
+  span.className = "spinner";
+  span.setAttribute("aria-hidden", "true");
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    span.textContent = "⠿"; // steady dots instead of motion
+    return span;
+  }
+  span.textContent = SPINNER_FRAMES[0];
+  let i = 0;
+  st.spinTimer = setInterval(() => {
+    i = (i + 1) % SPINNER_FRAMES.length;
+    span.textContent = SPINNER_FRAMES[i];
+  }, 100);
+  return span;
+}
+
+function stopSpinner(st) {
+  if (st && st.spinTimer) {
+    clearInterval(st.spinTimer);
+    st.spinTimer = 0;
+  }
+}
+
 function streamNode() {
   const el = clone("tpl-message");
   el.classList.add("from-assistant");
@@ -530,12 +560,16 @@ async function startGeneration(url, body, rollback) {
           const el = streamNode();
           $("#thread").append(el);
           st.nodes = { el, body: el.querySelector(".msg-body") };
+          // Dedicated text node so tokens can trail the spinner without
+          // clobbering it; finishGeneration replaces both with markdown.
+          st.nodes.text = document.createTextNode("");
+          st.nodes.body.append(st.nodes.text, spinnerNode(st));
           maybeScroll(true);
         },
         onToken(t) {
           st.raw += t;
           if (st.nodes) {
-            st.nodes.body.textContent = st.raw; // plain text while streaming
+            st.nodes.text.data = st.raw; // plain text while streaming
             maybeScroll();
           }
         },
@@ -561,7 +595,10 @@ async function startGeneration(url, body, rollback) {
     // Upstream closed cleanly but never said done: treat as interrupted.
     if (state.inflight === st) finishGeneration(st, { status: "lost" });
   } catch (err) {
-    if (err.name === "AbortError") return; // deliberately abandoned
+    if (err.name === "AbortError") {
+      stopSpinner(st); // bubble may stay in the DOM: never spin forever
+      return; // deliberately abandoned
+    }
     if (err instanceof ApiError && err.status === 401) {
       state.inflight = null;
       syncComposerButtons();
@@ -580,6 +617,7 @@ async function startGeneration(url, body, rollback) {
 }
 
 function finishGeneration(st, done) {
+  stopSpinner(st); // every exit path must end the animation
   if (state.inflight !== st) return; // abandoned mid-flight; bubble is gone
   state.inflight = null;
   syncComposerButtons();
@@ -637,6 +675,7 @@ async function regenerateFrom(el, msgId) {
 async function abandonInflight() {
   const st = state.inflight;
   if (!st) return;
+  stopSpinner(st); // the bubble is going away; don't spin on a detached node
   state.inflight = null;
   if (st.genId) {
     try {
