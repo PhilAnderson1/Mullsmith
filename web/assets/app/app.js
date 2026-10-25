@@ -492,6 +492,7 @@ function spinnerNode(st) {
   const span = document.createElement("span");
   span.className = "spinner";
   span.setAttribute("aria-hidden", "true");
+  st.spinNode = span; // stopSpinner removes it from the DOM
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     span.textContent = "⠿"; // steady dots instead of motion
     return span;
@@ -505,10 +506,18 @@ function spinnerNode(st) {
   return span;
 }
 
+// stopSpinner ends the animation AND unmounts the glyph. Called on the first
+// streamed answer token (the dots only mean "waiting") and on every exit
+// path, so a stale bubble can never keep spinning.
 function stopSpinner(st) {
-  if (st && st.spinTimer) {
+  if (!st) return;
+  if (st.spinTimer) {
     clearInterval(st.spinTimer);
     st.spinTimer = 0;
+  }
+  if (st.spinNode) {
+    st.spinNode.remove();
+    st.spinNode = 0;
   }
 }
 
@@ -747,13 +756,15 @@ async function startGeneration(url, body, rollback) {
           const el = streamNode();
           $("#thread").append(el);
           st.nodes = { el, body: el.querySelector(".msg-body") };
-          // Dedicated text node so tokens can trail the spinner without
-          // clobbering it; finishGeneration replaces both with markdown.
+          // Dedicated text node so tokens never clobber the container; the
+          // spinner rides along until the first answer token lands, then
+          // finishGeneration swaps everything for rendered markdown.
           st.nodes.text = document.createTextNode("");
           st.nodes.body.append(st.nodes.text, spinnerNode(st));
           maybeScroll(true);
         },
         onToken(t) {
+          stopSpinner(st); // output is flowing: the "waiting" dots are done
           st.raw += t;
           if (st.nodes) {
             st.nodes.text.data = st.raw; // plain text while streaming
