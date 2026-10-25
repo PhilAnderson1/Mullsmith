@@ -19,6 +19,11 @@ const state = {
   currentConv: null,
   messagesCursor: "",
   inflight: null, // live generation: { controller, genId, msgId, raw, ... }
+  // uploads staged in the composer, sent as attachment_ids with the message
+  pending: [], // { id, name, size, uploading }
+  filesOpen: false,
+  filesKind: "",
+  filesCursor: "",
 };
 
 // --- tiny DOM helpers -------------------------------------------------------
@@ -94,6 +99,9 @@ function showAuth() {
   abandonInflight();
   state.me = null;
   state.currentId = "";
+  state.pending = [];
+  renderPending();
+  closeFilesView();
   show($("#view-chat"), false);
   show($("#view-auth"), true);
   routeAuthForm();
@@ -105,7 +113,7 @@ async function enterChat(user) {
   show($("#view-auth"), false);
   show($("#view-chat"), true);
   $("#user-chip").textContent = user.name || user.email;
-  if (location.hash && !location.hash.startsWith("#/c/")) {
+  if (location.hash && !location.hash.startsWith("#/c/") && location.hash !== "#/files") {
     location.hash = ""; // drop #login/#register leftovers
   }
   if (location.hash.startsWith("#/c/")) {
@@ -333,8 +341,15 @@ function msgNode(m) {
   // assistant row has no prose: the empty body folds away.
   if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
     const host = toolCardsHost(el);
-    for (const c of m.tool_calls) host.append(toolCardFromAudit(c));
+    for (const c of m.tool_calls) {
+      host.append(toolCardFromAudit(c));
+      const art = artifactFromAudit(c); // files_share ⇒ visible download card
+      if (art) host.append(art);
+    }
     if (!m.content) body.hidden = true;
+  }
+  if (m.role === "user" && Array.isArray(m.files) && m.files.length) {
+    appendFileChips(el, m.files);
   }
 
   if (m.status === "aborted") {
@@ -477,35 +492,49 @@ function autosizeComposer() {
 }
 
 // The composer entry point: optimistic user bubble, then the streamed reply.
-// The rollback restores the draft if the server rejects before starting.
+// The rollback restores the draft (and the attachment chips) if the server
+// rejects before starting.
 async function sendFromComposer() {
   const input = $("#composer-input");
   const text = input.value;
   if (!state.currentId || state.inflight || !text.trim()) return;
+  if (state.pending.some((f) => f.uploading)) {
+    toast("Still uploading — give it a moment.", false);
+    return;
+  }
+  const attachments = state.pending.slice();
   const placeholder = $("#thread .empty-state");
   if (placeholder) placeholder.remove();
-  const userEl = appendUserBubble(text.trim());
+  const userEl = appendUserBubble(text.trim(), attachments);
   input.value = "";
   autosizeComposer();
+  const body = { content: text.trim() };
+  if (attachments.length) body.attachment_ids = attachments.map((f) => f.id);
   await startGeneration(
     `/api/v1/conversations/${encodeURIComponent(state.currentId)}/messages`,
-    { content: text.trim() },
+    body,
     () => {
       userEl.remove();
       input.value = text;
       autosizeComposer();
       input.focus();
+    },
+    () => {
+      // Accepted: the server now owns these uploads, clear the tray.
+      state.pending = state.pending.filter((f) => !attachments.includes(f));
+      renderPending();
     }
   );
 }
 
-function appendUserBubble(text) {
+function appendUserBubble(text, files) {
   const el = msgNode({
     role: "user",
     content: text,
     status: "complete",
     created_at: new Date().toISOString(),
   });
+  if (files && files.length) appendFileChips(el, files);
   $("#thread").append(el);
   maybeScroll(true);
   return el;
@@ -754,11 +783,251 @@ function toolCardFromAudit(c) {
   return card;
 }
 
+// --- attachments, artifact cards & files view (spec §10.2, M5) -------------------
+
+function humanSize(n) {
+  if (typeof n !== "number" || !isFinite(n) || n < 0) return "";
+  if (n >= 1 << 30) return (n / 2 ** 30).toFixed(1) + " GiB";
+  if (n >= 1 << 20) return (n / 2 ** 20).toFixed(1) + " MiB";
+  if (n >= 1 << 10) return (n / 2 ** 20).toFixed(1) + " KiB";
+  return n + " B";
+}
+
+// File URLs are ONLY ever our own API paths; anything else (a hostile tool
+// result included) never reaches an href.
+function fileApiUrl(u) {
+  return typeof u === "string" && u.startsWith("/api/v1/files/") && !/[\s"']/.test(u) ? u : null;
+}
+
+function fileChip(f) {
+  const href = fileApiUrl(f.download_url || f.url);
+  if (!href) return null;
+  const a = document.createElement("a");
+  a.className = "file-chip";
+  a.href = href;
+  a.download = f.name || "";
+  const name = document.createElement("span");
+  name.className = "chip-name";
+  name.textContent = f.name || "file";
+  const size = document.createElement("span");
+  size.className = "chip-size";
+  size.textContent = humanSize(f.size ?? f.bytes);
+  a.append(name, size);
+  return a;
+}
+
+function appendFileChips(msgEl, files) {
+  const host = document.createElement("div");
+  host.className = "msg-files";
+  for (const f of files) {
+    const chip = fileChip(f);
+    if (chip) host.append(chip);
+  }
+  if (host.childElementCount) msgEl.querySelector(".msg-body").after(host);
+}
+
+function artifactCard(file) {
+  const href = fileApiUrl(file.url);
+  if (!href) return null;
+  const card = document.createElement("div");
+  card.className = "artifact-card";
+  const icon = document.createElement("span");
+  icon.className = "artifact-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "📄";
+  const meta = document.createElement("div");
+  meta.className = "artifact-meta";
+  const name = document.createElement("div");
+  name.className = "artifact-name";
+  name.textContent = file.name || "download";
+  const sub = document.createElement("div");
+  sub.className = "artifact-sub muted";
+  sub.textContent = [humanSize(file.bytes), file.note].filter(Boolean).join(" — ");
+  meta.append(name, sub);
+  const dl = document.createElement("a");
+  dl.className = "btn small primary artifact-dl";
+  dl.href = href;
+  dl.download = file.name || "";
+  dl.textContent = "Download";
+  card.append(icon, meta, dl);
+  return card;
+}
+
+// artifactFromAudit rebuilds the download card from the persisted
+// files_share result when the conversation is loaded fresh.
+function artifactFromAudit(c) {
+  if (c.tool !== "files_share" || c.status !== "ok" || !c.result) return null;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(c.result);
+  } catch {
+    return null; // truncated mid-JSON: no card beats a wrong card
+  }
+  if (!parsed || parsed.error || typeof parsed.file_id !== "string") return null;
+  return artifactCard({
+    id: parsed.file_id, name: parsed.name, bytes: parsed.bytes,
+    url: parsed.url, note: parsed.note,
+  });
+}
+
+function renderPending() {
+  const tray = $("#pending-files");
+  tray.replaceChildren();
+  for (const f of state.pending) {
+    const chip = document.createElement("span");
+    chip.className = "attach-chip" + (f.uploading ? " uploading" : "");
+    const name = document.createElement("span");
+    name.className = "chip-name";
+    name.textContent = f.uploading ? `Uploading ${f.name}…` : f.name;
+    const size = document.createElement("span");
+    size.className = "chip-size";
+    size.textContent = humanSize(f.size);
+    chip.append(name, size);
+    if (!f.uploading) {
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.className = "chip-remove";
+      rm.setAttribute("aria-label", `Remove ${f.name}`);
+      rm.textContent = "×";
+      rm.addEventListener("click", () => {
+        state.pending = state.pending.filter((x) => x !== f);
+        renderPending();
+      });
+      chip.append(rm);
+    }
+    tray.append(chip);
+  }
+  show(tray, state.pending.length > 0);
+}
+
+async function onAttachPick(ev) {
+  const files = Array.from(ev.target.files || []);
+  ev.target.value = ""; // same file re-selectable next time
+  const caps = (state.meta && state.meta.files) || {};
+  const blocked = caps.blocked_extensions || [];
+  for (const file of files) {
+    const maxAtt = caps.max_attachments || 8;
+    if (state.pending.length >= maxAtt) {
+      toast(`At most ${maxAtt} attachments per message.`);
+      break;
+    }
+    const dot = file.name.toLowerCase().lastIndexOf(".");
+    if (dot >= 0 && blocked.includes(file.name.toLowerCase().slice(dot))) {
+      toast(`This file type cannot be uploaded: ${file.name}`);
+      continue;
+    }
+    if (caps.max_file_size && file.size > caps.max_file_size) {
+      toast(`${file.name}: exceeds the ${humanSize(caps.max_file_size)} limit.`);
+      continue;
+    }
+    const entry = { id: "", name: file.name, size: file.size, uploading: true };
+    state.pending.push(entry);
+    renderPending();
+    try {
+      const rec = await api.uploadFile(file);
+      entry.id = rec.id;
+      entry.uploading = false;
+    } catch (err) {
+      state.pending = state.pending.filter((x) => x !== entry);
+      if (err instanceof ApiError && err.status === 401) {
+        showAuth();
+        return;
+      }
+      toast(`Upload failed (${file.name}): ${err.message}`);
+    }
+    renderPending();
+  }
+}
+
+// --- files view --------------------------------------------------------------
+
+function openFilesView() {
+  if (state.filesOpen) return;
+  state.filesOpen = true;
+  document.body.classList.add("files-open");
+  show($("#files-panel"), true);
+  if (isPhone()) closeDrawer();
+  loadFiles(true).catch((e) => handleErr(e, "files"));
+}
+
+function closeFilesView() {
+  state.filesOpen = false;
+  document.body.classList.remove("files-open");
+  show($("#files-panel"), false);
+}
+
+async function loadFiles(reset) {
+  if (reset) {
+    state.filesCursor = "";
+    $("#files-list").replaceChildren();
+  }
+  const data = await api.listFiles(state.filesKind, reset ? "" : state.filesCursor);
+  state.filesCursor = data.next_cursor || "";
+  const list = $("#files-list");
+  for (const f of data.items || []) list.appendChild(fileRow(f));
+  show($("#btn-files-more"), Boolean(state.filesCursor));
+  const q = data.quota || {};
+  const used = q.used_bytes || 0;
+  const total = q.total_bytes || 0;
+  $("#quota-fill").style.width = (total > 0 ? Math.min(100, (used / total) * 100) : 0).toFixed(1) + "%";
+  $("#quota-text").textContent = `${humanSize(used)} of ${humanSize(total)} used`;
+}
+
+function fileRow(f) {
+  const li = document.createElement("li");
+  li.className = "file-row";
+  const main = document.createElement("div");
+  main.className = "f-main";
+  const name = document.createElement("div");
+  name.className = "f-name";
+  name.textContent = f.name;
+  const sub = document.createElement("div");
+  sub.className = "f-sub";
+  const badge = document.createElement("span");
+  badge.className = "kind-badge " + f.kind;
+  badge.textContent = f.kind;
+  const bits = [humanSize(f.size), new Date(f.created_at).toLocaleString()];
+  if (f.expires_at) bits.push(`expires ${new Date(f.expires_at).toLocaleDateString()}`);
+  sub.append(badge, " " + bits.join(" · "));
+  main.append(name, sub);
+
+  const dl = document.createElement("a");
+  dl.className = "btn small";
+  dl.href = fileApiUrl(f.download_url) || "#";
+  if (fileApiUrl(f.download_url)) {
+    dl.download = f.name;
+  } else {
+    dl.hidden = true;
+  }
+  dl.textContent = "Download";
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "btn small ghost danger-text";
+  del.textContent = "Delete";
+  del.addEventListener("click", async () => {
+    if (!(await confirmDialog(`Delete "${f.name}"?`))) return;
+    del.disabled = true;
+    try {
+      await api.deleteFile(f.id);
+      li.remove();
+    } catch (err) {
+      del.disabled = false;
+      handleErr(err, "delete file");
+    }
+  });
+
+  li.append(main, dl, del);
+  return li;
+}
+
 /**
  * Run one assistant turn against `url` and stream it into the thread.
- * `rollback` undoes optimistic UI when the server rejects before starting.
+ * `rollback` undoes optimistic UI when the server rejects before starting;
+ * `onAccepted` fires the moment the stream starts (attachments: the server
+ * has taken ownership, empty the composer tray).
  */
-async function startGeneration(url, body, rollback) {
+async function startGeneration(url, body, rollback, onAccepted) {
   const controller = new AbortController();
   const st = {
     controller,
@@ -782,6 +1051,7 @@ async function startGeneration(url, body, rollback) {
           st.started = true;
           st.genId = d.generation_id || "";
           st.msgId = d.message_id || "";
+          if (onAccepted) onAccepted();
           const el = streamNode();
           $("#thread").append(el);
           st.nodes = { el, body: el.querySelector(".msg-body") };
@@ -832,6 +1102,11 @@ async function startGeneration(url, body, rollback) {
           if (row) row.remove();
           if (d.summary) setToolSummary(c.card, d.summary);
           if (d.data) renderToolResults(c.card.querySelector(".tool-results"), d.data);
+          // files_share ⇒ a visible download card next to the card (§10.2).
+          if (d.status === "ok" && d.tool === "files_share" && d.data && d.data.file) {
+            const art = artifactCard(d.data.file);
+            if (art) toolCardsHost(st.nodes.el).append(art);
+          }
           maybeScroll();
         },
         onAwaitingApproval(d) {
@@ -1058,6 +1333,11 @@ function onHashChange() {
     routeAuthForm();
     return;
   }
+  if (location.hash === "#/files") {
+    openFilesView();
+    return;
+  }
+  if (state.filesOpen) closeFilesView();
   const m = location.hash.match(/^#\/c\/([A-Za-z0-9]{1,40})$/);
   if (m) {
     selectConversation(m[1]);
@@ -1091,6 +1371,26 @@ async function boot() {
   $("#backdrop").addEventListener("click", closeDrawer);
   $("#btn-send").addEventListener("click", () => sendFromComposer());
   $("#btn-stop").addEventListener("click", stopStream);
+  $("#btn-attach").addEventListener("click", () => $("#attach-input").click());
+  $("#attach-input").addEventListener("change", onAttachPick);
+  $("#btn-files").addEventListener("click", () => {
+    location.hash = "#/files";
+  });
+  $("#btn-files-close").addEventListener("click", () => {
+    location.hash = state.currentId ? `#/c/${state.currentId}` : "";
+  });
+  $("#btn-files-more").addEventListener("click", () =>
+    loadFiles(false).catch((e) => handleErr(e, "more files"))
+  );
+  for (const fb of document.querySelectorAll(".files-filter")) {
+    fb.addEventListener("click", () => {
+      state.filesKind = fb.dataset.kind || "";
+      for (const b of document.querySelectorAll(".files-filter")) {
+        b.classList.toggle("active", b === fb);
+      }
+      loadFiles(true).catch((e) => handleErr(e, "files"));
+    });
+  }
   $("#composer-input").addEventListener("input", autosizeComposer);
   $("#composer-input").addEventListener("keydown", (ev) => {
     // Enter sends, Shift+Enter inserts a newline; IME composition excluded.

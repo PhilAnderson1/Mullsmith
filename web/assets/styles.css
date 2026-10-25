@@ -626,3 +626,164 @@ details.tool-card summary::-webkit-details-marker { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .tool-card summary { transition: none; }
 }
+
+/* ---------- M5: attachments, artifact cards, files view ---------- */
+
+.pending-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.55rem clamp(0.6rem, 3vw, 1.5rem) 0;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  max-width: 100%;
+}
+.attach-chip.uploading { opacity: 0.65; }
+.attach-chip .chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(220px, 55vw);
+}
+.attach-chip .chip-size { color: var(--fg-muted); flex: none; }
+.attach-chip .chip-remove {
+  border: 0;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+  cursor: pointer;
+}
+.attach-chip .chip-remove:hover { color: var(--danger); }
+
+.msg-files { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.45rem; }
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  color: inherit;
+  text-decoration: none;
+  max-width: 100%;
+}
+.file-chip:hover { border-color: var(--accent); }
+.file-chip .chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(240px, 55vw);
+}
+.file-chip .chip-size { color: var(--fg-muted); flex: none; }
+
+.artifact-card {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid var(--accent);
+  background: var(--bg-raised);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+  box-shadow: var(--shadow);
+  margin: 0.35rem 0;
+}
+.artifact-icon { font-size: 1.4rem; flex: none; }
+.artifact-meta { flex: 1; min-width: 0; }
+.artifact-name { font-weight: 600; overflow-wrap: anywhere; }
+.artifact-sub { font-size: 0.8rem; overflow-wrap: anywhere; }
+.artifact-dl { flex: none; }
+
+/* Files view swaps into the chat main column (routing keeps the chat state
+   alive underneath; body class avoids touching each element from JS). */
+.files-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  overflow-y: auto;
+  padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+}
+body.files-open .thread,
+body.files-open .composer,
+body.files-open .pending-files { display: none; }
+.files-head { display: flex; align-items: center; justify-content: space-between; }
+.files-head h2 { margin: 0; font-size: 1.25rem; }
+.quota-wrap { display: flex; align-items: center; gap: 0.7rem; }
+.quota-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.quota-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.25s; }
+#quota-text { flex: none; font-size: 0.85rem; }
+.files-filters { display: flex; gap: 0.4rem; }
+.files-filter {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 0.3rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+.files-filter.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.files-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+}
+.f-main { flex: 1; min-width: 0; }
+.f-name { font-weight: 600; overflow-wrap: anywhere; }
+.f-sub { color: var(--fg-muted); font-size: 0.8rem; margin-top: 0.1rem; overflow-wrap: anywhere; }
+.kind-badge {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.35em;
+  margin-right: 0.4em;
+}
+.kind-badge.artifact { border-color: var(--accent); color: var(--accent); }
+.danger-text { color: var(--danger); }
+@media (max-width: 480px) {
+  .file-row { flex-wrap: wrap; }
+  .file-row .btn { flex: 1; }
+}

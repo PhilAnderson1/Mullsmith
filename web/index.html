@@ -80,6 +80,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
           New chat
         </button>
+        <button id="btn-files" class="btn ghost wide">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"/></svg>
+          Files
+        </button>
       </div>
       <div class="sidebar-search">
         <input id="conv-search" type="search" placeholder="Search chats" aria-label="Search conversations">
@@ -97,13 +101,39 @@
           <p class="muted">Everything stays on this server, yours alone.</p>
         </div>
       </div>
+      <div id="pending-files" class="pending-files" hidden></div>
       <div class="composer">
+        <button id="btn-attach" class="icon-btn" type="button" title="Attach files" aria-label="Attach files">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.9 8.9a1.8 1.8 0 0 1-2.6-2.6l8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        </button>
+        <input id="attach-input" type="file" multiple hidden>
         <textarea id="composer-input" rows="1" placeholder="Start or pick a chat first" disabled></textarea>
         <button id="btn-stop" class="icon-btn stop-btn" type="button" title="Stop generating" aria-label="Stop generating" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
         </button>
         <button id="btn-send" class="btn primary" disabled>Send</button>
       </div>
+
+      <!-- Files view (spec §10.2): swaps into the chat main area -->
+      <section id="files-panel" class="files-panel" hidden aria-label="Files">
+        <div class="files-head">
+          <h2>Files</h2>
+          <button id="btn-files-close" class="icon-btn" type="button" aria-label="Close files view" title="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+          </button>
+        </div>
+        <div class="quota-wrap">
+          <div class="quota-bar" role="img" aria-label="Storage used"><div class="quota-fill" id="quota-fill"></div></div>
+          <span id="quota-text" class="muted"></span>
+        </div>
+        <div class="files-filters" role="group" aria-label="Filter files">
+          <button class="files-filter active" type="button" data-kind="">All</button>
+          <button class="files-filter" type="button" data-kind="upload">Uploads</button>
+          <button class="files-filter" type="button" data-kind="artifact">Artifacts</button>
+        </div>
+        <ul id="files-list" class="files-list"></ul>
+        <button id="btn-files-more" class="btn ghost wide" hidden>Load more</button>
+      </section>
     </main>
   </div>
 

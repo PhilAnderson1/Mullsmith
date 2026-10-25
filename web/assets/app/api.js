@@ -20,6 +20,21 @@ export function cookieValue(name) {
   return "";
 }
 
+async function finalize(resp) {
+  if (resp.status === 204) return null;
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch {
+    /* non-JSON body */
+  }
+  if (!resp.ok) {
+    const err = (data && data.error) || {};
+    throw new ApiError(resp.status, err.code, err.message, err.request_id);
+  }
+  return data;
+}
+
 async function request(method, path, body) {
   const headers = {};
   if (body !== undefined) {
@@ -34,20 +49,24 @@ async function request(method, path, body) {
     credentials: "same-origin",
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  return finalize(resp);
+}
 
-  if (resp.status === 204) return null;
-
-  let data = null;
-  try {
-    data = await resp.json();
-  } catch {
-    /* non-JSON body */
-  }
-  if (!resp.ok) {
-    const err = (data && data.error) || {};
-    throw new ApiError(resp.status, err.code, err.message, err.request_id);
-  }
-  return data;
+// Multipart upload; the browser sets the Content-Type boundary, so only the
+// CSRF header travels. Streams the file, no whole-body buffering on our side.
+async function uploadFile(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const headers = {};
+  const csrf = cookieValue("gabkeep_csrf");
+  if (csrf) headers["X-Gabkeep-CSRF"] = csrf;
+  const resp = await fetch("/api/v1/files", {
+    method: "POST",
+    headers,
+    credentials: "same-origin",
+    body: fd,
+  });
+  return finalize(resp);
 }
 
 export const api = {
@@ -86,4 +105,14 @@ export const api = {
       approval_id: approvalId,
       approve,
     }),
+
+  uploadFile,
+  listFiles: (kind, cursor) => {
+    const p = new URLSearchParams();
+    if (kind) p.set("kind", kind);
+    if (cursor) p.set("cursor", cursor);
+    const qs = p.toString();
+    return request("GET", "/api/v1/files" + (qs ? "?" + qs : ""));
+  },
+  deleteFile: (id) => request("DELETE", `/api/v1/files/${encodeURIComponent(id)}`),
 };
