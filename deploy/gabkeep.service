@@ -41,7 +41,12 @@ ExecStartPre=+/bin/sh -c 'install -m 600 -o gabkeep -g gabkeep "$(readlink -f /e
 # still confine all writes.
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectKernelTunables=true
+# NOTE: ProtectKernelTunables is deliberately NOT set — it remounts /proc
+# read-only for the service, which then denies bubblewrap its per-run
+# `mount proc` (EPERM), and the §9.9 probe refuses startup. The jail itself
+# never sees host /proc; ProtectSystem=strict already covers the tunables
+# for gabkeep's own process (everything outside ReadWritePaths is read-only).
+ProtectKernelModules=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
@@ -49,14 +54,17 @@ LockPersonality=true
 MemoryDenyWriteExecute=false      # Go does not need it but JIT-free W^X breaks nothing; keep off for Go runtime compatibility
 ReadWritePaths=/var/lib/gabkeep
 PrivateTmp=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK is required, not incidental: bubblewrap creates a net namespace
+# per run and must open a NETLINK_ROUTE socket to bring up loopback inside it.
+# Without it the §9.9 startup probe fails and gabkeep refuses to start.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 # If the LLM endpoint is a local unix socket only, you can drop AF_INET here.
 # Code execution uses bubblewrap (unprivileged user namespaces). The systemd
 # hardening above is compatible: bwrap runs fully unprivileged and gabkeep
 # verifies a real jail at startup, refusing to start if it cannot. If your
-# distro or an added directive (e.g. a custom SystemCallFilter or
-# PrivateUsers=true) blocks unshare(CLONE_NEWUSER), the probe fails loudly —
-# adjust the unit rather than disabling the jail.
+# distro or an added directive (e.g. a custom SystemCallFilter, PrivateUsers=true
+# or ProtectKernelTunables, which blocks the jail's proc mount) gets in the way,
+# the probe fails loudly — adjust the unit rather than disabling the jail.
 
 [Install]
 WantedBy=multi-user.target
