@@ -116,4 +116,7 @@ export const api = {
     return request("GET", "/api/v1/files" + (qs ? "?" + qs : ""));
   },
   deleteFile: (id) => request("DELETE", `/api/v1/files/${encodeURIComponent(id)}`),
+  listWork: () => request("GET", "/api/v1/files/work"),
+  deleteWork: (path) =>
+    request("DELETE", "/api/v1/files/work?path=" + encodeURIComponent(path)),
 };

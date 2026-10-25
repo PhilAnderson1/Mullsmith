@@ -334,11 +334,22 @@ func (s *statInfo) Sys() any           { return &s.st }
 func (s *statInfo) ModTime() time.Time { return time.Unix(s.st.Mtim.Sec, int64(s.st.Mtim.Nsec)) }
 func (s *statInfo) Mode() fs.FileMode {
 	m := fs.FileMode(s.st.Mode & 0o777)
+	// Full type bits, or IsRegular() would answer true for a FIFO (its type
+	// would come out as 0 = "regular") and a caller would happily open one
+	// for read and block until a writer appears.
 	switch s.st.Mode & unix.S_IFMT {
 	case unix.S_IFDIR:
 		m |= fs.ModeDir
 	case unix.S_IFLNK:
 		m |= fs.ModeSymlink
+	case unix.S_IFIFO:
+		m |= fs.ModeNamedPipe
+	case unix.S_IFSOCK:
+		m |= fs.ModeSocket
+	case unix.S_IFCHR:
+		m |= fs.ModeDevice
+	case unix.S_IFBLK:
+		m |= fs.ModeDevice | fs.ModeCharDevice
 	}
 	return m
 }

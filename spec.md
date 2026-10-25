@@ -343,6 +343,9 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 |---|---|---|
 | POST | `/api/v1/files` | multipart upload into `uploads/`. Enforces `max_file_size`, `user_quota`. Returns file id + metadata. |
 | GET | `/api/v1/files?kind=&cursor=` | List user's files (drives the file-manager UI). |
+| GET | `/api/v1/files/work` | Physical listing of the `work/` scratch dir (files with no registry row — script output etc.): regular non-hidden files only, newest-modified first, capped at 500 (`truncated` flag). Read-only view: listing is not sharing. |
+| GET | `/api/v1/files/work/download?path=` | Stream one `work/` file; path sandboxed (§9.7), regular files only (a FIFO would block the open), same inline-safety allowlist (§9.4). |
+| DELETE | `/api/v1/files/work?path=` | Delete one `work/` file; also removes any artifact row registered in place at that path so chat cards never dangle. |
 | GET | `/api/v1/files/{id}/download` | Streams file for the owner only (§9.2), `Content-Disposition: attachment` by default with inline serving only for the safe-type allowlist (§9.4). |
 | DELETE | `/api/v1/files/{id}` | Delete file + row. |
 

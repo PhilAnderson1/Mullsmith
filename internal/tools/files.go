@@ -390,6 +390,10 @@ func (s FilesShare) Execute(ctx context.Context, inv Invocation) (Result, error)
 	if fi.IsDir() {
 		return Result{}, errors.New("path is a directory, not a file")
 	}
+	if !fi.Mode().IsRegular() {
+		// FIFOs/sockets would block the hashing open indefinitely.
+		return Result{}, errors.New("path is not a regular file")
+	}
 
 	f, err := scratch.OpenFile(root, inv.UserID, rel)
 	if err != nil {

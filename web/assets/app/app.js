@@ -982,10 +982,21 @@ async function loadFiles(reset) {
     state.filesCursor = "";
     $("#files-list").replaceChildren();
   }
-  const data = await api.listFiles(state.filesKind, reset ? "" : state.filesCursor);
+  // The Work tab is a physical directory view, not the registered-files
+  // table: no cursor, newest-modified first, server caps the response.
+  const work = state.filesKind === "work";
+  const data = work
+    ? await api.listWork()
+    : await api.listFiles(state.filesKind, reset ? "" : state.filesCursor);
   state.filesCursor = data.next_cursor || "";
   const list = $("#files-list");
   for (const f of data.items || []) list.appendChild(fileRow(f));
+  if (work && data.truncated) {
+    const li = document.createElement("li");
+    li.className = "f-sub";
+    li.textContent = "Only the most recent files are shown.";
+    list.appendChild(li);
+  }
   show($("#btn-files-more"), Boolean(state.filesCursor));
   const q = data.quota || {};
   const used = q.used_bytes || 0;
@@ -1007,7 +1018,7 @@ function fileRow(f) {
   const badge = document.createElement("span");
   badge.className = "kind-badge " + f.kind;
   badge.textContent = f.kind;
-  const bits = [humanSize(f.size), new Date(f.created_at).toLocaleString()];
+  const bits = [humanSize(f.size), new Date(f.modified_at || f.created_at).toLocaleString()];
   if (f.expires_at) bits.push(`expires ${new Date(f.expires_at).toLocaleDateString()}`);
   sub.append(badge, " " + bits.join(" · "));
   main.append(name, sub);
@@ -1030,7 +1041,8 @@ function fileRow(f) {
     if (!(await confirmDialog(`Delete "${f.name}"?`))) return;
     del.disabled = true;
     try {
-      await api.deleteFile(f.id);
+      if (f.kind === "work") await api.deleteWork(f.path);
+      else await api.deleteFile(f.id);
       li.remove();
     } catch (err) {
       del.disabled = false;

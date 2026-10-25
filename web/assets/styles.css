@@ -807,6 +807,7 @@ body.files-open .pending-files { display: none; }
   margin-right: 0.4em;
 }
 .kind-badge.artifact { border-color: var(--accent); color: var(--accent); }
+.kind-badge.work { border-style: dashed; color: var(--fg-muted); }
 .danger-text { color: var(--danger); }
 @media (max-width: 480px) {
   .file-row { flex-wrap: wrap; }

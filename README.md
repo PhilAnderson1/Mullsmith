@@ -11,7 +11,8 @@ of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
   dark/light theme, responsive from 320 px phones to ultrawide.
 * **Tools with an approval layer** — `web_search` (Brave) and SSRF-guarded
   `web_fetch`, per-conversation **scratchpad files** (`fs_list/fs_read/
-  fs_write/fs_delete`, uploads from the browser, artifact download cards),
+  fs_write/fs_delete`, uploads from the browser, artifact download cards, a
+  file manager with Uploads / Artifacts / Work tabs),
   and optional sandboxed **`code_run`** (bubblewrap jail — see
   [Code execution](#security)). Every
   tool call is audited and shown as a card in the UI; policy decides which
