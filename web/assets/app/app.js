@@ -742,10 +742,23 @@ function attachApproval(card, st, d) {
   deny.type = "button";
   deny.className = "btn small ghost approval-deny";
   deny.textContent = "Deny";
+  // §6.1/§9.9: code_run offers "always allow in this conversation".
+  let rememberBox = null;
+  if (d.rememberable) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "approval-remember-input";
+    const txt = document.createElement("span");
+    txt.textContent = " Always allow in this conversation";
+    rememberBox = document.createElement("label");
+    rememberBox.className = "approval-remember";
+    rememberBox.append(cb, txt);
+  }
   const decide = async (approve) => {
-    for (const b of row.querySelectorAll("button")) b.disabled = true;
+    for (const b of row.querySelectorAll("button, input")) b.disabled = true;
+    const remember = Boolean(rememberBox && rememberBox.querySelector("input").checked);
     try {
-      await api.resolveApproval(st.genId, d.approval_id, approve);
+      await api.resolveApproval(st.genId, d.approval_id, approve, remember);
     } catch {
       toast("That approval is no longer pending.");
     }
@@ -753,6 +766,7 @@ function attachApproval(card, st, d) {
   allow.addEventListener("click", () => decide(true));
   deny.addEventListener("click", () => decide(false));
   row.append(label, allow, deny);
+  if (rememberBox) row.append(rememberBox);
   card.append(row);
 }
 
@@ -1172,7 +1186,7 @@ function finishGeneration(st, done) {
   nodes.body.replaceChildren(renderMarkdown(st.raw)); // full markdown once done
   // Any approval prompt still on screen is dead: the loop moved on
   // (timeout, deny or abort). Retire the buttons.
-  for (const btn of nodes.el.querySelectorAll(".approval-row button")) btn.disabled = true;
+  for (const ctl of nodes.el.querySelectorAll(".approval-row button, .approval-row input")) ctl.disabled = true;
   const status = done.status || "";
   if (status === "aborted") {
     showStatusNote(nodes.el, "Stopped.");

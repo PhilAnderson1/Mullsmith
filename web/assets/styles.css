@@ -623,6 +623,20 @@ details.tool-card summary::-webkit-details-marker { display: none; }
 .btn.small { padding: 0.2rem 0.9rem; min-height: var(--tap); }
 .approval-row .btn:disabled { opacity: 0.5; }
 
+/* "always allow in this conversation" (§6.1, §9.9 layer 6): own line,
+   smaller than the primary question, 44 px hit area via the label */
+.approval-remember {
+  flex: 1 1 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: var(--tap);
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.approval-remember input { width: 1rem; height: 1rem; }
+
 @media (prefers-reduced-motion: reduce) {
   .tool-card summary { transition: none; }
 }

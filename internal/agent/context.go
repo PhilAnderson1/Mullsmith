@@ -25,6 +25,14 @@ const ToolGuidance = "\n\nYou may call the provided tools to help answer. " +
 	"own work under work/ and deliverables under artifacts/ with fs_write, " +
 	"and present finished files to the user with files_share."
 
+// CodeRunGuidance extends the prompt further when code execution is on
+// (§7.3 workflow); appended only when code_run is actually registered.
+const CodeRunGuidance = " You may also run short-lived scripts with code_run in the " +
+	"work/ directory (no network, limited time/memory): stage inputs via its files " +
+	"parameter (e.g. an upload), have the script write its output into work/, then " +
+	"files_share the result. The user must approve each run unless they chose to " +
+	"allow this conversation."
+
 // msgCost budgets one message, including replayed tool-call arguments and
 // tool results (spec §6.1: tool results count toward the budget).
 func msgCost(m llm.ChatMessage) int {

@@ -21,11 +21,19 @@ type generation struct {
 
 	// approvals tracks outstanding awaiting_approval requests (§6.1 step 5):
 	// approval id → decision channel the tool loop waits on.
-	approvals map[string]chan bool
+	approvals map[string]chan approvalDecision
+}
+
+// approvalDecision is the user's answer to one tool approval; Remember
+// lets "always allow in this conversation" persist for the rest of the
+// conversation (§6.1 step 5, §9.9 layer 6 — code_run).
+type approvalDecision struct {
+	Approve  bool
+	Remember bool
 }
 
 // AddApproval registers a pending approval for a live generation.
-func (r *genRegistry) AddApproval(genID string) (string, <-chan bool, bool) {
+func (r *genRegistry) AddApproval(genID string) (string, <-chan approvalDecision, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	g, ok := r.byID[genID]
@@ -33,17 +41,17 @@ func (r *genRegistry) AddApproval(genID string) (string, <-chan bool, bool) {
 		return "", nil, false
 	}
 	if g.approvals == nil {
-		g.approvals = map[string]chan bool{}
+		g.approvals = map[string]chan approvalDecision{}
 	}
 	id := id.New()
-	ch := make(chan bool, 1)
+	ch := make(chan approvalDecision, 1)
 	g.approvals[id] = ch
 	return id, ch, true
 }
 
 // ResolveApproval delivers a user decision; the caller must own the
 // generation. Unknown ids (already answered, timed out, gone) → false.
-func (r *genRegistry) ResolveApproval(genID, approvalID, userID string, approve bool) bool {
+func (r *genRegistry) ResolveApproval(genID, approvalID, userID string, approve, remember bool) bool {
 	r.mu.Lock()
 	g, ok := r.byID[genID]
 	if !ok || g.UserID != userID {
@@ -58,7 +66,7 @@ func (r *genRegistry) ResolveApproval(genID, approvalID, userID string, approve 
 	if !open {
 		return false
 	}
-	ch <- approve // buffered: never blocks on the loop having moved on
+	ch <- approvalDecision{Approve: approve, Remember: remember} // buffered: never blocks
 	return true
 }
 

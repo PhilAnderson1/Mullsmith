@@ -49,7 +49,7 @@ func newTestServerWithDB(t *testing.T, cfg *config.Config) (*httptest.Server, *s
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	return httptest.NewServer(New(cfg, db, logger, "test").Handler()), db
+	return httptest.NewServer(New(cfg, db, logger, "test", nil).Handler()), db
 }
 
 func TestHealthz(t *testing.T) {

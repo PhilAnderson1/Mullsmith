@@ -180,6 +180,7 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ApprovalID string `json:"approval_id"`
 		Approve    bool   `json:"approve"`
+		Remember   bool   `json:"remember"` // "always allow in this conversation" (§6.1)
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -188,7 +189,7 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "missing_approval_id", "approval_id is required")
 		return
 	}
-	if !s.gens.ResolveApproval(r.PathValue("id"), body.ApprovalID, user.ID, body.Approve) {
+	if !s.gens.ResolveApproval(r.PathValue("id"), body.ApprovalID, user.ID, body.Approve, body.Remember) {
 		// Already answered, timed out, or not ours: indistinguishable 404
 		// (§9.2: never probe-able).
 		writeAPIError(w, r, http.StatusNotFound, "not_found", "no pending approval")
@@ -265,6 +266,9 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	sysPrompt := conv.SystemPrompt
 	if len(toolSpecs) > 0 {
 		sysPrompt += agent.ToolGuidance
+		if _, hasCode := s.tools.Get("code_run"); hasCode {
+			sysPrompt += agent.CodeRunGuidance
+		}
 	}
 	msgs := agent.BuildContext(sysPrompt, historyToLLM(hist, s.tools.Enabled()),
 		s.cfg.LLM.MaxContextTokens, s.cfg.LLM.MaxTokensResponse)
@@ -461,6 +465,18 @@ func (s *Server) runModelRound(ctx context.Context, conn *sseConn, model string,
 	return res
 }
 
+// execTimeout bounds one tool execution. code_run gets the configured run
+// budget plus a margin so the runner's own process-group kill (§9.9) fires
+// first; this is the outer backstop.
+func (s *Server) execTimeout(tool string) time.Duration {
+	if tool == "code_run" && s.cfg.Scratchpad.CodeExec.Enabled {
+		if d := s.cfg.Scratchpad.CodeExec.Timeout.D(); d > 0 {
+			return d + 15*time.Second
+		}
+	}
+	return 30 * time.Second
+}
+
 // runToolCall executes one proposed call: audit row, optional approval,
 // execution, truncated result message, tool_end event. Returns the content
 // to hand back to the model (always a valid tool message — denied and
@@ -486,7 +502,11 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	}
 
 	status := "running"
-	if s.tools.Policy(name) == tools.ApprovalConfirm {
+	// code_run defaults to confirm; a remembered "always allow in this
+	// conversation" (§9.9) skips the prompt for the rest of the chat.
+	needApproval := s.tools.Policy(name) == tools.ApprovalConfirm &&
+		!s.remembered.remembered(convID, name)
+	if needApproval {
 		status = "pending_approval"
 	}
 	tc := &store.ToolCall{
@@ -501,15 +521,18 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	}
 
 	if status == "pending_approval" {
-		approved := s.awaitApproval(ctx, g, conn, callID, name, call.Function.Arguments)
+		decision := s.awaitApproval(ctx, g, conn, callID, name, call.Function.Arguments)
 		if tc.ID != "" {
 			newStatus, uctx := "approved", ctx
-			if !approved {
+			if !decision.Approve {
 				newStatus, uctx = "denied", context.Background() // abort may have killed ctx
 			}
 			_ = s.store.UpdateToolCallStatus(uctx, tc.ID, newStatus)
 		}
-		if !approved {
+		if decision.Approve && decision.Remember && name == "code_run" {
+			s.remembered.remember(convID, name) // "always allow" for this chat only (§9.9)
+		}
+		if !decision.Approve {
 			emitEnd("denied", "user denied this action", nil)
 			// Deliberately no tool-result row: historyToLLM only replays
 			// answered calls, so a denied call simply vanishes from later
@@ -519,7 +542,7 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	}
 
 	started := time.Now()
-	execCtx, execCancel := context.WithTimeout(ctx, 30*time.Second)
+	execCtx, execCancel := context.WithTimeout(ctx, s.execTimeout(name))
 	tres, err := tool.Execute(execCtx, tools.Invocation{
 		UserID: userID, Conversation: convID, LLMCallID: callID,
 		Arguments: call.Function.Arguments, Scratchpad: s.cfg.Scratchpad.Root,
@@ -561,27 +584,29 @@ func detachedCtx() context.Context {
 }
 
 // awaitApproval parks the loop on the user's decision; abort or the
-// 10-minute timeout deny (spec §6.1 step 5).
+// 10-minute timeout deny (spec §6.1 step 5). code_run approvals advertise
+// rememberable so the UI can offer "always allow in this conversation".
 func (s *Server) awaitApproval(ctx context.Context, g *generation, conn *sseConn,
 	callID, name, args string,
-) bool {
+) approvalDecision {
 	apID, decCh, ok := s.gens.AddApproval(g.ID)
 	if !ok {
-		return false // generation gone: fail closed
+		return approvalDecision{} // generation gone: fail closed
 	}
 	defer s.gens.RemoveApproval(g.ID, apID)
 	_ = conn.Event("awaiting_approval", map[string]any{
 		"approval_id": apID, "call_id": callID, "tool": name, "arguments": args,
+		"rememberable": name == "code_run",
 	})
 	timer := time.NewTimer(approvalTimeout)
 	defer timer.Stop()
 	select {
-	case approve := <-decCh:
-		return approve
+	case decision := <-decCh:
+		return decision
 	case <-ctx.Done(): // browser abort or shutdown ⇒ deny
-		return false
+		return approvalDecision{}
 	case <-timer.C:
-		return false
+		return approvalDecision{}
 	}
 }
 

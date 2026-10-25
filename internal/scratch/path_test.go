@@ -38,9 +38,9 @@ func TestParseRelRejects(t *testing.T) {
 		"a\x00b",
 		"a\nb",
 		"a\tb",
-		strings.Repeat("a", 256),           // segment too long
-		strings.Repeat("a/", 40) + "b",     // > 32 segments
-		strings.Repeat("a", 5000),          // rel too long
+		strings.Repeat("a", 256),       // segment too long
+		strings.Repeat("a/", 40) + "b", // > 32 segments
+		strings.Repeat("a", 5000),      // rel too long
 		"valid/" + strings.Repeat("x", 300) + "/y",
 	}
 	for _, rel := range bad {
@@ -52,19 +52,19 @@ func TestParseRelRejects(t *testing.T) {
 
 func TestParseRelAccepts(t *testing.T) {
 	ok := map[string][]string{
-		"a.txt":       {"a.txt"},
-		"./a.txt":     {"a.txt"},
-		"a//b":        {"a", "b"},
-		"a/b/":        {"a", "b"},
-		".":           {},
-		"uploads/x":   {"uploads", "x"},
-		"..stake":     {"..stake"}, // legal filename, not traversal
-		"a...":        {"a..."},
-		"dots/....":   {"dots", "...."},
-		"spa ce/ü":    {"spa ce", "ü"},
-		"sem;col$n":   {"sem;col$n"},
-		"back`tick":   {"back`tick"},
-		"%2e%2e/x":    {"%2e%2e", "x"}, // URL-encoding is literal here
+		"a.txt":      {"a.txt"},
+		"./a.txt":    {"a.txt"},
+		"a//b":       {"a", "b"},
+		"a/b/":       {"a", "b"},
+		".":          {},
+		"uploads/x":  {"uploads", "x"},
+		"..stake":    {"..stake"}, // legal filename, not traversal
+		"a...":       {"a..."},
+		"dots/....":  {"dots", "...."},
+		"spa ce/ü":   {"spa ce", "ü"},
+		"sem;col$n":  {"sem;col$n"},
+		"back`tick":  {"back`tick"},
+		"%2e%2e/x":   {"%2e%2e", "x"}, // URL-encoding is literal here
 		"..%2f..%2f": {"..%2f..%2f"},
 	}
 	for rel, want := range ok {

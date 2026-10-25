@@ -100,10 +100,11 @@ export const api = {
   },
   abortGeneration: (id) =>
     request("POST", `/api/v1/generations/${encodeURIComponent(id)}/abort`),
-  resolveApproval: (genId, approvalId, approve) =>
+  resolveApproval: (genId, approvalId, approve, remember = false) =>
     request("POST", `/api/v1/generations/${encodeURIComponent(genId)}/approvals`, {
       approval_id: approvalId,
       approve,
+      remember,
     }),
 
   uploadFile,

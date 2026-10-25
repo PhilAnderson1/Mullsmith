@@ -30,6 +30,7 @@ import (
 	"gabkeep/internal/config"
 	"gabkeep/internal/id"
 	"gabkeep/internal/llm"
+	"gabkeep/internal/runner"
 	"gabkeep/internal/scratch"
 	"gabkeep/internal/server"
 	"gabkeep/internal/store"
@@ -42,7 +43,14 @@ var (
 	buildDate = "unknown"
 )
 
-func main() { os.Exit(run(os.Args[1:])) }
+func main() {
+	// Sandbox launcher path (§9.9): when re-execed as the child interpreter
+	// wrapper, apply rlimits/uid drop and execve — never falls through.
+	if runner.MaybeSandboxMain(os.Args) {
+		return
+	}
+	os.Exit(run(os.Args[1:]))
+}
 
 func run(args []string) int {
 	fs := flag.NewFlagSet("gabkeep", flag.ContinueOnError)
@@ -139,7 +147,23 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(cfg, db, logger, version)
+	// Code execution (§9.9): opt-in; mode misconfiguration (e.g. container
+	// without docker) is a startup error, degradation is a warning.
+	codeRunner, codeWarns, err := runner.NewForConfig(cfg)
+	if err != nil {
+		logger.Error("code execution setup failed", "error", err)
+		return 1
+	}
+	for _, w := range codeWarns {
+		logger.Warn("code execution", "msg", w)
+	}
+	if codeRunner != nil && cfg.Tools.Agent.Approval["code_run"] == "auto" &&
+		cfg.Auth.Registration == "open" {
+		logger.Warn("code_run auto-approved while registration is open: prompt injection " +
+			"could execute code unattended (§9.9) — use confirm approval or invite-only")
+	}
+
+	srv := server.New(cfg, db, logger, version, codeRunner)
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("listening",

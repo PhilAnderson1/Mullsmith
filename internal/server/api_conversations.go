@@ -239,6 +239,7 @@ func (s *Server) handleConversationDelete(w http.ResponseWriter, r *http.Request
 		s.writeConvErr(w, r, err)
 		return
 	}
+	s.remembered.forget(r.PathValue("id")) // consent dies with the conversation (§9.9)
 	w.WriteHeader(http.StatusNoContent)
 }
 

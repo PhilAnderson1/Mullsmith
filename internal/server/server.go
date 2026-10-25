@@ -15,6 +15,7 @@ import (
 	"gabkeep/internal/auth"
 	"gabkeep/internal/config"
 	"gabkeep/internal/llm"
+	"gabkeep/internal/runner"
 	"gabkeep/internal/store"
 	"gabkeep/internal/tools"
 	"gabkeep/web"
@@ -22,34 +23,39 @@ import (
 
 // Server is the assembled gabkeep HTTP application.
 type Server struct {
-	cfg       *config.Config
-	store     *store.DB
-	logger    *slog.Logger
-	appVer    string
-	limiter   *auth.Limiter
-	locks     *auth.LoginLocks
-	gens      *genRegistry
-	generator *agent.Generator
-	tools     *tools.Registry
-	httpSrv   *http.Server
+	cfg        *config.Config
+	store      *store.DB
+	logger     *slog.Logger
+	appVer     string
+	limiter    *auth.Limiter
+	locks      *auth.LoginLocks
+	gens       *genRegistry
+	generator  *agent.Generator
+	tools      *tools.Registry
+	remembered *approvalMemory
+	httpSrv    *http.Server
 }
 
 // New builds the full handler chain. Middleware order (outermost first):
 // requestID → logRequests → recoverPanics → securityHeaders → csrfProtect →
 // bodyLimit → mux.
-func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *Server {
+func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
+	code runner.Runner,
+) *Server {
 	s := &Server{
-		cfg:       cfg,
-		store:     db,
-		logger:    logger,
-		appVer:    appVer,
-		limiter:   auth.NewLimiter(),
-		locks:     auth.NewLoginLocks(),
-		gens:      newGenRegistry(),
-		generator: &agent.Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)},
+		cfg:        cfg,
+		store:      db,
+		logger:     logger,
+		appVer:     appVer,
+		limiter:    auth.NewLimiter(),
+		locks:      auth.NewLoginLocks(),
+		gens:       newGenRegistry(),
+		generator:  &agent.Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)},
+		remembered: newApprovalMemory(),
 		tools: tools.BuildFor(cfg, logger, nil, &artifactSink{
-			db: db, ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),
-		}),
+			db:  db,
+			ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),
+		}, code),
 	}
 
 	mux := http.NewServeMux()

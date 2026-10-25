@@ -18,14 +18,16 @@ scratchpad:
   user_quota: 1GiB
   artifact_ttl: 168h
   code_execution:
-    enabled: false                # flip to true (+ isolated mode) in M6 testing
-    mode: "isolated"
-    run_as_user: "gabkeep-sandbox"
+    enabled: true                 # M6 live testing (spec §9.9)
+    mode: "isolated"              # non-root here ⇒ DEGRADED warning at startup:
+                                  # rlimits/no_new_privs land, uid drop does not
+    run_as_user: "philip"         # self: honest degraded mode on this dev box
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
+      - { id: sh, binary: /bin/sh }
     timeout: 30s
     max_output: 32KiB
-    max_memory: 512MiB
+    max_memory: 256MiB
     allow_network: false
 
 llm:

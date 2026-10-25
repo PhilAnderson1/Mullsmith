@@ -6,14 +6,18 @@ import (
 	"time"
 
 	"gabkeep/internal/config"
+	"gabkeep/internal/runner"
 )
 
 // BuildFor assembles the registry from config (§7.1: registration is driven
 // by tools.*.enabled). Disabled or misconfigured tools are skipped with a
 // log line — the chat still runs, just without that capability (§14:
 // search stays disabled until the key exists). The fs_* tools ride the
-// scratchpad and are always available; files_share needs an ArtifactSink.
-func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client, artifacts ArtifactSink) *Registry {
+// scratchpad and are always available; files_share needs an ArtifactSink;
+// code_run needs a Runner and is registered only when code execution is
+// enabled (§9.9 layer 1: opt-in).
+func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client,
+	artifacts ArtifactSink, code runner.Runner) *Registry {
 	reg := NewRegistry(func(name string) string {
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {
 			return p
@@ -55,6 +59,15 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	reg.Register(FsDelete{})
 	if artifacts != nil {
 		reg.Register(FilesShare{Sink: artifacts})
+	}
+	if cfg.Scratchpad.CodeExec.Enabled && code != nil {
+		reg.Register(CodeRun{
+			Runner:    code,
+			Runtimes:  cfg.Scratchpad.CodeExec.AllowedRuntimes,
+			Timeout:   cfg.Scratchpad.CodeExec.Timeout.D(),
+			MaxOutput: int(cfg.Scratchpad.CodeExec.MaxOutput),
+			UserQuota: int64(cfg.Scratchpad.UserQuota),
+		})
 	}
 
 	if reg.Enabled() {

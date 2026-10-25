@@ -33,7 +33,7 @@ func newRealToolServer(t *testing.T, replies [][]string) (*authTest, *toolLLM, *
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test")
+	s := New(cfg, db, logger, "test", nil)
 	ts := httptest.NewServer(s.Handler())
 
 	a := newAuthTestOn(t, ts, db)

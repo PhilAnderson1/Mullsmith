@@ -145,7 +145,7 @@ func newToolServer(t *testing.T, cfg *config.Config, reg *tools.Registry,
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test")
+	s := New(cfg, db, logger, "test", nil)
 	s.tools = reg
 	ts := httptest.NewServer(s.Handler())
 
