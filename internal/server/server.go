@@ -11,26 +11,44 @@ import (
 	"strings"
 	"time"
 
+	"gabkeep/internal/auth"
 	"gabkeep/internal/config"
+	"gabkeep/internal/store"
 	"gabkeep/web"
 )
 
 // Server is the assembled gabkeep HTTP application.
 type Server struct {
 	cfg     *config.Config
+	store   *store.DB
 	logger  *slog.Logger
 	appVer  string
+	limiter *auth.Limiter
+	locks   *auth.LoginLocks
 	httpSrv *http.Server
 }
 
 // New builds the full handler chain. Middleware order (outermost first):
-// requestID → logRequests → recoverPanics → securityHeaders → bodyLimit → mux.
-func New(cfg *config.Config, logger *slog.Logger, appVer string) *Server {
-	s := &Server{cfg: cfg, logger: logger, appVer: appVer}
+// requestID → logRequests → recoverPanics → securityHeaders → csrfProtect →
+// bodyLimit → mux.
+func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *Server {
+	s := &Server{
+		cfg:     cfg,
+		store:   db,
+		logger:  logger,
+		appVer:  appVer,
+		limiter: auth.NewLimiter(),
+		locks:   auth.NewLoginLocks(),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/meta", s.handleMeta)
+	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.Handle("POST /api/v1/auth/logout", s.authRequired(s.handleLogout))
+	mux.Handle("GET /api/v1/auth/me", s.authRequired(s.handleMe))
+	mux.Handle("POST /api/v1/auth/password", s.authRequired(s.handleChangePassword))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
 	// Bare "/" is the lowest-priority sink: it catches "/" (index), unknown
 	// paths (JSON 404) and wrong verbs on known paths (JSON 405). Go's
@@ -39,6 +57,7 @@ func New(cfg *config.Config, logger *slog.Logger, appVer string) *Server {
 
 	var h http.Handler = mux
 	h = bodyLimit(h, int64(cfg.Limits.MaxBodyBytes))
+	h = csrfProtect(cfg, logger)(h)
 	h = securityHeaders(cfg)(h)
 	h = recoverPanics(h, logger)
 	h = logRequests(h, logger)

@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"gabkeep/internal/config"
+	"gabkeep/internal/store"
 )
 
 func testCfg() *config.Config {
@@ -21,13 +23,33 @@ func testCfg() *config.Config {
 		},
 		LLM:  config.LLM{Models: []string{"m1"}},
 		Auth: config.Auth{Registration: "invite-only"},
+		// config.Load applies these defaults; struct-literal test configs
+		// must set them too or bodyLimit rejects every POST (max=0).
+		Limits: config.Limits{MaxBodyBytes: 1 << 20, MaxMessageChars: 32000},
 	}
+}
+
+func testStore(t *testing.T) *store.DB {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }
 
 func newTestServer(t *testing.T, cfg *config.Config) *httptest.Server {
 	t.Helper()
+	ts, _ := newTestServerWithDB(t, cfg)
+	return ts
+}
+
+func newTestServerWithDB(t *testing.T, cfg *config.Config) (*httptest.Server, *store.DB) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return httptest.NewServer(New(cfg, logger, "test").Handler())
+	db := testStore(t)
+	return httptest.NewServer(New(cfg, db, logger, "test").Handler()), db
 }
 
 func TestHealthz(t *testing.T) {
