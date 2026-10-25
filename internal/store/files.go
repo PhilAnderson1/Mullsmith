@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -167,20 +168,42 @@ func (d *DB) AttachFilesToMessage(ctx context.Context, messageID, userID string,
 
 // FilesForMessage returns the files attached to a message (for API JSON).
 func (d *DB) FilesForMessage(ctx context.Context, messageID string) ([]File, error) {
-	rows, err := d.sqlDB.QueryContext(ctx,
-		`SELECT `+fileCols+` FROM files WHERE id IN (SELECT file_id FROM attachments WHERE message_id = ?)
-		 ORDER BY created_at, id`, messageID)
+	m, err := d.filesForMessages(ctx, []string{messageID})
+	return m[messageID], err
+}
+
+func (d *DB) filesForMessages(ctx context.Context, messageIDs []string) (map[string][]File, error) {
+	placeholders := strings.Repeat("?,", len(messageIDs))
+	q := `SELECT a.message_id, ` + fileCols + `
+	       FROM attachments a JOIN files f ON f.id = a.file_id
+	       WHERE a.message_id IN (` + placeholders[:len(placeholders)-1] + `)
+	       ORDER BY a.message_id, f.created_at, f.id`
+	args := make([]any, len(messageIDs))
+	for i, id := range messageIDs {
+		args[i] = id
+	}
+	rows, err := d.sqlDB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []File
+	out := map[string][]File{}
 	for rows.Next() {
-		f, err := scanFile(rows)
-		if err != nil {
+		var (
+			msgID   string
+			f       File
+			created int64
+			expires int64
+		)
+		if err := rows.Scan(&msgID, &f.ID, &f.UserID, &f.ConversationID, &f.Kind, &f.RelPath,
+			&f.MediaType, &f.Name, &f.Size, &f.SHA256, &created, &expires); err != nil {
 			return nil, err
 		}
-		out = append(out, f)
+		f.CreatedAt = time.Unix(created, 0)
+		if expires > 0 {
+			f.ExpiresAt = time.Unix(expires, 0)
+		}
+		out[msgID] = append(out[msgID], f)
 	}
 	return out, rows.Err()
 }

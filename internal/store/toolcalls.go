@@ -78,8 +78,8 @@ func (d *DB) ToolCallsForMessages(ctx context.Context, msgIDs []string) (map[str
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			tc            ToolCall
-			created, fin  int64
+			tc           ToolCall
+			created, fin int64
 		)
 		if err := rows.Scan(&tc.ID, &tc.MessageID, &tc.LLMCallID, &tc.Tool, &tc.Arguments,
 			&tc.Status, &tc.Result, &tc.DurationMS, &created, &fin); err != nil {

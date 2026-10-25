@@ -24,6 +24,9 @@ type Message struct {
 	// Calls holds the audit rows for assistant messages that proposed tool
 	// calls (context replay + reload rendering). Read-only projection.
 	Calls []ToolCall
+	// Files holds uploads attached to user messages (context manifest +
+	// UI chips). Read-only projection.
+	Files []File
 }
 
 // AddMessage inserts a message and bumps the conversation's updated_at in one
@@ -186,6 +189,9 @@ func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Me
 	if err := d.attachCalls(ctx, out); err != nil {
 		return nil, err
 	}
+	if err := d.attachFiles(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -207,6 +213,29 @@ func (d *DB) attachCalls(ctx context.Context, msgs []Message) error {
 	for i := range msgs {
 		if c, ok := byMsg[msgs[i].ID]; ok {
 			msgs[i].Calls = c
+		}
+	}
+	return nil
+}
+
+// attachFiles fills .Files on user messages that carry uploads.
+func (d *DB) attachFiles(ctx context.Context, msgs []Message) error {
+	var ids []string
+	for _, m := range msgs {
+		if m.Role == "user" {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	byMsg, err := d.filesForMessages(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		if fs, ok := byMsg[msgs[i].ID]; ok {
+			msgs[i].Files = fs
 		}
 	}
 	return nil
@@ -274,6 +303,9 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 		items[i], items[j] = items[j], items[i]
 	}
 	if err := d.attachCalls(ctx, items); err != nil {
+		return nil, "", err
+	}
+	if err := d.attachFiles(ctx, items); err != nil {
 		return nil, "", err
 	}
 	if hasMore && len(items) > 0 {

@@ -68,6 +68,10 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string) *
 	mux.Handle("POST /api/v1/messages/{id}/regenerate", s.authRequired(s.handleRegenerate))
 	mux.Handle("POST /api/v1/generations/{id}/abort", s.authRequired(s.handleAbort))
 	mux.Handle("POST /api/v1/generations/{id}/approvals", s.authRequired(s.handleApproval))
+	mux.Handle("POST /api/v1/files", s.authRequired(s.handleFileUpload))
+	mux.Handle("GET /api/v1/files", s.authRequired(s.handleFileList))
+	mux.Handle("GET /api/v1/files/{id}/download", s.authRequired(s.handleFileDownload))
+	mux.Handle("DELETE /api/v1/files/{id}", s.authRequired(s.handleFileDelete))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
 	// Bare "/" is the lowest-priority sink: it catches "/" (index), unknown
 	// paths (JSON 404) and wrong verbs on known paths (JSON 405). Go's
@@ -135,6 +139,11 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			"web_fetch":  s.cfg.Tools.WebFetch.Enabled,
 			"code_run":   s.cfg.Scratchpad.CodeExec.Enabled,
 		},
+		"files": map[string]any{
+			"max_file_size":      int64(s.cfg.Scratchpad.MaxFileSize),
+			"max_attachments":    s.cfg.Limits.MaxAttachments,
+			"blocked_extensions": s.cfg.Scratchpad.BlockExtensions,
+		},
 	})
 }
 
@@ -170,9 +179,11 @@ func (s *Server) sinkHandler() http.HandlerFunc {
 // different verb than the caller used). Kept in sync with the mux table above.
 func isKnownPath(p string) bool {
 	switch {
-	case p == "/", p == "/healthz", p == "/api/v1/meta", p == "/assets":
+	case p == "/", p == "/healthz", p == "/api/v1/meta", p == "/assets", p == "/api/v1/files":
 		return true
 	case strings.HasPrefix(p, "/assets/"):
+		return true
+	case strings.HasPrefix(p, "/api/v1/files/"):
 		return true
 	}
 	return false

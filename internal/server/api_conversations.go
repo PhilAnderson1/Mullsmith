@@ -58,6 +58,13 @@ func messageJSON(m *store.Message) map[string]any {
 		}
 		j["tool_calls"] = calls
 	}
+	if len(m.Files) > 0 {
+		files := make([]map[string]any, 0, len(m.Files))
+		for i := range m.Files {
+			files = append(files, fileJSON(&m.Files[i]))
+		}
+		j["files"] = files
+	}
 	return j
 }
 

@@ -664,7 +664,7 @@ func TestChatValidation(t *testing.T) {
 	}{
 		{"empty", c.ID, map[string]any{"content": "   "}, 400, "empty_message"},
 		{"too long", c.ID, map[string]any{"content": strings.Repeat("x", 32001)}, 400, "message_too_long"},
-		{"attachments", c.ID, map[string]any{"content": "hi", "attachment_ids": []string{"att1"}}, 400, "attachments_unavailable"},
+		{"attachments", c.ID, map[string]any{"content": "hi", "attachment_ids": []string{"att1"}}, 400, "attachment_not_found"},
 		{"unknown conv", "0000000000000000000000", map[string]any{"content": "hi"}, 404, "not_found"},
 	}
 	for _, tc := range cases {

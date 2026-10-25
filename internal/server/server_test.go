@@ -25,7 +25,7 @@ func testCfg() *config.Config {
 		Auth: config.Auth{Registration: "invite-only"},
 		// config.Load applies these defaults; struct-literal test configs
 		// must set them too or bodyLimit rejects every POST (max=0).
-		Limits: config.Limits{MaxBodyBytes: 1 << 20, MaxMessageChars: 32000},
+		Limits: config.Limits{MaxBodyBytes: 1 << 20, MaxMessageChars: 32000, MaxAttachments: 8},
 	}
 }
 

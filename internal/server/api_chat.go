@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -40,19 +42,85 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "message_too_long", "message exceeds the size limit")
 		return
 	}
-	if len(body.AttachmentIDs) > 0 {
-		writeAPIError(w, r, http.StatusBadRequest, "attachments_unavailable", "attachments land in milestone M5")
+	attIDs, ok := s.validateAttachments(w, r, user.ID, body.AttachmentIDs)
+	if !ok {
 		return
 	}
 
 	// Persist the user turn first (spec §6.1 step 1), then stream. The user
 	// text also seeds auto-titling when the conversation is still unnamed.
 	s.streamAssistant(w, r, conv, content, func(bg context.Context) error {
-		return s.store.AddMessage(bg, user.ID, &store.Message{
+		msg := &store.Message{
 			ConversationID: conv.ID, Role: "user", Content: content,
 			TokenCount: int64ptr(int64(agent.EstimateTokens(content))),
-		})
+		}
+		if err := s.store.AddMessage(bg, user.ID, msg); err != nil {
+			return err
+		}
+		if len(attIDs) > 0 {
+			return s.store.AttachFilesToMessage(bg, msg.ID, user.ID, attIDs)
+		}
+		return nil
 	})
+}
+
+// validateAttachments checks count and ownership up front so a bad id fails
+// with 4xx BEFORE the user message is persisted. Files the user does not own
+// are reported as missing, never as forbidden (§9.2).
+func (s *Server) validateAttachments(w http.ResponseWriter, r *http.Request, userID string, ids []string) ([]string, bool) {
+	if len(ids) == 0 {
+		return nil, true
+	}
+	max := s.cfg.Limits.MaxAttachments
+	if max <= 0 { // defensive: configs built outside config.Load
+		max = 8
+	}
+	if len(ids) > max {
+		writeAPIError(w, r, http.StatusBadRequest, "too_many_attachments",
+			"at most "+strconv.Itoa(max)+" attachments per message")
+		return nil, false
+	}
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		fid := strings.TrimSpace(raw)
+		if seen[fid] {
+			continue
+		}
+		if !id.Valid(fid) {
+			writeAPIError(w, r, http.StatusBadRequest, "attachment_not_found",
+				"attachment does not exist")
+			return nil, false
+		}
+		seen[fid] = true
+		if _, err := s.store.GetFileForUser(r.Context(), userID, fid); err != nil {
+			if errors.Is(err, store.ErrFileNotFound) {
+				writeAPIError(w, r, http.StatusBadRequest, "attachment_not_found",
+					"attachment does not exist: "+fid)
+			} else {
+				s.logger.Error("attachment lookup", "error", err, "rid", RequestIDFrom(r.Context()))
+				writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+			}
+			return nil, false
+		}
+		out = append(out, fid)
+	}
+	return out, true
+}
+
+// attachmentManifest tells the model where this turn's uploads live so it
+// can fs_read them (§7.3). The manifest is generated server-side; upload
+// CONTENT remains untrusted data.
+func attachmentManifest(files []store.File) string {
+	var b strings.Builder
+	b.WriteString("\n\n[Attached files — stored in your scratchpad; open them with fs_read:]")
+	for _, f := range files {
+		b.WriteString("\n- name=" + jsonQuote(f.Name) +
+			" path=" + jsonQuote(f.RelPath) +
+			" media=" + f.MediaType +
+			" bytes=" + strconv.FormatInt(f.Size, 10))
+	}
+	return b.String()
 }
 
 // --- POST /api/v1/messages/{id}/regenerate (spec §5.2) ------------------------------
@@ -612,7 +680,11 @@ func historyToLLM(hist []store.Message, toolsEnabled bool) []llm.ChatMessage {
 			}
 			out = append(out, llm.ChatMessage{Role: "assistant", Content: m.Content, ToolCalls: replay})
 		default:
-			out = append(out, llm.ChatMessage{Role: m.Role, Content: m.Content})
+			content := m.Content
+			if m.Role == "user" && len(m.Files) > 0 {
+				content += attachmentManifest(m.Files)
+			}
+			out = append(out, llm.ChatMessage{Role: m.Role, Content: content})
 		}
 	}
 	if !toolsEnabled {
