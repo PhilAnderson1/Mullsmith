@@ -2,12 +2,14 @@
 # Values reflect the verified environment; see spec.md §2.2 for the reference.
 
 server:
-  listen: "192.168.0.3:8080"      # test box on the LAN (this host's enp1s0)
-  public_url: "http://192.168.0.3:8080"   # http + LAN bind → startup warns (§9.10); dev-only
+  listen: ":8443"                 # all interfaces, IPv4 + IPv6 (dual-stack socket)
+  public_url: "https://34nra.freeddns.org:8443"
   tls:
-    enabled: false
+    enabled: true                 # Let's Encrypt for 34nra.freeddns.org; certbot
+    cert_file: "/etc/gabkeep/tls/fullchain.pem"   # deploy hook refreshes these
+    key_file: "/etc/gabkeep/tls/privkey.pem"      # on renewal (root:ssl-cert)
   trusted_proxies: []
-  hsts_max_age: 0                 # dev: no TLS, so no HSTS
+  hsts_max_age: 31536000          # real cert → HSTS on (§9.10)
 
 database:
   dir: "./data/db"
@@ -67,7 +69,7 @@ auth:
   session_ttl: 24h
   remember_ttl: 720h
   remember_absolute_ttl: 2160h
-  cookie_secure: false            # dev over http; MUST be true in production
+  cookie_secure: true             # TLS now on (34nra.freeddns.org) — secure cookies
   max_failed_logins: 10
 
 limits:
