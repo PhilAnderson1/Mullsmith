@@ -211,12 +211,12 @@ func stageFiles(root, userID, workDir string, rels []string) ([]string, error) {
 		}
 		dst, err := scratch.CreateFile(root, userID, path.Join("work", base), 0o600)
 		if err != nil {
-			src.Close()
+			_ = src.Close()
 			return done, fsErr("code_run stage", err)
 		}
 		_, cpErr := io.Copy(dst, src)
-		src.Close()
-		dst.Close()
+		_ = src.Close()
+		_ = dst.Close()
 		if cpErr != nil {
 			return done, fmt.Errorf("code_run: staging %s failed", base)
 		}

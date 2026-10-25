@@ -197,6 +197,8 @@ func (d *DB) FilesForMessage(ctx context.Context, messageID string) ([]File, err
 
 func (d *DB) filesForMessages(ctx context.Context, messageIDs []string) (map[string][]File, error) {
 	placeholders := strings.Repeat("?,", len(messageIDs))
+	// #nosec G202 -- the interpolated fragment is "?,?,..." placeholders only;
+	// every value is bound as a parameter.
 	q := `SELECT a.message_id, ` + fileCols + `
 	       FROM attachments a JOIN files f ON f.id = a.file_id
 	       WHERE a.message_id IN (` + placeholders[:len(placeholders)-1] + `)

@@ -34,11 +34,11 @@ func Open(path string) (*DB, error) {
 	sqlDB.SetMaxOpenConns(1)
 	d := &DB{sqlDB: sqlDB}
 	if err := sqlDB.Ping(); err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 	if err := d.migrate(); err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return d, nil
@@ -82,12 +82,12 @@ func (d *DB) migrate() error {
 			return err
 		}
 		if _, err := tx.Exec(string(body)); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
 		if _, err := tx.Exec(`INSERT INTO schema_version(version, applied_at) VALUES(?, ?)`,
 			ver, time.Now().Unix()); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 		if err := tx.Commit(); err != nil {

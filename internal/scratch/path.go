@@ -135,7 +135,7 @@ func openParent(root, userID, rel string) (*openResult, error) {
 		nfd, err := unix.Openat(int(cur.Fd()), s,
 			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 		if err != nil {
-			cur.Close()
+			_ = cur.Close() // abandoning the fd chain either way
 			// Linux reports ENOTDIR (not ELOOP) when O_DIRECTORY meets a
 			// symlink under O_NOFOLLOW; either way it cannot be traversed.
 			if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
@@ -144,7 +144,7 @@ func openParent(root, userID, rel string) (*openResult, error) {
 			return nil, mapOpenErr(err)
 		}
 		next := os.NewFile(uintptr(nfd), s)
-		cur.Close()
+		_ = cur.Close() // old fd is superseded; a close error leaks at most the fd
 		cur = next
 	}
 	return &openResult{parent: cur, final: segs[len(segs)-1]}, nil

@@ -141,7 +141,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 			part = &multipartPart{display: sanitizeDisplayName(p.FileName()), reader: p}
 			break
 		}
-		p.Close() // form fields we do not use
+		_ = p.Close() // form fields we do not use
 	}
 	if part == nil {
 		writeAPIError(w, r, http.StatusBadRequest, "no_file", "a \"file\" part is required")
@@ -178,7 +178,9 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	tee := io.MultiWriter(tmp, hash)
 	n, err := io.Copy(tee, io.LimitReader(io.MultiReader(
 		bytes.NewReader(head[:nHead]), part.reader), max+1))
-	tmp.Close()
+	if cerr := tmp.Close(); err == nil {
+		err = cerr // a failed close can silently lose bytes pre-rename
+	}
 	switch {
 	case n > max:
 		writeAPIError(w, r, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds the size limit")
@@ -194,6 +196,9 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 
 	fileID := id.New()
 	rel := "uploads/" + fileID + ext
+	// #nosec G703 -- destination = configured root + session user's ULID +
+	// our own ULID + ext; uploadExtension came from path.Ext, which can never
+	// emit '/', and user.ID/fileID are server-generated ULIDs.
 	if err := os.Rename(tempName, filepath.Join(s.cfg.Scratchpad.Root, user.ID, rel)); err != nil {
 		s.logger.Error("upload rename", "error", err, "rid", RequestIDFrom(r.Context()))
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
@@ -212,7 +217,8 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateFile(r.Context(), rec); err != nil {
 		// Roll the physical file back so no orphan can exist on DB failure.
-		os.Remove(filepath.Join(s.cfg.Scratchpad.Root, user.ID, rel))
+		// #nosec G703 -- same ULID-composed path as the rename above.
+		_ = os.Remove(filepath.Join(s.cfg.Scratchpad.Root, user.ID, rel))
 		s.logger.Error("file row insert", "error", err, "rid", RequestIDFrom(r.Context()))
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return

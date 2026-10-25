@@ -63,6 +63,8 @@ func (d *DB) ToolCallsForMessages(ctx context.Context, msgIDs []string) (map[str
 	if len(msgIDs) == 0 {
 		return out, nil
 	}
+	// #nosec G202 -- placeholders() emits only "?, ?, ..." literals; every
+	// value is bound as a parameter.
 	q := `SELECT id, message_id, llm_call_id, tool, arguments, status,
 	             COALESCE(result, ''), COALESCE(duration_ms, 0), created_at, COALESCE(finished_at, 0)
 	      FROM tool_calls WHERE message_id IN (` + placeholders(len(msgIDs)) + `)

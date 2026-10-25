@@ -47,12 +47,14 @@ func New() string {
 	}
 
 	var b [16]byte
-	b[0] = byte(ms >> 40)
-	b[1] = byte(ms >> 32)
-	b[2] = byte(ms >> 24)
-	b[3] = byte(ms >> 16)
-	b[4] = byte(ms >> 8)
-	b[5] = byte(ms)
+	// Timestamp is the big-endian 48 high bits of ms: byte() is the intended
+	// per-byte mask, truncation here is the ULID layout, not an overflow.
+	b[0] = byte(ms >> 40) // #nosec G115
+	b[1] = byte(ms >> 32) // #nosec G115
+	b[2] = byte(ms >> 24) // #nosec G115
+	b[3] = byte(ms >> 16) // #nosec G115
+	b[4] = byte(ms >> 8)  // #nosec G115
+	b[5] = byte(ms)       // #nosec G115
 	copy(b[6:], entropy[:])
 
 	var out [26]byte

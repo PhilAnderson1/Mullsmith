@@ -145,6 +145,23 @@ func (r *genRegistry) Count() int {
 	return len(r.byID)
 }
 
+// abortAll cancels every in-flight generation and reports how many were
+// running. Graceful shutdown calls it first: streams finalize exactly like
+// a user-pressed Stop (partial answer persisted, "done" written) so
+// http.Server.Shutdown can actually complete within the grace window.
+func (r *genRegistry) abortAll() int {
+	r.mu.Lock()
+	gens := make([]*generation, 0, len(r.byID))
+	for _, g := range r.byID {
+		gens = append(gens, g)
+	}
+	r.mu.Unlock()
+	for _, g := range gens {
+		g.cancel()
+	}
+	return len(gens)
+}
+
 // waitIdle blocks until no generations are running or ctx expires — used at
 // shutdown so streams can persist their final state before the DB closes.
 func (r *genRegistry) waitIdle(ctx context.Context) {

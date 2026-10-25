@@ -126,7 +126,7 @@ func (b *BraveSearch) Execute(ctx context.Context, inv Invocation) (Result, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) // drain, never leak body
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) // drain, never leak body
 		return Result{}, fmt.Errorf("web_search: provider returned HTTP %d", resp.StatusCode)
 	}
 

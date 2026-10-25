@@ -116,6 +116,12 @@ func (s *Server) ServeTLS(ln net.Listener, certFile, keyFile string) error {
 
 func (s *Server) Shutdown(ctx context.Context) error { return s.httpSrv.Shutdown(ctx) }
 
+// AbortGenerations cancels all live generations (SIGTERM path in main):
+// SSE handlers observe ctx.Done, persist partial answers like an abort and
+// return, which lets Shutdown finish inside the grace period instead of
+// timing out on still-open streams.
+func (s *Server) AbortGenerations() int { return s.gens.abortAll() }
+
 // WaitIdle blocks until in-flight generations have finished (or ctx is
 // done). Called after Shutdown so streams can persist partial answers
 // before the database closes.

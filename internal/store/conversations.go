@@ -134,6 +134,8 @@ func (d *DB) UpdateConversation(ctx context.Context, userID, convID string, p Co
 	}
 	sets = append(sets, `updated_at = ?`)
 	args = append(args, time.Now().Unix(), convID, userID)
+	// #nosec G202 -- sets holds only hardcoded "col = ?" fragments; the join
+	// just wires them together, values bind as parameters.
 	q := `UPDATE conversations SET ` + strings.Join(sets, ", ") +
 		` WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
 	res, err := d.sqlDB.ExecContext(ctx, q, args...)

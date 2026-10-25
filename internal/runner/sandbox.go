@@ -66,7 +66,7 @@ func runSandbox() error {
 	if err := json.NewDecoder(f).Decode(&s); err != nil {
 		return fmt.Errorf("bad spec: %w", err)
 	}
-	f.Close() // before execve, so the interpreter never sees it
+	_ = f.Close() // before execve, so the interpreter never sees it
 	if s.Binary == "" || len(s.Args) == 0 {
 		return errors.New("spec missing binary/args")
 	}
@@ -132,6 +132,8 @@ func runSandbox() error {
 			}
 		}
 	}
+	// #nosec G204 -- this IS the sandbox hand-off: s.Binary/s.Args were
+	// validated by the parent (allowlist + fixed argv shape "bin -").
 	return syscall.Exec(s.Binary, s.Args, s.Env)
 }
 

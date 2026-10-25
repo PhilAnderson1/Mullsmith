@@ -110,6 +110,8 @@ func (d *Docker) Run(ctx context.Context, userID string, req Request) (Outcome, 
 	}
 	args = append(args, d.image, filepath.Base(req.Binary), "-")
 
+	// #nosec G204 -- dockerBin is LookPath("docker") at startup; every flag
+	// is a literal or a validated number; the script arrives on stdin.
 	cmd := exec.CommandContext(runCtx, d.dockerBin, args...)
 	cmd.Stdin = strings.NewReader(req.Script)
 	cmd.Cancel = func() error {
@@ -117,6 +119,8 @@ func (d *Docker) Run(ctx context.Context, userID string, req Request) (Outcome, 
 		if cid := readCID(cidFile); cid != "" {
 			kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer kcancel()
+			// #nosec G204 -- cid is the container id we asked docker to write
+			// into our own cidfile; worst case "docker kill <nonsense>" fails.
 			_ = exec.CommandContext(kctx, d.dockerBin, "kill", cid).Run()
 		}
 		if cmd.Process != nil {
@@ -175,7 +179,7 @@ func (d *Docker) Run(ctx context.Context, userID string, req Request) (Outcome, 
 }
 
 func readCID(p string) string {
-	b, err := os.ReadFile(p)
+	b, err := os.ReadFile(p) // #nosec G304 -- p is our own cidfile created by docker under os.TempDir
 	if err != nil {
 		return ""
 	}

@@ -111,7 +111,7 @@ func NewForConfig(cfg *config.Config) (Runner, []string, error) {
 	if maxOut <= 0 {
 		maxOut = 32 << 10
 	}
-	maxMem := uint64(ce.MaxMemory)
+	maxMem := uint64(ce.MaxMemory) // #nosec G115 -- config.Size parses only non-negative values
 	if maxMem == 0 {
 		maxMem = 512 << 20
 	}
@@ -119,7 +119,7 @@ func NewForConfig(cfg *config.Config) (Runner, []string, error) {
 		Timeout:     timeout,
 		MaxOutput:   maxOut,
 		MaxMemory:   maxMem,
-		MaxFileSize: uint64(cfg.Scratchpad.MaxFileSize),
+		MaxFileSize: uint64(cfg.Scratchpad.MaxFileSize), // #nosec G115 -- config.Size parses only non-negative values
 	}
 
 	var warn []string

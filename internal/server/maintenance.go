@@ -101,7 +101,9 @@ func (s *Server) sweepScratchpad(ctx context.Context) {
 			continue
 		}
 		userID := name
-		filepath.WalkDir(filepath.Join(root, userID), func(p string, d fs.DirEntry, err error) error {
+		// #nosec G104 -- the walk callback swallows per-entry errors by design
+		// (unreadable entries must not abort the sweep)
+		_ = filepath.WalkDir(filepath.Join(root, userID), func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil // unreadable entries never abort the walk
 			}

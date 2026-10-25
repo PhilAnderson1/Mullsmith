@@ -259,7 +259,9 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		return Result{}, fsErr("fs_write", err)
 	}
 	n, err := f.WriteString(args.Content)
-	f.Close()
+	if cerr := f.Close(); err == nil {
+		err = cerr // surface a flush failure, not just the WriteString one
+	}
 	if err != nil {
 		_ = scratch.Remove(root, inv.UserID, rel)
 		return Result{}, errors.New("write failed")
@@ -395,10 +397,10 @@ func (s FilesShare) Execute(ctx context.Context, inv Invocation) (Result, error)
 	}
 	hash := sha256.New()
 	if _, err := io.Copy(hash, f); err != nil {
-		f.Close()
+		_ = f.Close()
 		return Result{}, errors.New("could not hash the file")
 	}
-	f.Close()
+	_ = f.Close()
 
 	name := path.Base(rel)
 	rec := ArtifactRecord{

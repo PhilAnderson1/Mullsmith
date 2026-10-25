@@ -193,6 +193,9 @@ func run(args []string) int {
 		return 0
 	case <-ctx.Done():
 		logger.Info("shutting down", "grace", cfg.Server.ShutdownGrace.D().String())
+		if n := srv.AbortGenerations(); n > 0 {
+			logger.Info("cancelling in-flight generations", "count", n)
+		}
 		sctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.D())
 		defer cancel()
 		if err := srv.Shutdown(sctx); err != nil {

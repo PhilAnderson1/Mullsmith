@@ -210,9 +210,16 @@ type Auth struct {
 	SessionTTL          Duration `yaml:"session_ttl"`
 	RememberTTL         Duration `yaml:"remember_ttl"`
 	RememberAbsoluteTTL Duration `yaml:"remember_absolute_ttl"`
-	CookieSecure        bool     `yaml:"cookie_secure"`
+	CookieSecure        *bool    `yaml:"cookie_secure"`
 	MaxFailedLogins     int      `yaml:"max_failed_logins"`
 	Argon2              Argon2   `yaml:"argon2"`
+}
+
+// SecureCookies reports whether cookies must carry the Secure flag. It
+// defaults to true: sessions are Secure unless a deployment explicitly opts
+// out (plain-http dev box), never because a field was forgotten (§9.1).
+func (a *Auth) SecureCookies() bool {
+	return a.CookieSecure == nil || *a.CookieSecure
 }
 
 type Argon2 struct {
@@ -260,7 +267,7 @@ func expandEnv(in string) (string, error) {
 // Load reads, expands, decodes (strict), defaults and validates the config.
 // Relative paths are resolved against the config file's directory.
 func Load(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is the operator-supplied -config argument
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
@@ -613,6 +620,11 @@ func (c *Config) Validate() error {
 	if c.Auth.Argon2.Time < 1 || c.Auth.Argon2.Memory < 1024 || c.Auth.Argon2.Threads < 1 {
 		f.bad("auth.argon2: need time >= 1, memory >= 1024 KiB, threads >= 1")
 	}
+	// Upper bounds: typo-sized parameters are an OOM/hang waiting to happen,
+	// and auth.HashPassword widens these ints to uint32/uint8.
+	if c.Auth.Argon2.Time > 4096 || c.Auth.Argon2.Memory > 1048576 || c.Auth.Argon2.Threads > 64 {
+		f.bad("auth.argon2: parameters out of sane range (max time 4096, memory 1048576 KiB, threads 64)")
+	}
 
 	switch c.Logging.Level {
 	case "debug", "info", "warn", "error":
@@ -637,8 +649,8 @@ func (c *Config) Warnings() []string {
 	if c.Server.TLS.Enabled && !strings.HasPrefix(c.Server.PublicURL, "https://") {
 		w = append(w, "TLS is enabled but server.public_url is not https://")
 	}
-	if !strings.HasPrefix(c.Server.PublicURL, "https://") && c.Auth.CookieSecure {
-		w = append(w, "auth.cookie_secure is true but public_url is plain http — Secure cookies cannot be delivered over http")
+	if !strings.HasPrefix(c.Server.PublicURL, "https://") && c.Auth.SecureCookies() {
+		w = append(w, "cookies are Secure but public_url is plain http — Secure cookies cannot be delivered over http; set auth.cookie_secure: false deliberately (spec §9.1)")
 	}
 	if c.Server.HSTSMaxAge > 0 && !c.Server.TLS.Enabled {
 		w = append(w, "server.hsts_max_age > 0 but TLS is disabled — HSTS headers will never be sent")
@@ -719,9 +731,9 @@ func dirWritable(dir string) error {
 		return err
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if _, err := f.WriteString("x"); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	return f.Close()

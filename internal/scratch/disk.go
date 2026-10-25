@@ -12,6 +12,10 @@ func DiskFloorOK(dir string) bool {
 	if err := unix.Statfs(dir, &st); err != nil {
 		return true
 	}
+	if st.Bsize <= 0 {
+		return true // nonsensical statfs result: fail open, same policy
+	}
+	// #nosec G115 -- Bsize clamped positive above; Blocks/Bavail are counts
 	total := st.Blocks * uint64(st.Bsize)
 	free := st.Bavail * uint64(st.Bsize)
 	return total == 0 || free*20 >= total // free >= 5 %

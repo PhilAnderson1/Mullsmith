@@ -113,11 +113,15 @@ func (h *hostRunner) Run(ctx context.Context, userID string, req Request) (Outco
 		defer pr.Close()
 		go func() { // spec is tiny; close signals EOF after write
 			_ = json.NewEncoder(pw).Encode(spec)
-			pw.Close()
+			_ = pw.Close()
 		}()
+		// #nosec G204 -- launcher is /proc/self/exe (or the test binary); the
+		// sandboxed program travels as data on fd 3, never as argv.
 		cmd = exec.CommandContext(runCtx, h.launcherPath(), SandboxArg)
 		cmd.ExtraFiles = []*os.File{pr}
 	} else {
+		// #nosec G204 -- req.Binary is resolved from the config runtime
+		// allowlist in tools.CodeRun; the script is delivered on stdin.
 		cmd = exec.CommandContext(runCtx, req.Binary, "-")
 		cmd.Dir = req.WorkDir
 		cmd.Env = env

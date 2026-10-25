@@ -29,7 +29,8 @@ func HashPassword(password string, p config.Argon2) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	dk := argon2.IDKey([]byte(password), salt, uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen)
+	dk := argon2.IDKey([]byte(password), salt,
+		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen) // #nosec G115 -- config bounds 1..4096 / 1KiB..1GiB / 1..64 (§ auth.argon2)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, p.Memory, p.Time, p.Threads,
 		base64.RawStdEncoding.EncodeToString(salt),
@@ -63,7 +64,10 @@ func VerifyPassword(password, encoded string) bool {
 	if err != nil {
 		return false
 	}
-	got := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(want)))
+	if len(want) != keyLen {
+		return false // every hash we ever wrote is keyLen bytes (§9.1 fail closed)
+	}
+	got := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, keyLen)
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
@@ -75,8 +79,8 @@ var dummySalt = []byte("gabkeep-dummy-salt")
 // for unknown emails take as long as wrong-password responses.
 func DummyVerify(p config.Argon2) {
 	want := argon2.IDKey([]byte("gabkeep-timing-equaliser"), dummySalt,
-		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen)
+		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen) // #nosec G115 -- validated params
 	got := argon2.IDKey([]byte("gabkeep-timing-equaliser-other"), dummySalt,
-		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen)
+		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen) // #nosec G115 -- validated params
 	_ = subtle.ConstantTimeCompare(got, want)
 }
