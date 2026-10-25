@@ -158,6 +158,7 @@ func run(args []string) int {
 	}()
 
 	go expireSessionsLoop(ctx, db, logger)
+	go srv.RunMaintenance(ctx) // scratchpad lifecycle sweeps (spec §8)
 
 	select {
 	case err := <-serveErr:
