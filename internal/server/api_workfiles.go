@@ -44,29 +44,24 @@ func workPathFrom(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return strings.Join(segs, "/"), true
 }
 
-func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
-	user := UserFrom(r.Context())
-	if err := scratch.EnsureUserDirs(s.cfg.Scratchpad.Root, user.ID); err != nil {
-		s.logger.Error("provision scratchpad", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-	dir, err := scratch.Resolve(s.cfg.Scratchpad.Root, user.ID, "work")
+// workEntries walks the user's work/ dir and returns display entries sorted
+// newest-modified first, plus whether the workListMax cap was hit. Paths in
+// exclude (already registered in the files table) are skipped, so the All
+// view never shows a file twice. Metadata only — §9.7 keeps Resolve safe
+// for display/walking, while download/delete re-open fd-pinned. Hidden
+// files (dot-prefixed tmp leftovers), symlinks and non-regular files stay
+// out of the list.
+func workEntries(root, userID string, exclude map[string]bool) ([]map[string]any, bool) {
+	dir, err := scratch.Resolve(root, userID, "work")
 	if err != nil {
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-		return
+		return nil, false
 	}
-
 	type entry struct {
 		mtime time.Time
 		json  map[string]any
 	}
 	var entries []entry
 	truncated := false
-	// WalkDir never follows symlinks; entries are metadata only (§9.7 keeps
-	// Resolve for display/walking safe, while download/delete re-open
-	// fd-pinned). Hidden files (dot-prefixed, e.g. tmp leftovers) are noise
-	// and stay out of the list; so do symlinks and anything non-regular.
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // unreadable entries do not fail the listing
@@ -99,6 +94,9 @@ func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		rel := "work/" + filepath.ToSlash(sub)
+		if exclude[rel] {
+			return nil
+		}
 		entries = append(entries, entry{mtime: info.ModTime(), json: map[string]any{
 			"kind":         "work",
 			"path":         rel,
@@ -110,11 +108,21 @@ func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].mtime.After(entries[j].mtime) })
-
 	items := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		items = append(items, e.json)
 	}
+	return items, truncated
+}
+
+func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
+	user := UserFrom(r.Context())
+	if err := scratch.EnsureUserDirs(s.cfg.Scratchpad.Root, user.ID); err != nil {
+		s.logger.Error("provision scratchpad", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	items, truncated := workEntries(s.cfg.Scratchpad.Root, user.ID, nil)
 	used, _ := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":      items,

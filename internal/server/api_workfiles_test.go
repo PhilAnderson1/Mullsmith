@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -231,6 +232,106 @@ func TestWorkDelete(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("delete directory: %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAllIncludesWorkFiles(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "w5@test.io", "gk-code-1")
+	uid := meID(a)
+
+	up := a.upload("sales.csv", []byte("a,b\n"))
+	up.Body.Close()
+	time.Sleep(1100 * time.Millisecond) // row created_at is second-granular
+	seedWork(t, cfg, uid, "work/script_out.txt", []byte("unregistered"))
+	// A work file that IS registered (files_share registers in place): the
+	// All view must show the row, not the physical file too.
+	seedWork(t, cfg, uid, "work/shared.txt", []byte("shared"))
+	if err := a.db.CreateFile(context.Background(), &store.File{
+		ID: id.New(), UserID: uid, Kind: store.FileKindArtifact, RelPath: "work/shared.txt",
+		MediaType: "text/plain", Name: "shared.txt", Size: 7,
+		SHA256: []byte("x"), CreatedAt: time.Now().Add(-time.Hour), // predates the work file
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, _ := decodedBody(t, a.do(http.MethodGet, "/api/v1/files", nil))["items"].([]any)
+	if len(items) != 3 { // upload row + artifact row + unregistered work file
+		t.Fatalf("All items = %v, want 3", items)
+	}
+	kinds := map[string]string{} // name → kind
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		kinds[m["name"].(string)] = m["kind"].(string)
+	}
+	if kinds["script_out.txt"] != "work" || kinds["shared.txt"] != "artifact" ||
+		kinds["sales.csv"] != "upload" {
+		t.Errorf("All merge wrong: %v", kinds)
+	}
+	// Newest-modified first: the work file was written after the upload.
+	first := items[0].(map[string]any)
+	if first["name"] != "script_out.txt" {
+		t.Errorf("first item = %v, want the work file", first)
+	}
+
+	// Kind filters stay registry-only.
+	for kind, want := range map[string]int{"upload": 1, "artifact": 1} {
+		lj := decodedBody(t, a.do(http.MethodGet, "/api/v1/files?kind="+kind, nil))
+		got, _ := lj["items"].([]any)
+		if len(got) != want {
+			t.Errorf("kind=%s items = %v, want %d", kind, got, want)
+		}
+	}
+}
+
+func TestAllPaginationNoWorkDupes(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "w6@test.io", "gk-code-1")
+	uid := meID(a)
+	// Rows are seeded straight into the DB (identical shape to the upload
+	// path) so a 55-item paging test does not fight the HTTP upload limiter.
+	for i := 0; i < 55; i++ {
+		fid := id.New()
+		if err := a.db.CreateFile(context.Background(), &store.File{
+			ID: fid, UserID: uid, Kind: store.FileKindUpload,
+			RelPath: "uploads/" + fid + ".txt", MediaType: "text/plain",
+			Name: fmt.Sprintf("row%02d.txt", i), Size: 1,
+			SHA256: []byte("x"), CreatedAt: time.Now().Add(-time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedWork(t, cfg, uid, "work/only_once.txt", []byte("physical"))
+
+	lj := decodedBody(t, a.do(http.MethodGet, "/api/v1/files", nil))
+	page1, _ := lj["items"].([]any)
+	if len(page1) != 51 { // 50 row cap + the unregistered work file
+		t.Fatalf("page1 len = %d, want 51", len(page1))
+	}
+	cursor, _ := lj["next_cursor"].(string)
+	if cursor == "" {
+		t.Fatal("expected a next cursor with 55 rows")
+	}
+	seen := 0
+	count := func(items []any) {
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			if m["path"] == "work/only_once.txt" {
+				seen++
+			}
+		}
+	}
+	count(page1)
+	lj = decodedBody(t, a.do(http.MethodGet, "/api/v1/files?cursor="+cursor, nil))
+	page2, _ := lj["items"].([]any)
+	count(page2)
+	if seen != 1 {
+		t.Errorf("work file appeared %d times across pages, want exactly 1", seen)
+	}
+	if len(page2) != 5 {
+		t.Errorf("page2 len = %d, want 5", len(page2))
 	}
 }
 

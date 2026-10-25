@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -239,7 +240,8 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "bad_kind", "kind must be upload or artifact")
 		return
 	}
-	items, next, err := s.store.ListFiles(r.Context(), user.ID, kind, r.URL.Query().Get("cursor"), 50)
+	cursor := r.URL.Query().Get("cursor")
+	items, next, err := s.store.ListFiles(r.Context(), user.ID, kind, cursor, 50)
 	if err != nil {
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_cursor", "invalid pagination cursor")
 		return
@@ -248,12 +250,39 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 	for i := range items {
 		out = append(out, fileJSON(&items[i]))
 	}
+	// The unfiltered "All" view also shows UNREGISTERED work/ files (script
+	// output the model never shared), merged into the first page and deduped
+	// against rows that point into work/. Newer pages are row-only.
+	truncated := false
+	if kind == "" && cursor == "" {
+		registered, rerr := s.store.RegisteredPathsUnder(r.Context(), user.ID, "work/")
+		if rerr != nil {
+			s.logger.Warn("registered work paths lookup", "error", rerr, "rid", RequestIDFrom(r.Context()))
+		}
+		workItems, workTrunc := workEntries(s.cfg.Scratchpad.Root, user.ID, registered)
+		truncated = workTrunc
+		out = append(out, workItems...)
+		// Both timestamps are RFC3339-UTC from our own formatter, so
+		// lexicographic order equals chronological order.
+		sort.SliceStable(out, func(i, j int) bool { return listItemTime(out[i]) > listItemTime(out[j]) })
+	}
 	used, _ := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":       out,
 		"next_cursor": next,
+		"truncated":   truncated,
 		"quota":       map[string]any{"used_bytes": used, "total_bytes": int64(s.cfg.Scratchpad.UserQuota)},
 	})
+}
+
+// listItemTime is the sort key for the merged All view: modified_at for
+// physical work entries, created_at for registry rows.
+func listItemTime(item map[string]any) string {
+	if t, _ := item["modified_at"].(string); t != "" {
+		return t
+	}
+	t, _ := item["created_at"].(string)
+	return t
 }
 
 // inlineSafeTypes is the ONLY media types ever served inline (§9.4); html,

@@ -80,6 +80,28 @@ func (d *DB) FindArtifactByPath(ctx context.Context, userID, relPath string) (Fi
 	return f, err
 }
 
+// RegisteredPathsUnder returns the rel_paths of every row of the user whose
+// rel_path starts with prefix (e.g. "work/"). The All files view uses it to
+// skip physical work/ files that already have a row, so they are not listed
+// twice.
+func (d *DB) RegisteredPathsUnder(ctx context.Context, userID, prefix string) (map[string]bool, error) {
+	rows, err := d.sqlDB.QueryContext(ctx,
+		`SELECT rel_path FROM files WHERE user_id = ? AND rel_path LIKE ?`, userID, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out[p] = true
+	}
+	return out, rows.Err()
+}
+
 // UpdateArtifactOnShare refreshes size/hash and slides the TTL window forward
 // (§8: artifact_ttl expires from last use).
 func (d *DB) UpdateArtifactOnShare(ctx context.Context, fileID, mediaType string,
