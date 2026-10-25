@@ -12,7 +12,8 @@ of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
 * **Tools with an approval layer** — `web_search` (Brave) and SSRF-guarded
   `web_fetch`, per-conversation **scratchpad files** (`fs_list/fs_read/
   fs_write/fs_delete`, uploads from the browser, artifact download cards),
-  and optional sandboxed **`code_run`** (container or isolated mode). Every
+  and optional sandboxed **`code_run`** (bubblewrap jail — see
+  [Code execution](#security)). Every
   tool call is audited and shown as a card in the UI; policy decides which
   ones ask for confirmation first.
 * **Privacy** — everything lives on your machine: SQLite history, per-user
@@ -25,6 +26,9 @@ artifacts under [`docs/`](docs/). See [Security](#security) for residual risks.
 ## Requirements
 
 * 64-bit Linux (amd64/arm64). Anything else that runs Go works too.
+* The `bubblewrap` package (`apt install bubblewrap`) — only if you enable
+  `code_execution`; gabkeep refuses to start with code execution on when a
+  working bwrap is missing (spec §9.9).
 * An OpenAI-compatible endpoint for the model. v1 is text-only (current
   deployments use text chat models; image input support may come later).
 * To build: Go ≥ 1.24 (Ubuntu's `apt install golang-go` is fine if recent
@@ -163,12 +167,17 @@ per line, false-positive justifications included, is
   manipulated into *asking* you to approve something. Keep `code_run: confirm`
   (the default) and never combine `code_run: auto` with open registration —
   gabkeep warns when you do.
-* **Code execution is defence-in-depth, not a VM.** `container` mode uses
-  docker (default-off network); `isolated` mode needs gabkeep to run as root
-  with `run_as_user` to drop privileges — as non-root it degrades to
-  rlimits/no-new-privs only (gabkeep logs the degradation loudly). Files a
-  script produces can be shared back into the chat: assume anyone who can
-  approve runs can read/write that user's scratchpad.
+* **Code execution is defence-in-depth, not a VM.** Every run is jailed by
+  [bubblewrap](https://github.com/containers/bubblewrap): its own
+  user/mount/PID/net namespaces, a root filesystem containing only a
+  read-only `/usr` plus the one user `work/` dir (writable) — the database,
+  other users' files and server configs have no path inside the jail — with
+  rlimits, a scrubbed environment and no-new-privs underneath, and no
+  network unless you set `allow_network: true` (gabkeep warns when you do).
+  `bwrap` is a hard requirement when code execution is on: missing or
+  non-functional bwrap stops gabkeep at startup, never a silent downgrade.
+  Files a script produces can be shared back into the chat: assume anyone
+  who can approve runs can read/write that user's scratchpad.
 * **Uploads are for download, not browsing.** Uploaded HTML/SVG is stored but
   only ever served as `Content-Disposition: attachment` — yet once the user
   downloads and opens it locally, it runs with their local privileges.
@@ -203,6 +212,6 @@ internal/llm/       OpenAI-compatible streaming client (tools + reasoning channe
 internal/agent/     context budgeting + turn grouping fed to the model
 internal/tools/     registry + web_search/web_fetch/fs_*/files_share/code_run + SSRF egress guard
 internal/scratch/   path sandbox (§9.7): openat chain, O_NOFOLLOW, containment fuzzer
-internal/runner/    code execution: raw | isolated (rlimits, uid drop) | container (docker)
+internal/runner/    code execution: bubblewrap jail + rlimit launcher (§9.9)
 web/                embedded SPA: app.js, SSE client, DOM-only markdown renderer, CSS
 ```

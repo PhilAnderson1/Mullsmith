@@ -224,18 +224,49 @@ llm: {endpoint: "http://x/v1", model: m}
 			"absolute path",
 		},
 		{
-			"isolated needs run_as_user",
+			"retired mode key rejected",
 			`
 database: {dir: ./db}
 scratchpad:
   root: ./sp
   code_execution:
     enabled: true
+    mode: "isolated"
+    allowed_runtimes:
+      - { id: python3, binary: /usr/bin/python3 }
+llm: {endpoint: "http://x/v1", model: m}
+`,
+			"removed",
+		},
+		{
+			"retired run_as_user key rejected",
+			`
+database: {dir: ./db}
+scratchpad:
+  root: ./sp
+  code_execution:
+    enabled: true
+    run_as_user: nobody
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
 llm: {endpoint: "http://x/v1", model: m}
 `,
 			"run_as_user",
+		},
+		{
+			"retired container_image key rejected",
+			`
+database: {dir: ./db}
+scratchpad:
+  root: ./sp
+  code_execution:
+    enabled: true
+    container_image: python:3
+    allowed_runtimes:
+      - { id: python3, binary: /usr/bin/python3 }
+llm: {endpoint: "http://x/v1", model: m}
+`,
+			"container_image",
 		},
 		{
 			"bad log level",

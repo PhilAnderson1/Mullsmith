@@ -147,8 +147,9 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Code execution (§9.9): opt-in; mode misconfiguration (e.g. container
-	// without docker) is a startup error, degradation is a warning.
+	// Code execution (§9.9): opt-in and always bubblewrap-jailed; a missing
+	// or non-functional bwrap is a startup error, never a degradation.
+	// (NewForConfig also runs the jail probe here.)
 	codeRunner, codeWarns, err := runner.NewForConfig(cfg)
 	if err != nil {
 		logger.Error("code execution setup failed", "error", err)
@@ -464,6 +465,14 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 		fmt.Printf("[%s] llm.endpoint           %d model(s) served: %v\n", status, len(ids), ids)
 		if !found {
 			fmt.Printf("[FAIL] llm.model              %q not offered by endpoint\n", cfg.LLM.Model)
+		}
+	}
+	if cfg.Scratchpad.CodeExec.Enabled {
+		if err := runner.ProbeBwrap(); err != nil {
+			ok = false
+			fmt.Printf("[FAIL] code_execution       %v\n", err)
+		} else {
+			fmt.Printf("[ok]   code_execution       bubblewrap jail verified\n")
 		}
 	}
 	for _, w := range cfg.Warnings() {

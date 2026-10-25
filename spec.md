@@ -104,10 +104,9 @@ scratchpad:
   user_quota: 1GiB                # total bytes per user
   artifact_ttl: 168h              # clean generated artifacts older than this
   code_execution:
-    enabled: false                # opt-in; see §9.9 for enforcement modes
-    mode: "isolated"              # "isolated" (setuid/rlimits) | "container" | "raw" (§9.9)
-    container_image: "gabkeep-runner:latest"   # for mode: container
-    run_as_user: "gabkeep-sandbox"             # for mode: isolated
+    enabled: false                # opt-in; see §9.9 for enforcement
+    # One sandbox, always: bubblewrap. Requires the `bubblewrap` package;
+    # gabkeep refuses to start without a working bwrap when enabled.
     allowed_runtimes:             # allowlist of interpreters the model may invoke
       - { id: python3, binary: /usr/bin/python3 }
       - { id: sh,      binary: /bin/sh }
@@ -610,9 +609,9 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
 - Search-provider and LLM traffic goes to exactly the configured endpoints — the LLM API
   key is sent only to `llm.endpoint`, the search key only to the configured provider; keys
   never appear in outbound URLs (header only) or logs.
-- `code_run` networking: `container` mode is `--network=none` by default (`allow_network`
-  config flips it); `isolated` mode *cannot* enforce no-egress without root/namespaces —
-  stated as residual risk in §9.9 and README.
+- `code_run` networking: the bubblewrap jail drops the network namespace by default,
+  so no-egress is real without root (`allow_network: true` deliberately shares the
+  host netns — see §9.9, startup warns).
 
 ### 9.7 Scratchpad path safety
 
@@ -645,33 +644,41 @@ which also matters for privacy). `Server` header is just `gabkeep` (no version d
 
 ### 9.9 Code execution sandbox (defense in depth)
 
-The honest model: a Go subprocess on the host is **not** a sandbox. Layers:
+One enforcement path, fail closed: **bubblewrap (bwrap)**. At startup gabkeep
+probes a real jail; if bwrap is missing or its namespaces do not work (kernel
+policy disabling unprivileged user namespaces), it **refuses to start** with
+`code_execution.enabled: true` — never a silent downgrade. The retired multi-mode
+knobs (`mode`, `container_image`, `run_as_user`) are rejected as removed keys.
+Layers:
 
 1. **Opt-in.** `code_execution.enabled: false` by default — the product is fully useful
    (chat, search, files) without it.
-2. **Allowlisted runtimes** — config lists exact interpreter paths; the model supplies a
-   script via stdin or a temp file in `work/`, never a binary path or shell argv.
-3. **Mode `isolated` (default when enabled):** subprocess runs as a dedicated
-   unprivileged OS user (`run_as_user`), cwd = user's `work/`, **environment scrubbed to
-   an explicit minimal allowlist** (no config secrets, no LLM/API keys, no user env),
-   `RLIMIT_AS/CPU/NPROC/FSIZE` applied via `setrlimit` (in child before exec), no new
-   privileges. Recommended deployment additionally bind-mounts the scratchpad read-capped
-   or runs the whole binary in a container.
-4. **Mode `container` (recommended for internet-facing deployments):** each run is
-   `docker run --network=none --memory=… --cpus=… --read-only --pids-limit=… --security-opt
-   no-new-privileges` with the user's work dir bind-mounted and the interpreter inside the
-   image. Detected at startup; config error if docker unavailable.
-5. **Always:** wall-clock timeout (kill process group), output byte cap, max one concurrent
-   run per user (queue of 1, else "busy"), global concurrency cap.
+2. **Allowlisted runtimes** — config lists exact interpreter paths (resolved via
+   symlinks, required to live under `/usr`, the only tree the jail mounts); the model
+   supplies a script via stdin, never a binary path or shell argv.
+3. **The jail (always):** a per-run `bwrap --unshare-all --new-session --clearenv`
+   with fresh user/mount/PID/IPC/net/UTS/cgroup namespaces. The visible filesystem
+   is exactly: read-only host `/usr` (interpreters + libraries), minimal `/dev`
+   and `/proc`, and the user's `work/` dir bind-mounted read-write at `/work` —
+   the one writable location. The database, other users' scratchpads and server
+   config/secrets have **no path** inside the jail; a fresh PID namespace cannot
+   see or signal server processes. `HOME`/`TMPDIR` = `/work`; environment is
+   rebuilt from a five-variable allowlist. Network: the net namespace is dropped
+   unless `allow_network: true`, which instead shares the host netns plus
+   read-only resolver/CA files and logs a startup warning.
+4. **Resource layer (outermost):** the re-exec launcher applies `RLIMIT_AS/CPU/
+   FSIZE/NOFILE`, `RLIMIT_CORE=0` and `PR_SET_NO_NEW_PRIVS` before exec'ing bwrap,
+   so bwrap and the payload inherit them (bwrap cannot raise limits back up).
+5. **Always:** wall-clock timeout (kill process group), output byte cap, max one
+   concurrent run per user (queue of 1, else "busy"), global concurrency cap.
 6. **Approval:** default `code_run: confirm` → the human clicks "Allow run" before the
    process starts, and the UI shows the exact script (§6.1). Users may remember the choice
    per conversation.
 
-Residual risks stated in README: `isolated` mode shares the host network (exfil channel —
-see §9.13) and any kernel escape is in scope; `mode: raw` lets the model do anything the
-gabkeep OS user can and exists only for trusted single-user dev boxes. Multi-tenant
-internet-facing installs should run with code exec disabled or in `container` mode, and
-should never set `code_run: auto` (startup warns if auto + enabled + registration open).
+Residual risks stated in README: a kernel namespace escape is in scope;
+`allow_network: true` re-opens an exfiltration channel (§9.13); files a script
+produces can be shared back into the chat. Never combine `code_run: auto` with
+open registration (startup warns).
 
 ### 9.10 Transport & deployment security
 
@@ -913,9 +920,9 @@ calls), and a smoke script per milestone.
 - **Registration = invite-only** (the safe public-internet default given no email
   verification, §9.12). Admin mints codes: `gabkeep admin invite`; `open`/`closed` remain
   config choices.
-- **Code execution = `isolated` mode for this environment** — Docker is not available here,
-  so `container` mode (§9.9) can't be exercised on this host. `isolated` is the default;
-  `container` stays implemented for deployments that have Docker.
+- **Code execution = bubblewrap jail on this host** — `bubblewrap` 0.11.x is
+  installed and unprivileged user namespaces are enabled, so the single §9.9 mode
+  runs natively (verified by the startup probe). Docker is not used.
 
 ### 14.2 Awaiting input
 

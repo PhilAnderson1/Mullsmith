@@ -9,11 +9,13 @@ import (
 )
 
 // Sandbox support: Go's child-setup hook (SysProcAttr.WrapProcess) was
-// removed in Go 1.26, so isolated mode re-executes this very binary through
-// an internal subcommand that applies the §9.9 layers in the child BEFORE
-// the interpreter is exec'd: cwd, RLIMIT_*, PR_SET_NO_NEW_PRIVS, then the
-// gid/uid drop. Stdin (the script), stdout and stderr pass through
-// untouched. This keeps the single-binary promise intact.
+// removed in Go 1.26, so the runner re-executes this very binary through an
+// internal subcommand that applies the §9.9 rlimit layers in the child
+// BEFORE bwrap is exec'd: cwd, RLIMIT_*, PR_SET_NO_NEW_PRIVS (and, if ever
+// requested, a gid/uid drop — the bwrap runner always passes -1/-1 because
+// the jail's user namespace does that mapping). Stdin (the script), stdout
+// and stderr pass through untouched. This keeps the single-binary promise
+// intact: rlimits bound bwrap itself, and everything below it inherits them.
 
 const (
 	// SandboxArg is the hidden internal subcommand; users are not told

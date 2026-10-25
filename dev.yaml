@@ -21,9 +21,9 @@ scratchpad:
   artifact_ttl: 168h
   code_execution:
     enabled: true                 # M6 live testing (spec §9.9)
-    mode: "isolated"              # non-root here ⇒ DEGRADED warning at startup:
-                                  # rlimits/no_new_privs land, uid drop does not
-    run_as_user: "philip"         # self: honest degraded mode on this dev box
+    # Single mode: every run is jailed by bubblewrap (bwrap). Install the
+    # bubblewrap package or set enabled: false — gabkeep refuses to start
+    # without it.
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
       - { id: sh, binary: /bin/sh }

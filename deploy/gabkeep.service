@@ -51,8 +51,12 @@ ReadWritePaths=/var/lib/gabkeep
 PrivateTmp=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # If the LLM endpoint is a local unix socket only, you can drop AF_INET here.
-# For code_execution mode=container, systemd-level sandboxing must be
-# relaxed or delegated to docker entirely (README, "Code execution").
+# Code execution uses bubblewrap (unprivileged user namespaces). The systemd
+# hardening above is compatible: bwrap runs fully unprivileged and gabkeep
+# verifies a real jail at startup, refusing to start if it cannot. If your
+# distro or an added directive (e.g. a custom SystemCallFilter or
+# PrivateUsers=true) blocks unshare(CLONE_NEWUSER), the probe fails loudly —
+# adjust the unit rather than disabling the jail.
 
 [Install]
 WantedBy=multi-user.target

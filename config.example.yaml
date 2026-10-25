@@ -30,9 +30,12 @@ scratchpad:
   block_extensions: [exe, dll, so, bat, cmd, com, scr, msi, js, jar]
   code_execution:                 # §9.9 — OFF by default; enable deliberately
     enabled: false
-    mode: "container"             # container (needs docker) | isolated (root)
-    container_image: "gabkeep-runner:latest"
-    run_as_user: "gabkeep-runner"
+    # One sandbox, always: every script runs inside a bubblewrap (bwrap)
+    # jail — own namespaces, read-only /usr, only the user's work dir
+    # writable, network off unless allow_network. Requires the bubblewrap
+    # package; gabkeep refuses to start with enabled: true when bwrap is
+    # missing or unprivileged user namespaces are disabled.
+    # (Old keys mode/container_image/run_as_user are retired — remove them.)
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
     timeout: 30s

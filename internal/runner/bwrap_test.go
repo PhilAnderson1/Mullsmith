@@ -1,0 +1,550 @@
+package runner_test
+
+import (
+	"context"
+	"errors"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"gabkeep/internal/config"
+	"gabkeep/internal/runner"
+)
+
+// TestMain lets the test binary double as the sandbox launcher: when the
+// bwrap runner re-execs it with __sandbox-exec, MaybeSandboxMain takes over
+// before any test runs.
+func TestMain(m *testing.M) {
+	if runner.MaybeSandboxMain(os.Args) {
+		return
+	}
+	os.Exit(m.Run())
+}
+
+// requireBwrap skips unless a real jail works here (user namespaces can be
+// disabled by kernel policy — same question ProbeBwrap asks at startup).
+func requireBwrap(t *testing.T) {
+	t.Helper()
+	if err := runner.ProbeBwrap(); err != nil {
+		t.Skipf("bubblewrap unavailable: %v", err)
+	}
+}
+
+func bwrapOptions(t *testing.T) runner.Options {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner.Options{
+		Timeout: 10 * time.Second, MaxOutput: 1 << 20, MaxMemory: 256 << 20,
+		MaxFileSize: 1 << 20, GlobalCap: 4, LauncherPath: exe,
+	}
+}
+
+func newJail(t *testing.T) *runner.Bwrap {
+	t.Helper()
+	requireBwrap(t)
+	b, err := runner.NewBwrap(bwrapOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func mustEval(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func waitForFile(t *testing.T, path string, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared", path)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// --- basic execution through the full launcher→bwrap chain ----------------
+
+func TestJailRunExitCodeAndCwd(t *testing.T) {
+	b := newJail(t)
+	wd := t.TempDir()
+
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		RuntimeID: "sh", Binary: "/bin/sh", WorkDir: wd,
+		Script: "pwd; echo hello; exit 3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ExitCode != 3 {
+		t.Errorf("exit = %d, want 3", out.ExitCode)
+	}
+	if !strings.Contains(out.Stdout, "hello") {
+		t.Errorf("stdout = %q", out.Stdout)
+	}
+	if got, want := strings.TrimSpace(strings.Split(out.Stdout, "\n")[0]), "/work"; got != want {
+		t.Errorf("cwd inside jail = %q, want %q", got, want)
+	}
+}
+
+func TestJailWorkDirWritableHostOutsideVisible(t *testing.T) {
+	b := newJail(t)
+	wd := t.TempDir()
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: wd,
+		Script: `echo inside > wrote.txt`,
+	})
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("run failed: %v %+v", err, out)
+	}
+	got, err := os.ReadFile(filepath.Join(wd, "wrote.txt"))
+	if err != nil || strings.TrimSpace(string(got)) != "inside" {
+		t.Errorf("write inside jail not visible at host work dir: %q %v", got, err)
+	}
+}
+
+func TestJailSignalExitNormalized(t *testing.T) {
+	b := newJail(t)
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: t.TempDir(), Script: `kill -TERM $$`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ExitCode != 128+15 {
+		t.Errorf("exit = %d, want 143", out.ExitCode)
+	}
+}
+
+// --- the jail boundary (audit finding 1: this is what was missing) ---------
+
+func TestJailCannotSeeHostFiles(t *testing.T) {
+	b := newJail(t)
+	wd := t.TempDir()
+	// A canary outside the work dir: the jail must not know it exists.
+	outside := filepath.Join(t.TempDir(), "canary-outside.txt")
+	if err := os.WriteFile(outside, []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: wd,
+		Script: `for p in ` + outside + ` /etc/gabkeep/env /var/lib/gabkeep/db/gabkeep.db /etc/passwd /home; do
+  if [ -e "$p" ]; then echo "VISIBLE: $p"; else echo "no-path: $p"; fi
+done`,
+	})
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("run failed: %v %+v", err, out)
+	}
+	if strings.Contains(out.Stdout, "VISIBLE") {
+		t.Errorf("host file visible from jail:\n%s", out.Stdout)
+	}
+	for _, want := range []string{"no-path: " + outside, "no-path: /etc/gabkeep/env", "no-path: /var/lib/gabkeep/db/gabkeep.db"} {
+		if !strings.Contains(out.Stdout, want) {
+			t.Errorf("missing observation %q in %q", want, out.Stdout)
+		}
+	}
+}
+
+func TestJailRootIsReadOnly(t *testing.T) {
+	b := newJail(t)
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: t.TempDir(),
+		Script: `touch /bin/evil && echo "WRITE-TO-/(!)"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.Stdout, "WRITE-TO-/(!)") || out.ExitCode == 0 {
+		t.Errorf("jail root filesystem was writable: exit=%d out=%q", out.ExitCode, out.Stdout)
+	}
+}
+
+func TestJailNetworkBlockedByDefault(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+	b := newJail(t)
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: py, WorkDir: t.TempDir(), Timeout: 20 * time.Second,
+		Script: `
+import socket
+try:
+    socket.create_connection(("192.168.0.2", 80), timeout=3)
+    print("NETWORK(!)")
+except OSError as e:
+    print("blocked:", e.strerror or e)
+`,
+	})
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("run failed: %v %+v", err, out)
+	}
+	if strings.Contains(out.Stdout, "NETWORK(!)") || !strings.Contains(out.Stdout, "blocked:") {
+		t.Errorf("allow_network=false not enforced inside jail: %q", out.Stdout)
+	}
+}
+
+func TestJailNetworkAllowedWhenConfigured(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			c.Close()
+		}
+	}()
+
+	requireBwrap(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := bwrapOptions(t)
+	o.LauncherPath = exe
+	o.NetworkOpen = true
+	b, err := runner.NewBwrap(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: py, WorkDir: t.TempDir(), Timeout: 20 * time.Second,
+		Script: `
+import socket, sys
+try:
+    socket.create_connection(("127.0.0.1", ` + strings.Split(ln.Addr().String(), ":")[1] + `, ), timeout=3)
+    print("reachable")
+except OSError as e:
+    print("unreachable:", e)
+`,
+	})
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("run failed: %v %+v", err, out)
+	}
+	if !strings.Contains(out.Stdout, "reachable") {
+		t.Errorf("allow_network=true should reach the host netns: %q %q", out.Stdout, out.Stderr)
+	}
+}
+
+// --- always-on layers, observed from inside the jail -----------------------
+
+func TestJailEnvIsScrubbed(t *testing.T) {
+	t.Setenv("GABKEEP_LLM_API_KEY", "SECRET-KEY")
+	b := newJail(t)
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: t.TempDir(),
+		Script: `echo "S=[${GABKEEP_LLM_API_KEY}]"; echo "P=${PATH}"; echo "H=${HOME}"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.Stdout, "SECRET-KEY") {
+		t.Error("host environment leaked into the jail")
+	}
+	if !strings.Contains(out.Stdout, "P=/usr/bin:/bin") {
+		t.Errorf("PATH allowlist missing: %q", out.Stdout)
+	}
+	if !strings.Contains(out.Stdout, "H=/work") {
+		t.Errorf("HOME should be /work: %q", out.Stdout)
+	}
+}
+
+func TestJailLauncherLayersLand(t *testing.T) {
+	b := newJail(t)
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: t.TempDir(), Timeout: 7 * time.Second,
+		MaxMemory: 64 << 20, MaxFileSize: 1 << 20,
+		Script: `grep NoNewPrivs /proc/self/status
+echo "V=$(ulimit -v)"
+echo "F=$(ulimit -f)"
+echo "C=$(ulimit -c)"
+echo "T=$(ulimit -t)"
+echo "ENVN=$(env | grep -vE '^(_|PWD)=' | wc -l)"   # '_' and 'PWD' are the shell's own exports
+echo "ARG0=$0"`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ExitCode != 0 {
+		t.Fatalf("exit = %d, stderr = %q", out.ExitCode, out.Stderr)
+	}
+	want := map[string]string{
+		"NoNewPrivs:": "1",     // prctl NO_NEW_PRIVS landed (inherited by bwrap + payload)
+		"V=":          "65536", // RLIMIT_AS 64 MiB, in KiB
+		"F=":          "2048",  // RLIMIT_FSIZE 1 MiB, in 512B blocks
+		"C=":          "0",     // no core dumps
+		"T=":          "7",     // RLIMIT_CPU = wall timeout
+		"ENVN=":       "5",     // --clearenv + exactly the five --setenv vars
+	}
+	for k, v := range want {
+		line := findLine(t, out.Stdout, k)
+		if !strings.Contains(line, v) {
+			t.Errorf("%s layer: line %q does not carry %q (full stdout %q)", k, line, v, out.Stdout)
+		}
+	}
+	// argv is [resolvedBinary -]: /bin/sh resolves to the real interpreter.
+	arg0 := findLine(t, out.Stdout, "ARG0=")
+	if !strings.HasSuffix(arg0, "sh") {
+		t.Errorf("argv[0] = %q, want the allowlisted interpreter itself", arg0)
+	}
+}
+
+func findLine(t *testing.T, haystack, prefix string) string {
+	t.Helper()
+	for _, l := range strings.Split(haystack, "\n") {
+		if strings.HasPrefix(l, prefix) || strings.Contains(l, prefix) {
+			return l
+		}
+	}
+	t.Fatalf("no line with %q in %q", prefix, haystack)
+	return ""
+}
+
+func TestJailMemoryCapKillsGreedyScript(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+	b := newJail(t)
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: py, WorkDir: t.TempDir(), Timeout: 20 * time.Second,
+		MaxMemory: 256 << 20,
+		Script: `
+b = bytearray(1024 * 1024 * 1024)   # 1 GiB under a 256 MiB RLIMIT_AS
+print("allocated", len(b))          # must never execute
+`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ExitCode == 0 || strings.Contains(out.Stdout, "allocated") {
+		t.Errorf("1 GiB allocation survived the memory cap: exit=%d out=%q", out.ExitCode, out.Stdout)
+	}
+	if !strings.Contains(out.Stderr, "MemoryError") {
+		t.Errorf("want MemoryError in stderr, got %q", out.Stderr)
+	}
+}
+
+func TestJailOutputCap(t *testing.T) {
+	b := newJail(t)
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: t.TempDir(), MaxOutput: 1000,
+		Script: `head -c 100000 /dev/zero | tr '\0' 'x'`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Stdout) != 1000 || !out.Truncated {
+		t.Errorf("stdout len = %d trunc = %v, want 1000/true", len(out.Stdout), out.Truncated)
+	}
+}
+
+// TestJailTimeoutKillsWholeTree proves the §9.9 "process group kill" promise
+// through the jail: when Run returns TimedOut, the scripted grandchild's
+// heartbeat must stop writing. (The grandchild lives in the jail's PID
+// namespace, so its pids are deliberately NOT host-visible — the observable
+// effect, an ever-growing file, is what we check.)
+func TestJailTimeoutKillsWholeTree(t *testing.T) {
+	b := newJail(t)
+	wd := t.TempDir()
+	start := time.Now()
+	out, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: wd, Timeout: 1 * time.Second,
+		Script: `sh -c 'while :; do printf x >> beats.log; sleep 0.2; done' & wait`,
+	})
+	elapsed := time.Since(start)
+	if !out.TimedOut {
+		t.Fatalf("TimedOut = false (out %+v, err %v)", out, err)
+	}
+	if elapsed > 8*time.Second {
+		t.Errorf("timeout took %v, want ~1s", elapsed)
+	}
+	beats := filepath.Join(wd, "beats.log")
+	if _, err := os.Stat(beats); err != nil {
+		t.Fatalf("grandchild never started beating: %v", err)
+	}
+	s1, _ := os.Stat(beats)
+	time.Sleep(1200 * time.Millisecond) // five heartbeat intervals
+	s2, _ := os.Stat(beats)
+	if s2.Size() != s1.Size() {
+		return // no further writes: the whole tree died with the group kill
+	}
+	t.Errorf("jail grandchild survived the timeout kill (%d -> %d bytes)", s1.Size(), s2.Size())
+}
+
+func TestJailCancelKillsRun(t *testing.T) {
+	b := newJail(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Run(ctx, "userCancel", runner.Request{
+			Binary: "/bin/sh", WorkDir: t.TempDir(), Timeout: 30 * time.Second,
+			Script: "sleep 20",
+		})
+		done <- err
+	}()
+	time.Sleep(400 * time.Millisecond)
+	cancel() // stop button / abort
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+// TestPerUserBusy uses a marker file so the "slow" run is demonstrably in
+// flight before the contention attempts start (a bare sleep race lost).
+func TestPerUserBusy(t *testing.T) {
+	b := newJail(t)
+	wd := t.TempDir()
+	ctx := t.Context()
+
+	marker := filepath.Join(wd, "running.marker")
+	first := make(chan error, 1)
+	go func() {
+		_, err := b.Run(ctx, "userBusy", runner.Request{
+			Binary: "/bin/sh", WorkDir: wd, Timeout: 15 * time.Second,
+			Script: "echo started > running.marker; sleep 1.5",
+		})
+		first <- err
+	}()
+	waitForFile(t, marker, 8*time.Second) // generous: includes jail startup
+
+	// Same user while their run is in flight ⇒ refused, never queued (§9.9).
+	deadline := time.Now().Add(time.Second) // safely inside the 1.5 s sleep
+	for time.Now().Before(deadline) {
+		if _, err := b.Run(ctx, "userBusy", runner.Request{
+			Binary: "/bin/sh", WorkDir: wd, Timeout: 1 * time.Second, Script: "true",
+		}); !errors.Is(err, runner.ErrBusy) {
+			t.Fatalf("same-user run during in-flight run: err = %v, want ErrBusy", err)
+		}
+	}
+
+	// A different user is unaffected by userBusy's slot.
+	if _, err := b.Run(ctx, "userOther", runner.Request{
+		Binary: "/bin/sh", WorkDir: wd, Timeout: 15 * time.Second, Script: "true",
+	}); err != nil {
+		t.Errorf("other user blocked by userBusy's run: %v", err)
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("slow run failed: %v", err)
+	}
+	// The slot frees when the run finishes.
+	if _, err := b.Run(ctx, "userBusy", runner.Request{
+		Binary: "/bin/sh", WorkDir: wd, Timeout: 15 * time.Second, Script: "true",
+	}); err != nil {
+		t.Errorf("user still busy after their run completed: %v", err)
+	}
+}
+
+// --- input validation -------------------------------------------------------
+
+func TestRunRefusesBinaryOutsideUsr(t *testing.T) {
+	b := newJail(t)
+	// Copy a working interpreter somewhere off /usr: even though it runs
+	// fine on the host, the jail only mounts /usr, so it must be refused
+	// with a clear error instead of a dangling-path failure inside bwrap.
+	wd := t.TempDir()
+	shCopy := filepath.Join(wd, "pocket-interpreter")
+	src, err := os.ReadFile("/bin/sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shCopy, src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = b.Run(t.Context(), "userA", runner.Request{
+		Binary: shCopy, WorkDir: wd, Script: "true",
+	})
+	if err == nil || !strings.Contains(err.Error(), "/usr") {
+		t.Fatalf("runtime outside /usr must be refused mentioning /usr, got %v", err)
+	}
+}
+
+func TestRunRefusesMissingWorkDir(t *testing.T) {
+	b := newJail(t)
+	missing := filepath.Join(t.TempDir(), "nope")
+	if _, err := b.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: missing, Script: "true",
+	}); err == nil || !strings.Contains(err.Error(), "work dir") {
+		t.Fatalf("missing work dir must be refused, got %v", err)
+	}
+}
+
+// --- ProbeBwrap + NewForConfig startup validation (§9.9, fail closed) -------
+
+func TestProbeBwrapSucceedsWhereAvailable(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bubblewrap not installed here")
+	}
+	if err := runner.ProbeBwrap(); err != nil {
+		t.Errorf("probe failed on an installed bwrap: %v", err)
+	}
+}
+
+func codeExecConfig() *config.Config {
+	cfg := &config.Config{}
+	cfg.Scratchpad.CodeExec = config.CodeExecution{
+		Enabled:         true,
+		AllowedRuntimes: []config.Runtime{{ID: "sh", Binary: "/bin/sh"}},
+		Timeout:         config.Duration(30 * time.Second),
+		MaxOutput:       config.Size(32 << 10),
+		MaxMemory:       config.Size(256 << 20),
+	}
+	cfg.Scratchpad.MaxFileSize = config.Size(1 << 20)
+	return cfg
+}
+
+func TestNewForConfigDisabled(t *testing.T) {
+	cfg := codeExecConfig()
+	cfg.Scratchpad.CodeExec.Enabled = false
+	r, warns, err := runner.NewForConfig(cfg)
+	if r != nil || err != nil || len(warns) != 0 {
+		t.Fatalf("disabled code exec must yield nothing, got r=%v warns=%v err=%v", r, warns, err)
+	}
+}
+
+func TestNewForConfigEnabledBuildsJail(t *testing.T) {
+	requireBwrap(t)
+	r, _, err := runner.NewForConfig(codeExecConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r == nil {
+		t.Fatal("enabled code exec must yield a runner")
+	}
+	out, err := r.Run(t.Context(), "userA", runner.Request{
+		Binary: "/bin/sh", WorkDir: t.TempDir(), Script: `ls / | tr '\n' ' '`,
+	})
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("production-built runner failed: %v %+v", err, out)
+	}
+	if strings.Contains(out.Stdout, "etc/gabkeep") || strings.Contains(out.Stdout, "var") {
+		t.Errorf("unexpected host paths in jail root: %q", out.Stdout)
+	}
+}

@@ -33,8 +33,6 @@ func (f *fakeRunner) Run(ctx context.Context, userID string, req runner.Request)
 	return f.out, f.err
 }
 
-func (f *fakeRunner) Mode() string { return "fake" }
-
 func codeTool(r runner.Runner, quota int64) CodeRun {
 	return CodeRun{
 		Runner: r,

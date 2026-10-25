@@ -78,6 +78,9 @@ inputs are server-generated).
 ## Open items carried to release notes
 
 Registration emails are unverified in v1 (invite-only is the mitigation,
-warned at startup); `isolated` code mode degrades without root (warned);
-TLS termination left to operator choice. All three are stated in the README
-Security section.
+warned at startup); TLS termination left to operator choice. Both are stated
+in the README Security section. ~~`isolated` code mode degrades without
+root~~ — resolved 2026-10-26: multi-mode code execution was removed entirely;
+runs now always execute inside a bubblewrap jail (own namespaces, no host-file
+visibility, no network unless `allow_network`), and gabkeep refuses to start
+when bwrap is unavailable rather than degrade.

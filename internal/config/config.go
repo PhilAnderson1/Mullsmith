@@ -151,10 +151,14 @@ type Scratchpad struct {
 }
 
 type CodeExecution struct {
-	Enabled         bool      `yaml:"enabled"`
-	Mode            string    `yaml:"mode"` // isolated | container | raw
-	ContainerImage  string    `yaml:"container_image"`
-	RunAsUser       string    `yaml:"run_as_user"`
+	Enabled bool `yaml:"enabled"`
+	// Code execution always runs inside a bubblewrap jail (§9.9): there is
+	// exactly one mode and it is not configurable. The three fields below
+	// are retired — they exist only so Validate can tell operators running
+	// old configs what changed instead of failing on an unknown key.
+	Mode            string    `yaml:"mode"`            // retired
+	ContainerImage  string    `yaml:"container_image"` // retired
+	RunAsUser       string    `yaml:"run_as_user"`     // retired
 	AllowedRuntimes []Runtime `yaml:"allowed_runtimes"`
 	Timeout         Duration  `yaml:"timeout"`
 	MaxOutput       Size      `yaml:"max_output"`
@@ -365,9 +369,6 @@ func (c *Config) setDefaults() {
 		}
 		c.Scratchpad.BlockExtensions = merged
 	}
-	if c.Scratchpad.CodeExec.Mode == "" {
-		c.Scratchpad.CodeExec.Mode = "isolated"
-	}
 	if c.Scratchpad.CodeExec.Timeout == 0 {
 		c.Scratchpad.CodeExec.Timeout = Duration(30 * time.Second)
 	}
@@ -526,17 +527,24 @@ func (c *Config) Validate() error {
 	if c.Scratchpad.MaxFileSize <= 0 || c.Scratchpad.UserQuota <= 0 {
 		f.bad("scratchpad: max_file_size and user_quota must be > 0")
 	}
-	switch c.Scratchpad.CodeExec.Mode {
-	case "isolated", "container", "raw":
-	default:
-		f.bad("scratchpad.code_execution.mode: must be isolated, container or raw")
+	// One sandbox, always: bubblewrap (§9.9). The old mode knobs are
+	// retired; say so plainly rather than through an unknown-key error.
+	ce := &c.Scratchpad.CodeExec
+	if ce.Mode != "" {
+		f.bad("scratchpad.code_execution.mode: removed — code execution now always runs in a bubblewrap jail; delete this key")
 	}
-	if c.Scratchpad.CodeExec.Enabled {
-		if len(c.Scratchpad.CodeExec.AllowedRuntimes) == 0 {
+	if ce.ContainerImage != "" {
+		f.bad("scratchpad.code_execution.container_image: removed with container mode — delete this key")
+	}
+	if ce.RunAsUser != "" {
+		f.bad("scratchpad.code_execution.run_as_user: removed — the jail runs in its own user namespace; delete this key")
+	}
+	if ce.Enabled {
+		if len(ce.AllowedRuntimes) == 0 {
 			f.bad("scratchpad.code_execution.allowed_runtimes: required when code execution is enabled")
 		}
 		seen := map[string]bool{}
-		for _, r := range c.Scratchpad.CodeExec.AllowedRuntimes {
+		for _, r := range ce.AllowedRuntimes {
 			switch {
 			case r.ID == "":
 				f.bad("scratchpad.code_execution.allowed_runtimes: id required")
@@ -546,12 +554,6 @@ func (c *Config) Validate() error {
 				f.bad("scratchpad.code_execution.allowed_runtimes[%s]: binary must be an absolute path", r.ID)
 			}
 			seen[r.ID] = true
-		}
-		if c.Scratchpad.CodeExec.Mode == "container" && c.Scratchpad.CodeExec.ContainerImage == "" {
-			f.bad("scratchpad.code_execution.container_image: required in container mode")
-		}
-		if c.Scratchpad.CodeExec.Mode == "isolated" && c.Scratchpad.CodeExec.RunAsUser == "" {
-			f.bad("scratchpad.code_execution.run_as_user: required in isolated mode")
 		}
 	}
 
@@ -656,11 +658,8 @@ func (c *Config) Warnings() []string {
 		w = append(w, "server.hsts_max_age > 0 but TLS is disabled — HSTS headers will never be sent")
 	}
 	if c.Scratchpad.CodeExec.Enabled {
-		switch c.Scratchpad.CodeExec.Mode {
-		case "raw":
-			w = append(w, "code_execution.mode=raw: sandboxed scripts run as the gabkeep OS user — trusted single-user boxes only (spec §9.9)")
-		case "isolated":
-			w = append(w, "code_execution.mode=isolated shares the host network; consider container mode for internet-facing installs (spec §9.9)")
+		if c.Scratchpad.CodeExec.AllowNetwork {
+			w = append(w, "code_execution.allow_network=true: sandboxed scripts may reach the network from inside the jail — keep off unless required (spec §9.6/§9.9)")
 		}
 		if c.Tools.Agent.Approval["code_run"] == "auto" && c.Auth.Registration == "open" {
 			w = append(w, "code execution enabled with auto-approval AND open registration — prompt-injection risk (spec §9.13)")

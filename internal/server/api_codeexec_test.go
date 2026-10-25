@@ -17,8 +17,19 @@ import (
 	"gabkeep/internal/runner"
 )
 
+// TestMain lets this package's test binary double as the sandbox launcher:
+// the code-exec tests run the real runner, which re-execs os.Executable()
+// with __sandbox-exec; without this shim the child would start the test
+// suite instead of handing off to bwrap.
+func TestMain(m *testing.M) {
+	if runner.MaybeSandboxMain(os.Args) {
+		return
+	}
+	os.Exit(m.Run())
+}
+
 // newCodeChatServer is production-shaped: server.New builds the registry
-// from config, code_run is the real tool backed by a real raw-mode runner
+// from config, code_run is the real tool backed by a real bubblewrap runner
 // (built through the production runner.NewForConfig path) executing
 // /bin/sh. Approval policy follows config exactly (§9.9 layer 6).
 func newCodeChatServer(t *testing.T, replies [][]string) (*authTest, *Server, *toolLLM, *config.Config) {
@@ -41,7 +52,6 @@ func newCodeChatServer(t *testing.T, replies [][]string) (*authTest, *Server, *t
 	}
 	cfg.Scratchpad.CodeExec = config.CodeExecution{
 		Enabled:         true,
-		Mode:            "raw", // the test host is not root; see runner tests for isolated
 		AllowedRuntimes: []config.Runtime{{ID: "sh", Binary: "/bin/sh"}},
 		Timeout:         config.Duration(10 * time.Second),
 		MaxOutput:       config.Size(32 << 10),
