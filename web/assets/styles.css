@@ -409,9 +409,15 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 @media (min-width: 1024px) {
   #view-chat {
     grid-template-columns: 280px minmax(0, 1fr);
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    /* Row 1 holds only the topbar, so its height is always just the
+       topbar's content. An earlier design spanned #sidebar across both
+       rows; with a long chat list the sidebar's intrinsic height fed the
+       `auto` row and stretched the topbar down the whole window,
+       crushing the chat column to 0px. Do not make any item span row 1
+       again without neutralising its size contribution. */
     grid-template-areas:
-      "sidebar topbar"
+      "topbar topbar"
       "sidebar main";
     max-width: 1800px;
     margin-inline: auto;
@@ -424,6 +430,9 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
     transition: none;
     border-right: 1px solid var(--border);
     z-index: auto;
+    min-height: 0;
+    /* Sits below the topbar here, which already pads for the notch. */
+    padding-top: 0.7rem;
   }
   body.drawer-open #backdrop { display: none; }
   #topbar-title { font-size: 1.05rem; }
