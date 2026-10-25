@@ -1,0 +1,84 @@
+# Gabkeep — development config (M0+). Run: gabkeep -config dev.yaml
+# Values reflect the verified environment; see spec.md §2.2 for the reference.
+
+server:
+  listen: "192.168.0.3:8080"      # test box on the LAN (this host's enp1s0)
+  public_url: "http://192.168.0.3:8080"   # http + LAN bind → startup warns (§9.10); dev-only
+  tls:
+    enabled: false
+  trusted_proxies: []
+  hsts_max_age: 0                 # dev: no TLS, so no HSTS
+
+database:
+  dir: "./data/db"
+
+scratchpad:
+  root: "./data/scratchpad"
+  max_file_size: 25MiB
+  user_quota: 1GiB
+  artifact_ttl: 168h
+  code_execution:
+    enabled: false                # flip to true (+ isolated mode) in M6 testing
+    mode: "isolated"
+    run_as_user: "gabkeep-sandbox"
+    allowed_runtimes:
+      - { id: python3, binary: /usr/bin/python3 }
+    timeout: 30s
+    max_output: 32KiB
+    max_memory: 512MiB
+    allow_network: false
+
+llm:
+  endpoint: "http://192.168.0.2:8080/v1"   # verified live 2026-10-25 (spec §14.1)
+  api_key: ""                              # no auth on this server
+  model: "Qwen3.8 Flash Next"
+  max_context_tokens: 262144
+  default_temperature: 0.7
+  request_timeout: 5m
+  max_tokens_response: 16384               # reasoning tokens come back too (§6.2)
+  show_reasoning: false
+
+tools:
+  web_search:
+    enabled: false                # set true once GABKEEP_SEARCH_API_KEY exists
+    provider: "brave"
+    api_key: "${GABKEEP_SEARCH_API_KEY:-}"
+    max_results: 8
+  web_fetch:
+    enabled: true
+    max_bytes: 512KiB
+    timeout: 15s
+  agent:
+    max_tool_rounds: 8
+    approval:
+      web_search: auto
+      web_fetch: auto
+      fs_read: auto
+      fs_write: auto
+      files_share: auto
+      code_run: confirm
+
+auth:
+  registration: invite-only       # dev convenience while iterating: switch to open
+                                  # ONLY on a localhost dev box (see spec §9.12)
+  remember_login: true
+  session_ttl: 24h
+  remember_ttl: 720h
+  remember_absolute_ttl: 2160h
+  cookie_secure: false            # dev over http; MUST be true in production
+  max_failed_logins: 10
+
+limits:
+  max_body_bytes: 1MiB
+  max_message_chars: 32000
+  max_attachments: 8
+  concurrent_streams_per_user: 2
+
+rate_limit:
+  requests_per_minute: 120
+  chat_messages_per_hour: 60
+
+logging:
+  level: debug                    # dev verbosity; info in production
+  format: text
+  file: ""

@@ -1,0 +1,10 @@
+# Build output
+/gabkeep
+
+# Runtime data (database, scratchpad, logs)
+/data/
+*.log
+
+# Editor/OS noise
+.DS_Store
+*.swp
