@@ -789,6 +789,13 @@ function toolCardFromAudit(c) {
     /* plain text or empty result */
   }
   if (parsed && parsed.error) setToolSummary(card, String(parsed.error));
+  if (parsed && typeof parsed.exit_code === "number") {
+    // code_run: the summary is not stored, but the result JSON carries
+    // enough to rebuild it ("exit 0" / "timed out (killed)").
+    let s = parsed.timed_out ? "timed out (killed)" : "exit " + parsed.exit_code;
+    if (parsed.truncated) s += " · output truncated";
+    setToolSummary(card, s);
+  }
   if (parsed && Array.isArray(parsed.results)) {
     renderToolResults(card.querySelector(".tool-results"), parsed.results);
   } else if (parsed && typeof parsed.url === "string") {
