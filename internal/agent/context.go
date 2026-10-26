@@ -22,8 +22,10 @@ const ToolGuidance = "\n\nYou may call the provided tools to help answer. " +
 	"When an answer relies on searched or fetched pages, cite their URLs. " +
 	"You have a per-user scratchpad: uploads/ holds files the user attached " +
 	"(paths are listed in message manifests; read-only for you), write your " +
-	"own work under work/ and deliverables under artifacts/ with fs_write, " +
-	"and present finished files to the user with files_share."
+	"own work under work/ with fs_write, and deliver finished files with " +
+	"files_share — it copies the file into artifacts/, where the user sees a " +
+	"download card; re-sharing an edited file produces a new snapshot, so " +
+	"each card keeps the bytes it was made from."
 
 // CodeRunGuidance extends the prompt further when code execution is on
 // (§7.3 workflow); appended only when code_run is actually registered.

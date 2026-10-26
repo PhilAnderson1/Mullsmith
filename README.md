@@ -113,7 +113,11 @@ secrets out of the YAML.
 All state lives in two directories named by the config:
 
 * `database.dir` — SQLite (`gabkeep.db` + WAL files)
-* `scratchpad.root` — per-user `uploads/`, `artifacts/`, `work/`
+* `scratchpad.root` — per-user `uploads/`, `artifacts/`, `work/`. Files live on
+  disk under their real names and the path is their only identity — there is no
+  file registry to keep in sync. `uploads/` is durable user data; `artifacts/`
+  and `work/` expire on the mtime sweep (`artifact_ttl`, `work_ttl`), so losing
+  them costs generated output, not originals.
 
 Plus `/etc/gabkeep/config.yaml` and `/etc/gabkeep/env`.
 
@@ -218,7 +222,7 @@ build time — rebuild and hard-refresh after editing assets.
 cmd/gabkeep/        main: flags, config load, startup wiring, graceful shutdown, admin CLI
 internal/config/    YAML schema, env expansion, strict validation, startup warnings
 internal/auth/      argon2id, sessions, CSRF tokens, invite codes, login limiter
-internal/store/     SQLite (modernc.org) + migrations; users/conversations/messages/files/tool_calls
+internal/store/     SQLite (modernc.org) + migrations; users/conversations/messages/tool_calls (no files table — the disk is the file state)
 internal/server/    routing, middleware, SSE chat, files API, maintenance sweeps
 internal/llm/       OpenAI-compatible streaming client (tools + reasoning channels)
 internal/agent/     context budgeting + turn grouping fed to the model

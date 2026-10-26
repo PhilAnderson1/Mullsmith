@@ -32,6 +32,10 @@ like a modern assistant, not just a chat window.
    endpoint and (optionally) a configured web search provider.
 4. **Safe by default.** Code execution and file access are strictly scoped per user;
    dangerous capabilities are opt-in via config and defense-in-depth enforced at runtime.
+5. **The disk is the truth for files.** A file exists iff its bytes exist; its
+   scratchpad-relative path is its identity in API, DB and UI alike. No parallel
+   file registry in SQLite — anything a file feature cannot express as a path and
+   bytes on disk is not a feature (§4, §8).
 
 ### 1.2 Non-goals (v1)
 
@@ -111,6 +115,7 @@ scratchpad:
   max_file_size: 25MiB
   user_quota: 1GiB                # total bytes per user
   artifact_ttl: 168h              # clean generated artifacts older than this
+  work_ttl: 24h                   # clean the model's work/ desk older than this
   code_execution:
     enabled: false                # opt-in; see §9.9 for enforcement
     # One sandbox, always: bubblewrap. Requires the `bubblewrap` package;
@@ -256,10 +261,11 @@ messages (
   created_at      INTEGER NOT NULL
 )
 
-attachments (                                -- join: message ↔ file
+attachments (                                -- join: message ↔ upload path
   message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-  file_id    TEXT NOT NULL REFERENCES files(id)
-)
+  path       TEXT NOT NULL                 -- scratchpad-relative, canonical
+)                                            -- rows are conversation facts,
+                                             -- never purged when bytes die
 
 tool_calls (
   id          TEXT PRIMARY KEY,
@@ -273,20 +279,6 @@ tool_calls (
   finished_at INTEGER
 )
 
-files (
-  id              TEXT PRIMARY KEY,
-  user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  conversation_id TEXT,                  -- nullable provenance
-  kind            TEXT NOT NULL,         -- upload | artifact
-  rel_path        TEXT NOT NULL,         -- relative to scratchpad/<user-id>/
-  media_type      TEXT NOT NULL DEFAULT 'application/octet-stream',
-  name            TEXT NOT NULL,         -- display filename
-  size            INTEGER NOT NULL,
-  sha256          BLOB NOT NULL,
-  created_at      INTEGER NOT NULL,
-  expires_at      INTEGER                -- artifacts get TTL; uploads NULL
-)
-
 invites (   -- only used when auth.registration = invite-only
   code       TEXT PRIMARY KEY,
   created_by TEXT,
@@ -296,8 +288,15 @@ invites (   -- only used when auth.registration = invite-only
 )
 ```
 
+There is deliberately **no `files` table**: a file exists if and only if its
+bytes exist on disk under the user's scratchpad directory (see §8 for the
+lifecycle this implies). The path — relative to `scratchpad/<user-id>/` — is
+the file's only identity everywhere: API, attachments, tool results, UI.
+`attachments` is a small join table recording the conversation fact "this
+message was sent with this upload"; it makes no claim about the filesystem.
+
 Indexes on: `conversations(user_id, deleted_at, updated_at DESC)`,
-`messages(conversation_id, created_at)`, `files(user_id, kind, expires_at)`.
+`messages(conversation_id, created_at)`.
 
 Deletion policy: deleting a conversation soft-deletes rows; the message content is retained
 for the same TTL as artifacts unless the user requests hard delete (§12 file manager also
@@ -337,21 +336,28 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 | PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt. |
 | DELETE | `/api/v1/conversations/{id}` | Soft delete. |
 | GET | `/api/v1/conversations/{id}/messages?cursor=` | Full history (incl. tool-call cards). |
-| POST | `/api/v1/conversations/{id}/messages` | **The core endpoint.** Body `{content, attachment_ids?}`. Responds with an **SSE stream** (§6). Disconnecting aborts generation server-side. |
+| POST | `/api/v1/conversations/{id}/messages` | **The core endpoint.** Body `{content, attachment_paths?}`. Responds with an **SSE stream** (§6). Disconnecting aborts generation server-side. |
 | POST | `/api/v1/toolcalls/{id}/approval` | `{decision: "allow" | "deny", remember?: "conversation"}` for tools in `confirm` mode. |
 | POST | `/api/v1/messages/{id}/regenerate` | Re-run last assistant turn (streams like above). |
 
 ### 5.3 Files
 
+No file ids exist. **The path — relative to the user's scratchpad directory —
+is the file identity** on every endpoint below; it is resolved inside the
+caller's own tree (§9.7), so cross-user probing is structurally impossible
+(the same string names a file in *your* tree, 404 if you have none).
+
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/v1/files` | multipart upload into `uploads/`. Enforces `max_file_size`, `user_quota`. The **whole request** carries one byte budget — `max_file_size` + 64 KiB framing allowance — so oversized ignored fields and file-less drains are refused `413 upload_too_large` mid-stream (§9.11); part count capped at 64. Returns file id + metadata. |
-| GET | `/api/v1/files?kind=&cursor=` | List user's files (drives the file-manager UI). Unfiltered (`kind=` empty = "All") additionally merges UNREGISTERED `work/` files (deduped against rows pointing into `work/`) into the first page, newest-first; `kind=upload|artifact` stay registry-only. |
-| GET | `/api/v1/files/work` | Physical listing of the `work/` scratch dir (files with no registry row — script output etc.): regular non-hidden files plus DIRECTORIES (incl. empty ones, `kind:"work-dir"` with a capped recursive file count) so folders stay visible and cleanable, newest-modified first, capped at 500 (`truncated` flag). Every entry carries its relative `path`. Read-only view: listing is not sharing. |
-| GET | `/api/v1/files/work/download?path=` | Stream one `work/` file; path sandboxed (§9.7), regular files only (a FIFO would block the open), same inline-safety allowlist (§9.4). |
-| DELETE | `/api/v1/files/work?path=` | Delete one `work/` file — or a whole directory tree (leaves first, every element through the fd-pinned sandbox; a tree with any unreadable part is refused, not half-deleted). Also removes artifact rows registered at or under that path so chat cards never dangle. |
-| GET | `/api/v1/files/{id}/download` | Streams file for the owner only (§9.2), `Content-Disposition: attachment` by default with inline serving only for the safe-type allowlist (§9.4). |
-| DELETE | `/api/v1/files/{id}` | Delete file + row. |
+| POST | `/api/v1/files` | multipart upload into `uploads/`. Enforces `max_file_size`, `user_quota`. The **whole request** carries one byte budget — `max_file_size` + 64 KiB framing allowance — so oversized ignored fields and file-less drains are refused `413 upload_too_large` mid-stream (§9.11); part count capped at 64. The **real filename lives on disk** (sanitized to one safe segment); a name collision bumps to `name (1).ext` and never overwrites. Returns `{name, path, size, created_at, media_type, download_url}`. |
+| GET | `/api/v1/files?kind=` | One physical walk of `uploads/`, `artifacts/` and `work/` (or one directory via the plural filter `kind=uploads|artifacts|work`): regular non-hidden files plus DIRECTORIES (incl. empty ones, `kind:"dir"` with a capped recursive file count), newest-modified first, capped at 500 per directory (`truncated` flag). Item kinds are `upload|artifact|work|dir`, derived from the directory the bytes sit in — nothing to dedupe, nothing to reconcile. No cursor: the disk answers in one page. Carries the quota object. |
+| GET | `/api/v1/files/download?path=` | Streams one file from any of the three dirs; path sandboxed (§9.7), regular files only (a FIFO would block the open), `Content-Disposition: attachment` by default with inline serving only for the safe-type allowlist on sniffed bytes (§9.4). |
+| DELETE | `/api/v1/files?path=` | Delete one file — or a whole directory tree (leaves first, every element through the fd-pinned sandbox; a tree with any unreadable part is refused, not half-deleted). The three layout dirs themselves are undeletable. Bytes gone is all it means: nothing else to delete. |
+
+Message attachment pairing: `POST /conversations/{id}/messages` accepts
+`attachment_paths` (see §5.2); each path must be an existing regular file
+under `uploads/`. Rows record path facts only — a file deleted later leaves
+the chip behind as a historical record whose download 404s (by design).
 
 ### 5.4 Misc
 
@@ -433,7 +439,7 @@ output is data, never instructions; approval gates bound the blast radius).
 | `fs_write` | `path, content` | Write text file inside scratchpad; creates parent dirs; quota-checked. |
 | `fs_delete` | `path` | Delete inside scratchpad (no `..`, no symlinks out). |
 | `code_run` | `runtime, script, files?` | Execute in user's `work/` dir via allowlisted runtime (§9.9). Returns exit code + stdout/stderr (truncated). Files the script writes stay in the scratchpad. |
-| `files_share` | `path, note?` | Registers a scratchpad file as an artifact → appears as a download card in chat (this is how "the model gives you a file" works). `uploads/` cannot be shared — artifact rows expire, and user uploads must not (audit finding 8); uploads are already downloadable from the Files page. |
+| `files_share` | `path, note?` | **Copies** a scratchpad file into `artifacts/` → appears as a download card in chat (this is how "the model gives you a file" works). Snapshot semantics: the card points at the copy, re-sharing an edited draft lands as `name (1).ext` and the first card keeps its bytes. Sharing a file already in `artifacts/` delivers it in place. `uploads/` cannot be shared — `artifacts/` ages out on the TTL sweep and user originals must not (audit finding 8); uploads are already downloadable from the Files page. |
 
 ### 7.3 Agentic file workflow (typical session)
 
@@ -453,10 +459,27 @@ output is data, never instructions; approval gates bound the blast radius).
    Failure here rolls back the DB insert (register is retried idempotently; ULID reused).
 4. Create session, set cookies, return `201`.
 
-**Background jobs** (single ticker goroutine, hourly):
-- Expire sessions; soft-delete purging; artifact TTL cleanup (rows + files, oldest first);
-- orphan sweep: files with no DB row under scratchpad root older than 24 h are removed;
-- quota reconciliation (used bytes cached on `users`, recomputed lazily).
+**Background jobs** (single ticker goroutine, hourly; once at startup):
+- Expire sessions; soft-delete purging;
+- scratchpad TTL sweep — **the disk is the single source of truth, so the
+  sweep is pure mtime arithmetic**: there is no registry to consult and the
+  old "bytes without a row" orphan definition cannot even be expressed.
+  Per live user: `artifacts/` files past `artifact_ttl` and `work/` files
+  past `work_ttl` are deleted, per-file at any depth on their own mtime;
+  `uploads/` is never swept (user originals). Directories are the sweep's
+  only directory duty: an empty dir whose **own** mtime is past the TTL
+  rmdir's, deepest-first — removing a file bumps the parent, so a
+  just-emptied folder survives that pass and goes on a later one once it
+  has re-aged. Abandoned temps in the scratch ROOT (`.upload-*`,
+  `.share-*`) older than 24 h go too. A ULID user dir with no user behind
+  it (deleted account) loses every file older than the 24 h window;
+  non-ULID entries are operator territory, never touched. If the user set
+  cannot be read the whole pass does nothing — fail closed: every dir
+  could otherwise look like a deleted account's. Neither TTL knob accepts
+  `0` = "never": a knob that disables expiry of generated bytes would let
+  the desk fill the disk silently;
+- quota is not cached: every check walks the tree live (see §9.7), so
+  there is nothing to reconcile.
 
 **Registration modes:** `open` (anyone), `invite-only` (code required at register; admin
 CLI mints codes), `closed` (admin CLI creates users).
@@ -523,18 +546,24 @@ CLI mints codes), `closed` (admin CLI creates users).
 - The model is flat: every caller is a logged-in user; there are no roles in the HTTP
   surface (admin actions are CLI-only, on-host = trusted). Every resource is therefore
   hard-scoped to the session's `user_id`.
-- **Every `{id}` in every path (`/conversations/{id}`, `/messages/{id}`, `/files/{id}`,
+- **Every `{id}` in every path (`/conversations/{id}`, `/messages/{id}`,
   `/toolcalls/{id}`) is ownership-checked** — the store query itself carries
   `WHERE id = ? AND user_id = ?` (defense in depth: a handler that forgets to check still
   cannot reach another user's rows). Non-owned or nonexistent ids both return **404**, so
   existence is never leaked (no 403-vs-404 oracle).
+- File endpoints carry no id at all: **paths are scoped by construction** — a
+  scratchpad-relative path is resolved inside the caller's own tree (§9.7), so
+  there is no lookup that could return another user's file. The probe a hostile
+  caller can make (`GET /api/v1/files/download?path=uploads%2Fmine.txt` as
+  someone else) 404s against a directory that legitimately holds no such file.
 - Middleware order is fixed: rate-limit → session/auth → expiry → CSRF (state-changing
   verbs) → handler. Routing is default-deny: handlers must be explicitly registered;
   unmatched paths 404; each route accepts only its documented verb (405 otherwise);
   `/debug/pprof`, expvar, and any metrics are **not compiled into release binaries**.
-- `attachment_ids` on a message, `file_id` on `files_share`, and any cross-reference are
-  validated as owned by the sender — a user cannot splice their message with another
-  user's file id.
+- `attachment_paths` on a message are validated the same way by construction: each
+  must resolve (through the §9.7 sandbox) to an existing regular file under the
+  sender's own `uploads/` — a path naming anyone else's bytes simply does not exist
+  in this tree, and the request is refused `attachment_not_found`.
 - No endpoint redirects to a caller-supplied destination (no `?next=`/`?redirect=` exists
   in v1). Absolute URLs are built from `server.public_url`, never from the `Host` header
   (host-header injection). If post-login redirects are ever added, they must be validated
@@ -588,8 +617,13 @@ files) produce markdown rendered in the victim's browser.
   "document" is closed regardless of sniffing mistakes. (A separate cookie-less asset
   domain is the v2 hardening if inline HTML preview is ever demanded.)
 - Upload blocklist (`scratchpad.block_extensions`) covers `.html .htm .svg .xhtml .xml
-  .js .exe .sh .bat .cmd .com .scr .jar .vbs .ps1 .apk .dmg` (config-extendable); stored
-  filename is the ULID — the display name is metadata only and is never a path component.
+  .js .exe .sh .bat .cmd .com .scr .jar .vbs .ps1 .apk .dmg` (config-extendable; the
+  **final** extension decides, so `notes.html.txt` is a text file). Uploads keep their
+  **real filename on disk** — sanitized to one path-safe segment (control characters and
+  separators dropped, leading dots folded so no dotfile ghosts are born, length capped) —
+  and a name collision bumps to `name (1).ext`; an upload never overwrites bytes. The
+  disk name IS the display name: there is no metadata layer to keep in sync (and no
+  ULID-mangled name to explain in the UI).
 - Chat and tool-result content rendered in tool cards (search snippets, fetch text, code
   output) goes through the same sanitizer; search result URLs are display-truncated so a
   long URL can't masquerade as another domain (punycode/homoglyph display kept simple:
@@ -673,15 +707,14 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   deployment defers them by
   operator choice.
 - `uploads/` is the model's one forbidden namespace (`fs_write`/`fs_delete`, and
-  `files_share`/artifact registration — a TTL'd row pointing at a user upload made cleanup
-  or card-deletion destroy the original bytes; with uploads excluded, every on-disk path
-  carries at most one DB row, so row-deletes unlink safely without refcounting
-  — audit finding 8; audit2 finding 4 made that an enforced fact: artifact registration
-  stores the **canonical** path — the `ParseRel` segments rejoined — and upserts in one
-  statement under a partial unique index `(user_id, rel_path) WHERE kind = 'artifact'`,
-  so neither an alias spelling (`./work/x` vs `work/x`) nor a racing concurrent share can
-  open a second row on the same bytes, and expiring or deleting a row can never unlink
-  what another live row still points at). The checks run on segments **normalized by `ParseRel`**, the
+  `files_share` — copying an upload into `artifacts/` would hand the TTL sweep a
+  pointer at a user original, so shares refuse uploads outright; audit finding 8).
+  With no registry there is no row/byte split to defend either: an artifact is the
+  bytes under `artifacts/`, one file one fact, and deleting the bytes is the whole
+  delete. `files_share` copies via a `.share-*` temp in the scratch ROOT placed
+  with `RENAME_NOREPLACE` and a `name (N).ext` bump loop, so a racing concurrent
+  share can never overwrite bytes another share (or the user) just landed. The
+  checks run on segments **normalized by `ParseRel`**, the
   same normalizer the FS layer applies, so checker and doer cannot disagree: a raw-segment
   prefix check was bypassed by `./uploads/x`, whose leading `.` the FS layer strips
   (audit finding 7). Inside `code_run` the same rule is enforced harder — at the mount
@@ -797,7 +830,7 @@ open registration (startup warns).
 | Control | Mechanism |
 |---|---|
 | Request body cap | `http.MaxBytesReader` on every route (`limits.max_body_bytes` = 1 MiB default); multipart streams to a spooled temp file with its own `max_file_size` cap and `defer os.Remove` on abort — never buffered whole in memory |
-| Field caps | message ≤ `max_message_chars`; titles/names/emails length-bounded; `attachment_ids` ≤ `limits.max_attachments`; pagination `limit` ≤ 200; unknown JSON fields → 400 (§9.3) |
+| Field caps | message ≤ `max_message_chars`; titles/names/emails length-bounded; `attachment_paths` ≤ `limits.max_attachments`; pagination `limit` ≤ 200; unknown JSON fields → 400 (§9.3) |
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
 | Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded. Both auth maps hard-capped at 16,384 entries with lockout-preserving saturation; lock keys SHA-256-digested; login rejects emails over `auth.MaxEmailLen` (254 B) up front (audit2 finding 1) |
 | Password hashing | **global gate** (`limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
@@ -808,7 +841,8 @@ open registration (startup warns).
 | Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; `WriteTimeout` lifted only for SSE routes — the lift works via `ResponseController` reaching the connection through every middleware wrapper (`statusWriter` implements `Unwrap`; audit finding 10) |
 | SSE hygiene | server-side heartbeat comments every 15 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU). Every frame write+flush carries a **rolling 10 s write deadline** (armed per frame, cleared after): a stalled reader (TCP zero window, no FIN) once blocked the write in a syscall forever — heartbeat included, holding its mutex — pinning a generation slot until restart; now the deadline error surfaces, flush errors propagate (`statusWriter.FlushError`), and the generation cancels (audit finding 10) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; small reader pool; TTL job deletes bounded per pass (≤ 1 000 rows/files) |
-| Disk exhaustion | per-user quota + global free-space floor (§9.7); upload commits, `fs_write` and `code_run` staging share one quota lock, so individually-passing writes cannot jointly overrun; staging pre-checks sizes before copying; per-run storage watchdog + final weigh-in detect quota/floor breaches (§9.11); artifact TTL + orphan sweep (§8). App-level accounting is honest, not kernel-enforced — FS-level quotas remain the only hard ceiling (deferred, §9.7) |
+| Disk exhaustion | per-user quota + global free-space floor (§9.7); upload commits, `fs_write` and `code_run` staging share one quota lock, so individually-passing writes cannot jointly overrun; staging pre-checks sizes before copying; per-run storage watchdog + final weigh-in detect quota/floor breaches (§9.11); artifact expiry and the work/ desk TTL ride one mtime sweep (§8) — with the disk as
+the only file state there is nothing else that could orphan. App-level accounting is honest, not kernel-enforced — FS-level quotas remain the only hard ceiling (deferred, §9.7) |
 | Code exec | timeout + output caps + global per-user concurrency (§9.9) |
 
 ### 9.12 Secrets, sensitive data & error handling
@@ -931,7 +965,7 @@ Cross-cutting touch/responsive behavior:
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`); shows invite field when invite-only. |
 | **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. |
-| **Files** | Per-user file manager: uploads + artifacts + `work/` entries (relative path shown, folders marked incl. empty ones with recursive delete behind explicit confirmation, size, date, download, delete, quota bar). |
+| **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
 | **Settings** | Display name, change password, sign out everywhere. |
 
 Implementation notes: SSE client with auto-reconnect hint on dropped stream; conversations
