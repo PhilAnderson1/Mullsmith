@@ -637,6 +637,12 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   runs, a **storage watchdog** re-measures every second — user past quota, or the host
   past the floor, kills the jail (same process-group SIGKILL path as the timeout) and
   keeps partial output (§9.11, audit finding 5).
+- `uploads/` is the model's one forbidden namespace (`fs_write`/`fs_delete` — user data
+  is written only via HTTP). The check runs on segments **normalized by `ParseRel`**, the
+  same normalizer the FS layer applies, so checker and doer cannot disagree: a raw-segment
+  prefix check was bypassed by `./uploads/x`, whose leading `.` the FS layer strips
+  (audit finding 7). Inside `code_run` the same rule is enforced harder — at the mount
+  layer (`uploads/` is a read-only overlay, §9.9).
 
 ### 9.8 Security headers (every response; contract, not suggestion)
 

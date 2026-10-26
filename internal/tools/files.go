@@ -280,11 +280,19 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	}, nil
 }
 
-// checkWriteTarget / checkDeleteTarget keep the model out of the user's
-// upload namespace: uploads are the user's data, written only via HTTP.
+// checkWriteTarget keeps the model out of the user's upload namespace:
+// uploads are the user's data, written only via HTTP. The rule runs on
+// segments NORMALIZED by scratch.ParseRel — the same normalizer the
+// filesystem layer applies — because a raw prefix check was bypassable:
+// "./uploads/x" has "." as its first raw segment yet lands in uploads/
+// after normalization (audit finding 7). Used by both writers, fs_write
+// and fs_delete, so both are held to the same validation.
 func checkWriteTarget(rel string) error {
-	first := strings.Split(rel, "/")[0]
-	if first == "uploads" {
+	segs, err := scratch.ParseRel(rel)
+	if err != nil {
+		return err
+	}
+	if len(segs) > 0 && segs[0] == "uploads" {
 		return errors.New("uploads/ is read-only for the model; write under work/ or artifacts/")
 	}
 	return nil

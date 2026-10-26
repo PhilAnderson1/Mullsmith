@@ -355,3 +355,47 @@ func TestMediaTypesAndUtf8Helpers(t *testing.T) {
 		t.Errorf("humanBytes broken")
 	}
 }
+
+// --- audit finding 7: uploads protection must run on normalized segments ----
+
+func TestUploadsNamespaceCoversDotPrefixedPaths(t *testing.T) {
+	root := toolRoot(t)
+	writeDirect(t, root, "uploads/protected.txt", "user data\n")
+
+	w := FsWrite{UserQuota: 1 << 20}
+	for _, bypass := range []string{"./uploads/protected.txt", "././uploads/protected.txt"} {
+		_, err := run(t, w, root, argsJSON(t, map[string]string{"path": bypass, "content": "clobbered"}))
+		if err == nil || !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("fs_write %q: err = %v, want uploads read-only refusal", bypass, err)
+		}
+	}
+	for _, target := range []string{"./uploads/protected.txt", "./uploads"} {
+		_, err := run(t, FsDelete{}, root, argsJSON(t, map[string]string{"path": target}))
+		if err == nil || !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("fs_delete %q: err = %v, want uploads read-only refusal", target, err)
+		}
+	}
+
+	// The user's upload must be physically untouched.
+	b, err := os.ReadFile(filepath.Join(root, toolUser, "uploads", "protected.txt"))
+	if err != nil || string(b) != "user data\n" {
+		t.Errorf("upload modified through the bypass: %q %v", b, err)
+	}
+
+	// Normalized "./" stays legal OUTSIDE uploads, and ".uploads" is a
+	// different directory — the rule is the normalized first segment, not
+	// string matching.
+	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": "./work/ok.txt", "content": "fine"})); err != nil {
+		t.Errorf("./work/ok.txt refused: %v", err)
+	}
+	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": ".uploads/x", "content": "fine"})); err != nil {
+		t.Errorf(".uploads/x (hidden sibling dir) refused: %v", err)
+	}
+	// Plain form still refused, and traversal dies in ParseRel as before.
+	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": "uploads/plain.txt", "content": "x"})); err == nil {
+		t.Error("plain uploads/ write accepted")
+	}
+	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": "../uploads/x", "content": "x"})); err == nil {
+		t.Error("../uploads/ write accepted")
+	}
+}
