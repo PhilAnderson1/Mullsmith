@@ -812,6 +812,15 @@ body.files-open .pending-files { display: none; }
 
 /* ---------- settings view ---------- */
 
+/* ChatGPT-style home for the settings entry: pinned to the bottom of the
+   sidebar (the growing .conv-list pushes it there), so the sidebar head
+   never overflows. */
+.sidebar-foot {
+  display: flex;
+  margin-top: 0.5rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border);
+}
 .settings-panel {
   flex: 1;
   display: flex;
