@@ -82,3 +82,34 @@ func TestArtifactTTLOverridesDefault(t *testing.T) {
 		t.Errorf("TTL from config not honoured: %v until expiry", d)
 	}
 }
+
+// Audit finding 8: an artifact row carries a TTL; pointing one at the
+// user's upload made expiry (or deleting the share card) destroy the
+// original bytes. The sink itself now refuses the uploads namespace —
+// defense in depth behind the tool's refusal.
+func TestArtifactSinkRejectsUploadsNamespace(t *testing.T) {
+	db := testStore(t)
+	sink := &artifactSink{db: db, ttl: time.Hour}
+	ctx := context.Background()
+
+	u := &store.User{Email: "sinkns@test.io", Name: "S", PasswordHash: "x", Status: "active",
+		CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := tools.ArtifactRecord{UserID: u.ID, RelPath: "uploads/data.csv",
+		MediaType: "text/csv", Name: "data.csv", Size: 5, SHA256: make([]byte, 32)}
+	if id, err := sink.RegisterArtifact(ctx, rec); err == nil || id != "" {
+		t.Errorf("uploads path registered: id=%q err=%v, want refusal", id, err)
+	}
+	rec.RelPath = "./uploads/data.csv" // normalizes into the same namespace
+	if id, err := sink.RegisterArtifact(ctx, rec); err == nil || id != "" {
+		t.Errorf("./uploads path registered: id=%q err=%v, want refusal", id, err)
+	}
+
+	rec.RelPath = "work/report.md" // generated files remain registrable
+	if id, err := sink.RegisterArtifact(ctx, rec); err != nil || id == "" {
+		t.Errorf("work registration: %q %v", id, err)
+	}
+}

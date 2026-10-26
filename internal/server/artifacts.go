@@ -26,9 +26,17 @@ func (a *artifactSink) RegisterArtifact(ctx context.Context, rec tools.ArtifactR
 		ttl = 168 * time.Hour
 	}
 	// Defence in depth: the tool already stat'ed through the sandbox, but a
-	// row must never carry a path the sandbox would reject (§9.7).
-	if _, err := scratch.ParseRel(rec.RelPath); err != nil {
+	// row must never carry a path the sandbox would reject (§9.7) — and
+	// never an uploads/ path at all: artifact rows expire, and a TTL'd
+	// pointer at the user's upload made cleanup delete the original file
+	// (audit finding 8). With uploads excluded, every on-disk path carries
+	// at most one row and row-deletes can unlink without refcounting.
+	segs, err := scratch.ParseRel(rec.RelPath)
+	if err != nil {
 		return "", errors.New("unsafe artifact path")
+	}
+	if len(segs) > 0 && segs[0] == "uploads" {
+		return "", errors.New("artifacts cannot point into uploads/ (user data must not expire)")
 	}
 	if rec.Size < 0 || (rec.SHA256 == nil && rec.Size > 0) {
 		return "", errors.New("invalid artifact record")

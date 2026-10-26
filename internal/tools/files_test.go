@@ -399,3 +399,32 @@ func TestUploadsNamespaceCoversDotPrefixedPaths(t *testing.T) {
 		t.Error("../uploads/ write accepted")
 	}
 }
+
+// --- audit finding 8: sharing must never point a TTL at user uploads -------
+
+func TestFilesShareRejectsUploads(t *testing.T) {
+	root := toolRoot(t)
+	writeDirect(t, root, "uploads/protected.txt", "user data\n")
+	sink := &fakeSink{id: "01FILEID000000000000000000"}
+	share := FilesShare{Sink: sink}
+
+	for _, p := range []string{"uploads/protected.txt", "./uploads/protected.txt"} {
+		_, err := run(t, share, root, argsJSON(t, map[string]string{"path": p}))
+		if err == nil || !strings.Contains(err.Error(), "already downloadable") {
+			t.Errorf("share %q: err = %v, want 'already downloadable' refusal", p, err)
+		}
+	}
+	if len(sink.recs) != 0 {
+		t.Errorf("sink received %d records; an uploads path must never reach it", len(sink.recs))
+	}
+	b, err := os.ReadFile(filepath.Join(root, toolUser, "uploads", "protected.txt"))
+	if err != nil || string(b) != "user data\n" {
+		t.Errorf("upload touched: %q %v", b, err)
+	}
+
+	// Generated files stay shareable — TTL on those is the design.
+	writeDirect(t, root, "work/gen.md", "# report\n")
+	if _, err := run(t, share, root, argsJSON(t, map[string]string{"path": "work/gen.md"})); err != nil {
+		t.Errorf("share work/gen.md: %v", err)
+	}
+}

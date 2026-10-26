@@ -433,7 +433,7 @@ output is data, never instructions; approval gates bound the blast radius).
 | `fs_write` | `path, content` | Write text file inside scratchpad; creates parent dirs; quota-checked. |
 | `fs_delete` | `path` | Delete inside scratchpad (no `..`, no symlinks out). |
 | `code_run` | `runtime, script, files?` | Execute in user's `work/` dir via allowlisted runtime (§9.9). Returns exit code + stdout/stderr (truncated). Files the script writes stay in the scratchpad. |
-| `files_share` | `path, note?` | Registers a scratchpad file as an artifact → appears as a download card in chat (this is how "the model gives you a file" works). |
+| `files_share` | `path, note?` | Registers a scratchpad file as an artifact → appears as a download card in chat (this is how "the model gives you a file" works). `uploads/` cannot be shared — artifact rows expire, and user uploads must not (audit finding 8); uploads are already downloadable from the Files page. |
 
 ### 7.3 Agentic file workflow (typical session)
 
@@ -637,8 +637,11 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   runs, a **storage watchdog** re-measures every second — user past quota, or the host
   past the floor, kills the jail (same process-group SIGKILL path as the timeout) and
   keeps partial output (§9.11, audit finding 5).
-- `uploads/` is the model's one forbidden namespace (`fs_write`/`fs_delete` — user data
-  is written only via HTTP). The check runs on segments **normalized by `ParseRel`**, the
+- `uploads/` is the model's one forbidden namespace (`fs_write`/`fs_delete`, and
+  `files_share`/artifact registration — a TTL'd row pointing at a user upload made cleanup
+  or card-deletion destroy the original bytes; with uploads excluded, every on-disk path
+  carries at most one DB row, so row-deletes unlink safely without refcounting
+  — audit finding 8). The checks run on segments **normalized by `ParseRel`**, the
   same normalizer the FS layer applies, so checker and doer cannot disagree: a raw-segment
   prefix check was bypassed by `./uploads/x`, whose leading `.` the FS layer strips
   (audit finding 7). Inside `code_run` the same rule is enforced harder — at the mount

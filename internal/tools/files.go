@@ -358,7 +358,9 @@ func (FilesShare) Name() string { return "files_share" }
 func (FilesShare) Description() string {
 	return "Present an existing scratchpad file to the user as a download card. Call this " +
 		"after writing a report or generated file the user asked for. Args: path (required), " +
-		"note (optional one-liner shown on the card)."
+		"note (optional one-liner shown on the card). Files under uploads/ cannot be shared — " +
+		"they are the user's own data and already downloadable from the Files page; share " +
+		"generated files under work/ or artifacts/."
 }
 
 func (FilesShare) Parameters() map[string]any {
@@ -390,6 +392,19 @@ func (s FilesShare) Execute(ctx context.Context, inv Invocation) (Result, error)
 	rel := strings.TrimSpace(args.Path)
 	if rel == "" {
 		return Result{}, errors.New("path is required")
+	}
+	// The uploads namespace is off-limits AFTER normalization (same lesson
+	// as audit finding 7): an artifact row carries a TTL, and an expiring
+	// pointer at the user's own upload made the sweep — or a delete of the
+	// share card — destroy the original bytes (audit finding 8). Uploads
+	// are already listed for download on the Files page.
+	segs, err := scratch.ParseRel(rel)
+	if err != nil {
+		return Result{}, fsErr("files_share", err)
+	}
+	if len(segs) > 0 && segs[0] == "uploads" {
+		return Result{}, errors.New("uploads are the user's data and already downloadable " +
+			"from the Files page; share files under work/ or artifacts/ instead")
 	}
 	fi, err := scratch.Stat(root, inv.UserID, rel)
 	if err != nil {
