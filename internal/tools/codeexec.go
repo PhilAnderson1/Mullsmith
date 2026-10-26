@@ -26,14 +26,19 @@ const maxStagedFiles = 16
 // mounted (§7.2, §9.9) at /scratchpad — uploads/ read-only, work/ and
 // artifacts/ writable — via an allowlisted runtime. The runtime BINARY comes
 // only from config — the model names a runtime id and supplies a script,
-// never a path or argv. Enforcement (jail, rlimits, network-off, caps) lives
-// in the injected Runner; this adapter just validates and shapes the result.
+// never a path or argv. Enforcement (jail, rlimits, caps, network policy)
+// lives in the injected Runner; this adapter just validates and shapes the
+// result.
 type CodeRun struct {
 	Runner    runner.Runner
 	Runtimes  []config.Runtime
 	Timeout   time.Duration
 	MaxOutput int
 	UserQuota int64
+	// AllowNetwork mirrors scratchpad.code_execution.allow_network so the
+	// tool description tells the model what the jail actually enforces
+	// (§9.9): the Runner opens or closes the net namespace by this same flag.
+	AllowNetwork bool
 	// WatchInterval is the storage watchdog's poll period; zero selects
 	// storageWatchInterval. Tests shorten it to keep kill timing crisp.
 	WatchInterval time.Duration
@@ -141,12 +146,20 @@ func (c CodeRun) watchStorage(ctx context.Context, cancel context.CancelFunc, ro
 
 func (CodeRun) Name() string { return "code_run" }
 
-func (CodeRun) Description() string {
+func (c CodeRun) Description() string {
+	// The network sentence must match what the jail really does: the Runner
+	// keeps or drops the net namespace by the same allow_network flag (§9.9),
+	// and a stale "NO network" here would stop the model from ever trying
+	// something network-dependent on a server that allows it.
+	netDesc := "The script has NO network and no secrets."
+	if c.AllowNetwork {
+		netDesc = "The script has no secrets; this server has network access ENABLED, so the script may reach the network."
+	}
 	return "Run a script in the user's scratchpad with an allowlisted runtime " +
 		"(see the runtime enum). Inside the run the scratchpad is mounted at /scratchpad " +
 		"(also the working directory) with the same layout as the fs_* tools: uploads/ " +
-		"is readable but read-only, work/ and artifacts/ are writable. The script has " +
-		"NO network and no secrets. Existing files (e.g. an upload) are already visible " +
+		"is readable but read-only, work/ and artifacts/ are writable. " +
+		netDesc + " Existing files (e.g. an upload) are already visible " +
 		"at their relative path, such as uploads/sales.csv; the optional files argument " +
 		"additionally copies them into work/ to open as work/<name>. Write generated " +
 		"output to work/; a finished file may go straight to artifacts/, where the user " +

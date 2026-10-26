@@ -64,12 +64,13 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	reg.Register(FilesShare{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
 	if cfg.Scratchpad.CodeExec.Enabled && code != nil {
 		reg.Register(CodeRun{
-			Runner:    code,
-			Runtimes:  cfg.Scratchpad.CodeExec.AllowedRuntimes,
-			Timeout:   cfg.Scratchpad.CodeExec.Timeout.D(),
-			MaxOutput: int(cfg.Scratchpad.CodeExec.MaxOutput),
-			UserQuota: int64(cfg.Scratchpad.UserQuota),
-			QuotaMu:   quotaMu,
+			Runner:       code,
+			Runtimes:     cfg.Scratchpad.CodeExec.AllowedRuntimes,
+			Timeout:      cfg.Scratchpad.CodeExec.Timeout.D(),
+			MaxOutput:    int(cfg.Scratchpad.CodeExec.MaxOutput),
+			UserQuota:    int64(cfg.Scratchpad.UserQuota),
+			AllowNetwork: cfg.Scratchpad.CodeExec.AllowNetwork,
+			QuotaMu:      quotaMu,
 		})
 	}
 

@@ -55,6 +55,22 @@ func codeTool(r runner.Runner, quota int64) CodeRun {
 	}
 }
 
+func TestCodeRunDescriptionMatchesNetworkPolicy(t *testing.T) {
+	off := codeTool(&fakeRunner{}, 0)
+	if d := off.Description(); !strings.Contains(d, "NO network") {
+		t.Errorf("allow_network=false should say NO network, got %q", d)
+	}
+	on := codeTool(&fakeRunner{}, 0)
+	on.AllowNetwork = true
+	d := on.Description()
+	if strings.Contains(d, "NO network") {
+		t.Errorf("allow_network=true must not claim the jail is closed, got %q", d)
+	}
+	if !strings.Contains(d, "network access ENABLED") {
+		t.Errorf("allow_network=true should advertise network access, got %q", d)
+	}
+}
+
 func TestCodeRunValidatesInputs(t *testing.T) {
 	root := toolRoot(t)
 	fr := &fakeRunner{}
