@@ -107,6 +107,7 @@ func fileJSON(f *store.File) map[string]any {
 		"id":              f.ID,
 		"kind":            f.Kind,
 		"name":            f.Name,
+		"path":            f.RelPath, // UI shows where it lives, not just what it is
 		"media_type":      f.MediaType,
 		"size":            f.Size,
 		"created_at":      f.CreatedAt.UTC().Format(timeRFC3339),

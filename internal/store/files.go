@@ -309,6 +309,25 @@ func (d *DB) ExpiredArtifacts(ctx context.Context, now time.Time, limit int) ([]
 	return out, rows.Err()
 }
 
+// DeleteArtifactsUnder removes every artifact row whose path is dirPath
+// itself or below it ("dirPath/…") and reports how many went: deleting a
+// work/ tree must not leave download cards pointing into nothing — the same
+// promise work-file delete makes for its single row. dirPath is escaped for
+// LIKE so a directory named "100%" can never match "work/1000x.md".
+// Upload rows are out of scope (uploads/ can never be under a work/ path).
+func (d *DB) DeleteArtifactsUnder(ctx context.Context, userID, dirPath string) (int, error) {
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(dirPath)
+	res, err := d.sqlDB.ExecContext(ctx,
+		`DELETE FROM files WHERE user_id = ? AND kind = 'artifact'
+		   AND (rel_path = ? OR rel_path LIKE ? ESCAPE '\')`,
+		userID, dirPath, esc+"/%")
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 func (d *DB) DeleteFilesByID(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil

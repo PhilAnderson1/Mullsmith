@@ -67,8 +67,10 @@ func TestWorkList(t *testing.T) {
 	}
 
 	items := workItems(t, a)
-	if len(items) != 3 {
-		t.Fatalf("items = %v, want 3 (regular non-hidden files only)", items)
+	// 3 regular non-hidden files + the work/sub FOLDER row (empty or not,
+	// directories are listed so the UI can clean them up).
+	if len(items) != 4 {
+		t.Fatalf("items = %v, want 3 files + 1 folder", items)
 	}
 	first, _ := items[0].(map[string]any)
 	if first["name"] != "newer.csv" || first["kind"] != "work" ||
@@ -224,14 +226,17 @@ func TestWorkDelete(t *testing.T) {
 	if len(after) != len(kept) || len(kept) == 0 {
 		t.Errorf("upload affected by refused delete: %v -> %v", kept, after)
 	}
-	// A directory is refused with its own error, not a 500.
+	// Directories ARE deletable now (Files-page cleanup): 204 and gone.
 	if err := os.Mkdir(filepath.Join(userRoot, "work", "adir"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	resp = a.do(http.MethodDelete, "/api/v1/files/work?path=work%2Fadir", nil)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("delete directory: %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("delete directory: %d, want 204", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(userRoot, "work", "adir")); !os.IsNotExist(err) {
+		t.Errorf("directory survived delete: %v", err)
 	}
 }
 

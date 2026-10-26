@@ -47,10 +47,12 @@ func workPathFrom(w http.ResponseWriter, r *http.Request) (string, bool) {
 // workEntries walks the user's work/ dir and returns display entries sorted
 // newest-modified first, plus whether the workListMax cap was hit. Paths in
 // exclude (already registered in the files table) are skipped, so the All
-// view never shows a file twice. Metadata only — §9.7 keeps Resolve safe
-// for display/walking, while download/delete re-open fd-pinned. Hidden
-// files (dot-prefixed tmp leftovers), symlinks and non-regular files stay
-// out of the list.
+// view never shows a file twice. DIRECTORIES are listed too — including
+// empty ones — marked kind:"work-dir" with a bounded file count, so script-
+// made folders are visible and deletable instead of becoming invisible
+// litter. Metadata only — §9.7 keeps Resolve safe for display/walking,
+// while download/delete re-open fd-pinned. Hidden files (dot-prefixed tmp
+// leftovers), symlinks and non-regular files stay out of the list.
 func workEntries(root, userID string, exclude map[string]bool) ([]map[string]any, bool) {
 	dir, err := scratch.Resolve(root, userID, "work")
 	if err != nil {
@@ -80,6 +82,20 @@ func workEntries(root, userID string, exclude map[string]bool) ([]map[string]any
 			if strings.Count(sub, string(filepath.Separator)) >= workListDeep {
 				return fs.SkipDir
 			}
+			info, ierr := d.Info()
+			if ierr != nil {
+				return nil
+			}
+			n, capped := countTreeFiles(p)
+			entries = append(entries, entry{mtime: info.ModTime(), json: map[string]any{
+				"kind":         "work-dir",
+				"path":         "work/" + filepath.ToSlash(sub),
+				"name":         d.Name(),
+				"dir":          true,
+				"files":        n,
+				"files_capped": capped,
+				"modified_at":  info.ModTime().UTC().Format(timeRFC3339),
+			}})
 			return nil
 		}
 		if !d.Type().IsRegular() {
@@ -113,6 +129,32 @@ func workEntries(root, userID string, exclude map[string]bool) ([]map[string]any
 		items = append(items, e.json)
 	}
 	return items, truncated
+}
+
+// countTreeFiles counts regular files below dir for the folder rows'
+// "everything inside will be deleted (N files)" confirmation copy. It is
+// display metadata, not an enforcement read: walk errors stop the count
+// (the delete itself re-walks under §9.7 and refuses anything it cannot
+// fully enumerate), and the count is capped so a pathological tree cannot
+// make listing expensive.
+func countTreeFiles(dir string) (int, bool) {
+	const cap = 999
+	n, capped := 0, false
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		n++
+		if n >= cap {
+			capped = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return n, capped
 }
 
 func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
@@ -185,11 +227,13 @@ func (s *Server) handleWorkDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if fi, err := scratch.Stat(s.cfg.Scratchpad.Root, user.ID, rel); err != nil {
+	fi, err := scratch.Stat(s.cfg.Scratchpad.Root, user.ID, rel)
+	if err != nil {
 		writeAPIError(w, r, http.StatusNotFound, "not_found", "file not found")
 		return
-	} else if fi.IsDir() {
-		writeAPIError(w, r, http.StatusBadRequest, "not_a_file", "path is a directory")
+	}
+	if fi.IsDir() {
+		s.deleteWorkTree(w, r, user.ID, rel)
 		return
 	}
 	if err := scratch.Remove(s.cfg.Scratchpad.Root, user.ID, rel); err != nil {
@@ -208,6 +252,41 @@ func (s *Server) handleWorkDelete(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("artifact row left behind by work delete", "error", err,
 				"file", art.ID, "rid", RequestIDFrom(r.Context()))
 		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteWorkTree removes a work/ directory and everything under it, with
+// the same protections as file deletion: workPathFrom already restricted
+// the path to work/ at ≥2 segments (the work root itself is unaddressable),
+// and scratch.RemoveTree deletes every element through the fd-pinned
+// sandbox — symlinks are unlinked, never followed. A tree with any part
+// that cannot be enumerated (chmod 000) is refused rather than half-deleted.
+// Artifact rows pointing inside the tree (files_share cards) go with the
+// bytes, so no download card is left dangling on removed storage.
+func (s *Server) deleteWorkTree(w http.ResponseWriter, r *http.Request, userID, rel string) {
+	if err := scratch.RemoveTree(s.cfg.Scratchpad.Root, userID, rel); err != nil {
+		if errors.Is(err, scratch.ErrNotFound) || errors.Is(err, scratch.ErrPathUnsafe) {
+			writeAPIError(w, r, http.StatusNotFound, "not_found", "file not found")
+			return
+		}
+		s.logger.Error("work dir delete", "error", err, "path", rel, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	rows, err := s.store.DeleteArtifactsUnder(r.Context(), userID, rel)
+	if err != nil {
+		// Bytes are gone; the rows would 404 as downloads. Log loudly —
+		// the orphan sweep keys on ROWS existing, so these need an
+		// operator (or the next full-scan fix), not silence.
+		s.logger.Error("artifact rows under deleted work dir", "error", err,
+			"path", rel, "rid", RequestIDFrom(r.Context()))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if rows > 0 {
+		s.logger.Info("removed shared-file records with work directory",
+			"count", rows, "rid", RequestIDFrom(r.Context()))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -366,6 +367,65 @@ func Remove(root, userID, rel string) error {
 		return mapOpenErr(err)
 	}
 	return nil
+}
+
+// RemoveTree deletes a directory and everything under it: leaves first,
+// then directories deepest-up. Every element is removed through Remove, so
+// the same fd-pinned sandbox guards the whole descent — a symlinked
+// component is unlinked as a link, never traversed, and no path can leave
+// the user root.
+//
+// The walk completes BEFORE anything is deleted: if any part of the tree
+// cannot be listed (a chmod-000 directory), RemoveTree returns that error
+// and touches nothing — half-deleting while claiming "everything inside is
+// gone" would hide surviving bytes behind a success answer. Entries that
+// vanish between walk and delete (a script still running) are tolerated:
+// those bytes are genuinely gone.
+func RemoveTree(root, userID, rel string) error {
+	fi, err := Stat(root, userID, rel)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%w: RemoveTree target %q is not a directory", ErrNotDir, rel)
+	}
+	dir, err := Resolve(root, userID, rel)
+	if err != nil {
+		return err
+	}
+	var files, dirs []string
+	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err // unreadable anything ⇒ incomplete plan ⇒ abort
+		}
+		sub, rerr := filepath.Rel(dir, p)
+		if rerr != nil || sub == "." {
+			return nil
+		}
+		treeRel := path.Join(rel, filepath.ToSlash(sub))
+		if d.IsDir() {
+			dirs = append(dirs, treeRel)
+		} else {
+			files = append(files, treeRel)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+	for _, f := range files {
+		if rerr := Remove(root, userID, f); rerr != nil && !errors.Is(rerr, ErrNotFound) {
+			return rerr
+		}
+	}
+	// Pre-order collected dirs: parents precede children, so reverse order
+	// removes children first and every rmdir meets an empty directory.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if rerr := Remove(root, userID, dirs[i]); rerr != nil && !errors.Is(rerr, ErrNotFound) {
+			return rerr
+		}
+	}
+	return Remove(root, userID, rel)
 }
 
 // statInfo adapts unix.Stat_t to fs.FileInfo for the fields we consume.

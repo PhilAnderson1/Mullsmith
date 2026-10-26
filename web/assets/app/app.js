@@ -1008,6 +1008,7 @@ async function loadFiles(reset) {
 function fileRow(f) {
   const li = document.createElement("li");
   li.className = "file-row";
+  const isDir = f.kind === "work-dir";
   const main = document.createElement("div");
   main.className = "f-main";
   const name = document.createElement("div");
@@ -1017,11 +1018,22 @@ function fileRow(f) {
   sub.className = "f-sub";
   const badge = document.createElement("span");
   badge.className = "kind-badge " + f.kind;
-  badge.textContent = f.kind;
-  const bits = [humanSize(f.size), new Date(f.modified_at || f.created_at).toLocaleString()];
+  badge.textContent = isDir ? "folder" : f.kind;
+  const when = new Date(f.modified_at || f.created_at).toLocaleString();
+  const bits = isDir
+    ? [f.files > 0 ? `${f.files}${f.files_capped ? "+" : ""} file${f.files === 1 ? "" : "s"} inside` : "empty", when]
+    : [humanSize(f.size), when];
   if (f.expires_at) bits.push(`expires ${new Date(f.expires_at).toLocaleDateString()}`);
   sub.append(badge, " " + bits.join(" · "));
   main.append(name, sub);
+  if (f.path) {
+    // The relative path is the point: two directories can hold the same
+    // filename, and the bare name cannot tell them apart.
+    const p = document.createElement("div");
+    p.className = "f-path";
+    p.textContent = f.path;
+    main.append(p);
+  }
 
   const dl = document.createElement("a");
   dl.className = "btn small";
@@ -1029,7 +1041,7 @@ function fileRow(f) {
   if (fileApiUrl(f.download_url)) {
     dl.download = f.name;
   } else {
-    dl.hidden = true;
+    dl.hidden = true; // folders have no bytes to download
   }
   dl.textContent = "Download";
 
@@ -1038,10 +1050,19 @@ function fileRow(f) {
   del.className = "btn small ghost danger-text";
   del.textContent = "Delete";
   del.addEventListener("click", async () => {
-    if (!(await confirmDialog(`Delete "${f.name}"?`))) return;
+    // Directory deletes are recursive — spell out the full relative path
+    // and what goes with it before anything is touched.
+    const msg = isDir
+      ? `Delete directory "${f.path}"?` +
+        (f.files > 0
+          ? ` Everything inside it — ${f.files}${f.files_capped ? "+" : ""} file(s) and any subdirectories — will be deleted too, including files shared as download cards.`
+          : "") +
+        " This cannot be undone."
+      : `Delete "${f.name}"?`;
+    if (!(await confirmDialog(msg))) return;
     del.disabled = true;
     try {
-      if (f.kind === "work") await api.deleteWork(f.path);
+      if (isDir || f.kind === "work") await api.deleteWork(f.path);
       else await api.deleteFile(f.id);
       li.remove();
     } catch (err) {
