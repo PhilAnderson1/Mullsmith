@@ -758,9 +758,11 @@ as removed keys. Layers:
    is exactly: read-only host `/usr` (interpreters + libraries), minimal `/dev`
    and `/proc`, and the user's own scratchpad **root mounted read-only** at
    `/scratchpad` (also the working directory), the three designated directories
-   overlaid individually: `work/` **read-write** — the script's only writable
-   territory — and `uploads/` + `artifacts/` **read-only** so runs read inputs
-   in place but mutate nothing gabkeep holds records for (§9.4). A script can
+   overlaid individually: `work/` and `artifacts/` **read-write** — workspace
+   and finished output — and `uploads/` **read-only**, so runs read the user's
+   inputs in place but never mutate them (owner decision 2026-10-26: a script
+   may put its final work straight into `artifacts/`, where the Files page
+   shows it and the mtime sweep ages it out). A script can
    never create an entry beside the three directories: root-level litter breaks
    the layout the Files page and the sweeper assume. Jail paths match the
    fs_* tools' writable paths exactly (`fs_write`/`fs_delete` obey the same

@@ -217,15 +217,16 @@ func (FsWrite) Name() string { return "fs_write" }
 
 func (FsWrite) Description() string {
 	return "Write a UTF-8 text file inside the scratchpad, creating parent directories. " +
-		"Write reports under artifacts/ and scratch work under work/; uploads/ is the user's " +
-		"namespace and is read-only for you."
+		"Only paths under work/ (working files) or artifacts/ (finished, downloadable " +
+		"files) are writable; the scratchpad root, uploads/ and every other location " +
+		"are refused."
 }
 
 func (FsWrite) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":    map[string]any{"type": "string", "description": "Relative file path, e.g. artifacts/report.md"},
+			"path":    map[string]any{"type": "string", "description": "Relative file path under work/ or artifacts/, e.g. work/report.md"},
 			"content": map[string]any{"type": "string", "description": "Full file content (UTF-8 text)."},
 		},
 		"required": []string{"path", "content"},

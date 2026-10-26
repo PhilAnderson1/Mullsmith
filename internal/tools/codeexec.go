@@ -149,7 +149,9 @@ func (CodeRun) Description() string {
 		"NO network and no secrets. Existing files (e.g. an upload) are already visible " +
 		"at their relative path, such as uploads/sales.csv; the optional files argument " +
 		"additionally copies them into work/ to open as work/<name>. Write generated " +
-		"output to work/ — share one with files_share to deliver it. Returns exit_code, " +
+		"output to work/; a finished file may go straight to artifacts/, where the user " +
+		"sees it on the Files page — share it with files_share to also post a download " +
+		"card in the chat. Returns exit_code, " +
 		"stdout and stderr (both truncated)."
 }
 

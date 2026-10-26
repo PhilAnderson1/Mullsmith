@@ -112,9 +112,10 @@ func NewBwrap(opts Options) (*Bwrap, error) {
 
 // bwrapArgs builds the jail specification. scratchDir/workDir are HOST
 // paths: the user's scratchpad root (mounted READ-ONLY at /scratchpad)
-// and its work dir — the one writable directory, overlaid rw at its own
-// position. target is the interpreter's host-resolved path (must be under
-// /usr). Pure function: unit-testable without executing anything.
+// and its work dir. Writable directories are work/ and artifacts/, each
+// overlaid rw at its own position; uploads/ and the root stay read-only.
+// target is the interpreter's host-resolved path (must be under /usr).
+// Pure function: unit-testable without executing anything.
 func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
 	// Where workDir sits inside the jail, computed from the caller's own
 	// paths so the runner stays layout-agnostic (tmpfiles land on the
@@ -168,19 +169,19 @@ func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
 	// the ROOT is read-only — scripts that scribble beside work/, uploads/
 	// and artifacts/ corrupt the layout the UI and sweeper assume — so
 	// the three designated directories are passed separately:
-	//   work/       READ-WRITE (the script's own territory, and TMPDIR/$HOME)
+	//   work/       READ-WRITE (the script's workspace, and TMPDIR/$HOME)
 	//   uploads/    READ-ONLY  (user data: readable in place, never mutated)
-	//   artifacts/  READ-ONLY  (shared-file storage: only gabkeep writes rows+bytes)
+	//   artifacts/  READ-WRITE (a script may drop finished output there
+	//              directly; like every artifact it ages out via mtime)
 	// Later binds overlay the earlier root bind; bwrap applies them in
-	// order. uploads/ and artifacts/ are hard binds (no -try): the tool
-	// layer ran scratch.EnsureUserDirs, so a missing directory means a
-	// broken layout — fail closed rather than hand the payload a writable
-	// view of it through the root bind.
+	// order. All three are hard binds (no -try): the tool layer ran
+	// scratch.EnsureUserDirs, so a missing directory means a broken
+	// layout — fail closed rather than hand the payload the root view.
 	return append(args,
 		"--ro-bind", scratchDir, "/scratchpad",
 		"--bind", workDir, tmpInJail,
 		"--ro-bind", filepath.Join(scratchDir, "uploads"), "/scratchpad/uploads",
-		"--ro-bind", filepath.Join(scratchDir, "artifacts"), "/scratchpad/artifacts",
+		"--bind", filepath.Join(scratchDir, "artifacts"), "/scratchpad/artifacts",
 		"--chdir", "/scratchpad",
 		target, "-", // interpreter; script arrives on stdin
 	)

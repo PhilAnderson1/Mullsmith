@@ -5,7 +5,8 @@
 // process-group kill on timeout, capped output, strict concurrency (one run
 // per user, bounded global parallelism), and — always — a bubblewrap jail
 // with its own namespaces: no network (unless explicitly allowed), no
-// visibility of host files beyond /usr and the one writable work dir.
+// visibility of host files beyond /usr and the writable work/ + artifacts/
+// dirs.
 //
 // It is deliberately separate from internal/tools so the sandbox machinery
 // can be audited and tested on its own; CodeRun is a thin adapter over it.

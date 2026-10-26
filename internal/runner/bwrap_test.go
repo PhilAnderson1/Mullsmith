@@ -194,10 +194,10 @@ func TestJailScratchWritableAndVisibleOnHost(t *testing.T) {
 	d := scratchDirs(t)
 	out, err := b.Run(t.Context(), "userA", d.req(
 		`echo inside > work/wrote.txt
+echo done > artifacts/final.txt && echo ARTIFACTS-OK
 echo x > "loose file.txt" 2>/dev/null && echo "WRITE-ROOT(!)"
 mkdir mydir 2>/dev/null && echo "MKDIR-ROOT(!)"
 rm -f uploads 2>/dev/null
-touch artifacts/evil.txt 2>/dev/null && echo "WRITE-ARTIFACTS(!)"
 exit 0`))
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
@@ -206,9 +206,18 @@ exit 0`))
 		strings.TrimSpace(string(got)) != "inside" {
 		t.Errorf("work/ write inside jail not visible on host: %q %v", got, err)
 	}
+	// Finished output may be written straight into artifacts/ (owner
+	// policy): it must land on the host like any work/ file.
+	if !strings.Contains(out.Stdout, "ARTIFACTS-OK") {
+		t.Errorf("artifacts/ must be writable in jail: %q", out.Stdout)
+	}
+	if got, err := os.ReadFile(filepath.Join(d.scratch, "artifacts", "final.txt")); err != nil ||
+		strings.TrimSpace(string(got)) != "done" {
+		t.Errorf("artifacts/ write not visible on host: %q %v", got, err)
+	}
 	// The user root is read-only: nothing a script tries may appear
 	// beside the three designated directories (root-litter fix).
-	for _, forbidden := range []string{"WRITE-ROOT(!)", "MKDIR-ROOT(!)", "WRITE-ARTIFACTS(!)"} {
+	for _, forbidden := range []string{"WRITE-ROOT(!)", "MKDIR-ROOT(!)"} {
 		if strings.Contains(out.Stdout, forbidden) {
 			t.Errorf("jail let a script write where it must not (%s)", forbidden)
 		}
@@ -216,7 +225,6 @@ exit 0`))
 	for _, host := range []string{
 		filepath.Join(d.scratch, "loose file.txt"),
 		filepath.Join(d.scratch, "mydir"),
-		filepath.Join(d.scratch, "artifacts", "evil.txt"),
 	} {
 		if _, err := os.Stat(host); !os.IsNotExist(err) {
 			t.Errorf("refused write still landed on host: %s", host)
@@ -224,11 +232,10 @@ exit 0`))
 	}
 }
 
-// Only work/ accepts writes. uploads/ and artifacts/ stay readable (the
-// workflow reads inputs in place) but are gabkeep-managed: a script that
-// mutates or deletes them would corrupt data whose records live in the
-// files table.
-func TestJailOnlyWorkIsWritable(t *testing.T) {
+// work/ and artifacts/ accept writes; uploads/ stays readable (the
+// workflow reads inputs in place) but is the user's namespace: a script
+// that mutates or deletes uploads would destroy what the user attached.
+func TestJailWritableDirsAreWorkAndArtifacts(t *testing.T) {
 	b := newJail(t)
 	d := scratchDirs(t)
 	orig := filepath.Join(d.scratch, "uploads", "data.csv")
@@ -245,11 +252,10 @@ cat artifacts/shared.txt                  # readable in place
 echo "mutated" > uploads/data.csv 2>/dev/null && echo "WRITE-UPLOADS(!)"
 rm -f uploads/data.csv 2>/dev/null && [ ! -e uploads/data.csv ] && echo "DELETE-UPLOADS(!)"
 echo x > uploads/new-upload.txt 2>/dev/null && echo "CREATE-UPLOADS(!)"
-echo x > artifacts/shared.txt 2>/dev/null && echo "MUTATE-ARTIFACTS(!)"
-rm -f artifacts/shared.txt 2>/dev/null && [ ! -e artifacts/shared.txt ] && echo "DELETE-ARTIFACTS(!)"
-touch artifacts/generated.txt 2>/dev/null && echo "CREATE-ARTIFACTS(!)"
+echo x > artifacts/shared.txt && echo MUTATE-ARTIFACTS-OK
+touch artifacts/generated.txt && echo CREATE-ARTIFACTS-OK
 echo ok > work/script-output.txt && echo work-ok
-exit 0   # the refused writes above must not set the run's exit status
+exit 0   # the refused uploads writes above must not set the run's exit status
 `))
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
@@ -259,23 +265,24 @@ exit 0   # the refused writes above must not set the run's exit status
 	}
 	for _, forbidden := range []string{
 		"WRITE-UPLOADS(!)", "DELETE-UPLOADS(!)", "CREATE-UPLOADS(!)",
-		"MUTATE-ARTIFACTS(!)", "DELETE-ARTIFACTS(!)", "CREATE-ARTIFACTS(!)",
 	} {
 		if strings.Contains(out.Stdout, forbidden) {
 			t.Errorf("jail write that must be refused succeeded (%s)", forbidden)
 		}
 	}
-	if !strings.Contains(out.Stdout, "work-ok") {
-		t.Errorf("work/ must stay writable: %q", out.Stdout)
+	for _, required := range []string{"work-ok", "MUTATE-ARTIFACTS-OK", "CREATE-ARTIFACTS-OK"} {
+		if !strings.Contains(out.Stdout, required) {
+			t.Errorf("jail refused a write that must succeed (%s): %q", required, out.Stdout)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(d.work, "script-output.txt")); err != nil {
 		t.Errorf("work/ write not visible on host: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(d.scratch, "artifacts", "generated.txt")); err != nil {
+		t.Errorf("artifacts/ write not visible on host: %v", err)
+	}
 	if b, err := os.ReadFile(orig); err != nil || string(b) != "a,b,c\n" {
 		t.Errorf("original upload mutated on host: %q %v", b, err)
-	}
-	if b, err := os.ReadFile(shared); err != nil || string(b) != "shared\n" {
-		t.Errorf("artifact mutated on host: %q %v", b, err)
 	}
 }
 
