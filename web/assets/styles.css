@@ -830,7 +830,10 @@ body.files-open .pending-files { display: none; }
   padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
   padding-bottom: calc(1rem + env(safe-area-inset-bottom));
   width: 100%;
-  max-width: 34rem;
+  /* match the files panel's footprint (the form itself stays narrow:
+     34rem centered here left a dead gutter and a scrollbar floating
+     mid-window) */
+  max-width: 60rem;
   margin: 0 auto;
 }
 body.settings-open .thread,
@@ -841,6 +844,9 @@ body.settings-open .pending-files { display: none; }
   flex-direction: column;
   gap: 0.45rem;
   margin-top: 0.6rem;
+  /* readable measure for inputs inside the full-width panel (inputs are
+     globally width:100%, so the form's max-width governs them) */
+  max-width: 34rem;
 }
 .settings-form h3 { margin: 0.8rem 0 0.2rem; font-size: 1.02rem; }
 .settings-form textarea { resize: vertical; }
