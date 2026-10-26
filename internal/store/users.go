@@ -22,9 +22,14 @@ type User struct {
 	Name         string
 	PasswordHash string
 	Status       string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// DefaultSystemPrompt seeds new conversations created without an
+	// explicit prompt (settings page); existing chats keep their own.
+	DefaultSystemPrompt string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
+
+const userCols = `id, email, name, password_hash, status, default_system_prompt, created_at, updated_at`
 
 func (d *DB) CreateUser(ctx context.Context, u *User) error {
 	if u.ID == "" {
@@ -44,15 +49,13 @@ func (d *DB) CreateUser(ctx context.Context, u *User) error {
 // UserByEmail returns nil, nil when no user matches.
 func (d *DB) UserByEmail(ctx context.Context, email string) (*User, error) {
 	return scanUser(d.sqlDB.QueryRowContext(ctx,
-		`SELECT id, email, name, password_hash, status, created_at, updated_at
-		 FROM users WHERE email = ?`, email))
+		`SELECT `+userCols+` FROM users WHERE email = ?`, email))
 }
 
 // UserByID returns nil, nil when no user matches.
 func (d *DB) UserByID(ctx context.Context, userID string) (*User, error) {
 	return scanUser(d.sqlDB.QueryRowContext(ctx,
-		`SELECT id, email, name, password_hash, status, created_at, updated_at
-		 FROM users WHERE id = ?`, userID))
+		`SELECT `+userCols+` FROM users WHERE id = ?`, userID))
 }
 
 func scanUser(row row) (*User, error) {
@@ -60,7 +63,8 @@ func scanUser(row row) (*User, error) {
 		u             User
 		created, seen int64
 	)
-	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Status, &created, &seen)
+	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Status,
+		&u.DefaultSystemPrompt, &created, &seen)
 	switch {
 	case errors.Is(err, ErrNoRows):
 		return nil, nil
@@ -102,6 +106,22 @@ func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrUserNotFound
+	}
+	return nil
+}
+
+// UpdateProfile changes the account's display details in one statement.
+// Taking the whole row (not pointers) keeps the settings page honest: what
+// the form shows is what is stored. A taken email maps to ErrUserExists.
+func (d *DB) UpdateProfile(ctx context.Context, userID, name, email, defaultPrompt string, now time.Time) error {
+	_, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE users SET name = ?, email = ?, default_system_prompt = ?, updated_at = ? WHERE id = ?`,
+		name, email, defaultPrompt, now.Unix(), userID)
+	if err != nil {
+		if isUnique(err, "users.email") {
+			return ErrUserExists
+		}
+		return err
 	}
 	return nil
 }

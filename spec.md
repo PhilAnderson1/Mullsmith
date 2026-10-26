@@ -321,7 +321,8 @@ with no internals leaked (§9.12).
 | POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). 409 on duplicate email. Respects `registration` mode. |
 | POST | `/api/v1/auth/login` | `{email, password, remember_me}` → sets session cookie; `remember_me` (from the login checkbox) selects persistent vs browser-session cookie (§9.1). Rate limited + lockout. |
 | POST | `/api/v1/auth/logout` | Destroys session. |
-| GET  | `/api/v1/auth/me` | `{id, email, name, created_at, quota: {used_bytes, total_bytes}}` |
+| GET  | `/api/v1/auth/me` | `{id, email, name, created_at, default_system_prompt, quota: {used_bytes, total_bytes}}` |
+| PATCH | `/api/v1/auth/me` | Settings page: any subset of `{name, email, default_system_prompt}`; email rules mirror registration; taken email → 409. |
 | POST | `/api/v1/auth/password` | `{current, new}` change password; revokes other sessions. |
 
 Password policy: ≥ 10 characters, checked against a small embedded common-password list.
@@ -331,7 +332,8 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/v1/conversations?q=&cursor=` | List user's conversations (newest updated first, optional title search). |
-| POST | `/api/v1/conversations` | `{title?, model?, system_prompt?}` → create. |
+| POST | `/api/v1/conversations` | `{title?, model?, system_prompt?}` → create. A missing `system_prompt` inherits the user's `default_system_prompt` (the row stores the copy; later default edits never rewrite existing chats). |
+| POST | `/api/v1/conversations/{id}/touch` | Activity bump: opening a chat re-orders the list (ordered by `updated_at DESC`, so activation moves it to the top). |
 | GET | `/api/v1/conversations/{id}` | Metadata + pinned files. |
 | PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt. |
 | DELETE | `/api/v1/conversations/{id}` | Soft delete. |

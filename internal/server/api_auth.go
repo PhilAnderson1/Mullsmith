@@ -300,24 +300,83 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// --- GET /api/v1/auth/me -------------------------------------------------------------
+// --- GET / PATCH /api/v1/auth/me ---------------------------------------------------
 
-func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	user := UserFrom(r.Context())
+func (s *Server) mePayload(user *store.User) map[string]any {
 	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
 	if err != nil {
 		used = 0
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id":         user.ID,
-		"email":      user.Email,
-		"name":       user.Name,
-		"created_at": user.CreatedAt.UTC().Format(time.RFC3339),
+	return map[string]any{
+		"id":                    user.ID,
+		"email":                 user.Email,
+		"name":                  user.Name,
+		"created_at":            user.CreatedAt.UTC().Format(time.RFC3339),
+		"default_system_prompt": user.DefaultSystemPrompt,
 		"quota": map[string]any{
 			"used_bytes":  used,
 			"total_bytes": int64(s.cfg.Scratchpad.UserQuota),
 		},
-	})
+	}
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mePayload(UserFrom(r.Context())))
+}
+
+// handleMeUpdate lets the settings page change name, email and the default
+// system prompt in one save. Every field is optional (pointer); password
+// rotation is a separate endpoint (/auth/password) because it revokes
+// sessions. Email rules mirror registration exactly so the two paths can
+// never disagree.
+func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
+	user := UserFrom(r.Context())
+	var body struct {
+		Name                *string `json:"name"`
+		Email               *string `json:"email"`
+		DefaultSystemPrompt *string `json:"default_system_prompt"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	name, email, prompt := user.Name, user.Email, user.DefaultSystemPrompt
+	if body.Name != nil {
+		name = strings.TrimSpace(*body.Name)
+		if name == "" || utf8.RuneCountInString(name) > 120 {
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_name", "name must be 1-120 characters")
+			return
+		}
+	}
+	if body.Email != nil {
+		email = strings.ToLower(strings.TrimSpace(*body.Email))
+		if !auth.ValidEmail(email) {
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_email", "invalid email address")
+			return
+		}
+	}
+	if body.DefaultSystemPrompt != nil {
+		prompt = strings.TrimSpace(*body.DefaultSystemPrompt)
+		if utf8.RuneCountInString(prompt) > maxSystemPromptLen {
+			writeAPIError(w, r, http.StatusBadRequest, "system_prompt_too_long", "system prompt too long")
+			return
+		}
+	}
+	if err := s.store.UpdateProfile(r.Context(), user.ID, name, email, prompt, time.Now()); err != nil {
+		if errors.Is(err, store.ErrUserExists) {
+			writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
+			return
+		}
+		s.logger.Error("profile update failed", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	fresh, err := s.store.UserByID(r.Context(), user.ID)
+	if err != nil || fresh == nil {
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	s.logger.Info("profile updated", "user", user.ID, "email_changed", email != user.Email)
+	writeJSON(w, http.StatusOK, s.mePayload(fresh))
 }
 
 // --- POST /api/v1/auth/password ----------------------------------------------------------

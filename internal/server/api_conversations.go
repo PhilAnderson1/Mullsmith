@@ -185,11 +185,36 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 		Model:        body.Model,
 		SystemPrompt: body.SystemPrompt,
 	}
+	// Settings page: a conversation created without an explicit prompt
+	// inherits the user's default. The row stores the copy, so later
+	// edits of the default never rewrite an existing chat.
+	if c.SystemPrompt == "" {
+		c.SystemPrompt = user.DefaultSystemPrompt
+	}
 	if err := s.store.CreateConversation(r.Context(), c); err != nil {
 		s.writeConvErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, conversationJSON(c))
+}
+
+// --- POST /api/v1/conversations/{id}/touch ------------------------------------------
+
+// handleConversationTouch records "opened it" as activity: the list sorts
+// by updated_at DESC, so activating a chat brings it to the top even
+// before any new message lands (owner request 2026-10-26).
+func (s *Server) handleConversationTouch(w http.ResponseWriter, r *http.Request) {
+	user := UserFrom(r.Context())
+	ok, err := s.store.TouchConversation(r.Context(), user.ID, r.PathValue("id"))
+	if err != nil {
+		s.writeConvErr(w, r, err)
+		return
+	}
+	if !ok {
+		s.writeConvErr(w, r, store.ErrConversationNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- GET / PATCH / DELETE /api/v1/conversations/{id} ----------------------------------
