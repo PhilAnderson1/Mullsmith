@@ -60,6 +60,28 @@ func (sw *statusWriter) Flush() {
 	}
 }
 
+// FlushError passes the REAL flush error through. ResponseController.Flush
+// checks this method before the plain http.Flusher case, so without it the
+// Flush above silently swallowed every dead-client error — flush is where
+// socket errors surface, Write only fills the 4 KiB buffer (audit finding 10).
+func (sw *statusWriter) FlushError() error {
+	switch f := sw.ResponseWriter.(type) {
+	case interface{ FlushError() error }:
+		return f.FlushError()
+	case http.Flusher:
+		f.Flush()
+		return nil
+	}
+	return http.ErrNotSupported
+}
+
+// Unwrap exposes the wrapped writer so http.NewResponseController can reach
+// the connection. Without it, SetWriteDeadline from the SSE layer died with
+// ErrNotSupported — silently, because the caller ignored the error — which
+// also meant the per-route write-timeout exemption was fictional
+// (audit finding 10).
+func (sw *statusWriter) Unwrap() http.ResponseWriter { return sw.ResponseWriter }
+
 func logRequests(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

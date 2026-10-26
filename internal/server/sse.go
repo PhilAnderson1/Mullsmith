@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -34,6 +35,32 @@ func newSSE(w http.ResponseWriter) (*sseConn, error) {
 	return c, nil
 }
 
+// sseWriteTimeout bounds ONE frame's write+flush. A client that stops
+// reading (sleeping laptop, dropped mobile link: TCP zero window, no FIN)
+// otherwise blocks the write in a syscall forever — no ctx or tool timeout
+// interrupts that, and the stalled stream holds a generation slot until
+// restart (audit finding 10). 10 s to hand a few KB to a drained socket
+// buffer means the client is gone; the heartbeat interval (15 s) stays the
+// outer rhythm. Var so tests can shrink it.
+var sseWriteTimeout = 10 * time.Second
+
+// writeFrame writes one frame under a rolling deadline: armed per write,
+// cleared right after, so idle time between frames costs nothing and the
+// deadline can never expire "while nobody is writing". Fd-level control
+// reaches the connection through statusWriter's Unwrap.
+func (c *sseConn) writeFrame(frame []byte) error {
+	if err := c.rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) { // unwrappable wrappers must not kill every stream
+		return err
+	}
+	_, err := c.w.Write(frame)
+	if err == nil {
+		err = c.rc.Flush() // the real socket error usually lives here, not in Write
+	}
+	_ = c.rc.SetWriteDeadline(time.Time{})
+	return err
+}
+
 func (c *sseConn) Event(name string, data any) error {
 	b, err := json.Marshal(data)
 	if err != nil {
@@ -46,10 +73,7 @@ func (c *sseConn) Event(name string, data any) error {
 	}
 	frame := append([]byte("event: "+name+"\ndata: "), b...)
 	frame = append(frame, '\n', '\n')
-	if _, err := c.w.Write(frame); err != nil {
-		return err
-	}
-	return c.rc.Flush()
+	return c.writeFrame(frame)
 }
 
 // Close marks the connection finished so late background writers (the
@@ -62,15 +86,15 @@ func (c *sseConn) Close() {
 }
 
 // Comment writes an SSE comment line (": ping") — keeps proxies warm and
-// reveals dead clients through a write error.
+// reveals dead clients through a write error. The rolling frame deadline
+// guarantees the reveal even when the client merely stalls: pre-fix the
+// heartbeat itself blocked on the write while holding c.mu, so nothing
+// could cancel the generation (audit finding 10).
 func (c *sseConn) Comment(text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return http.ErrHandlerTimeout
 	}
-	if _, err := c.w.Write([]byte(": " + text + "\n\n")); err != nil {
-		return err
-	}
-	return c.rc.Flush()
+	return c.writeFrame([]byte(": " + text + "\n\n"))
 }
