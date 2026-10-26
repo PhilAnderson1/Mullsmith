@@ -130,3 +130,25 @@ func TestJSRegenerateActivationLoginSpinnerContracts(t *testing.T) {
 		t.Error("spinner must be CSS-animated; the JS braille timer frozen on iOS was the bug")
 	}
 }
+
+// Owner rule: saving settings (profile or password) closes the panel and
+// returns to the chat; only a FAILED save may keep it open, so a user
+// never loses typed input to a silent navigation.
+func TestJSSettingsSaveReturnsToChat(t *testing.T) {
+	b, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	for _, fn := range []string{"async function onSettingsSave(", "async function onPasswordSave("} {
+		body := jsFuncBody(t, src, fn)
+		li := strings.Index(body, "leaveSettings(")
+		if li < 0 {
+			t.Errorf("%s must call leaveSettings() — save should close the panel", fn)
+			continue
+		}
+		if try := strings.Index(body, "catch (err)"); try >= 0 && li > try {
+			t.Errorf("%s must close the panel in the success path, not after the catch", fn)
+		}
+	}
+}

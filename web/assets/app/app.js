@@ -1016,6 +1016,13 @@ function fillSettingsForm() {
   $("#form-password").reset();
 }
 
+// Both save buttons double as "done": on SUCCESS the panel closes and the
+// chat the user was reading comes back (same navigation as the X button).
+// A failed save deliberately keeps the panel open so nothing typed is lost.
+function leaveSettings() {
+  location.hash = state.currentId ? `#/c/${state.currentId}` : "";
+}
+
 async function onSettingsSave(ev) {
   ev.preventDefault();
   try {
@@ -1025,6 +1032,7 @@ async function onSettingsSave(ev) {
       default_system_prompt: $("#settings-prompt").value.trim(),
     });
     $("#user-chip").textContent = state.me.name || state.me.email;
+    leaveSettings();
     toast("Settings saved", false);
   } catch (err) {
     handleErr(err, "save settings");
@@ -1043,6 +1051,7 @@ async function onPasswordSave(ev) {
     await api.changePassword(cur, next);
     $("#form-password").reset();
     // The server rotated our session cookie (other sessions were revoked).
+    leaveSettings();
     toast("Password updated", false);
   } catch (err) {
     handleErr(err, "change password");
