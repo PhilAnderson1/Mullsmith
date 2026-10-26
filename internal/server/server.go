@@ -34,6 +34,29 @@ type Server struct {
 	tools      *tools.Registry
 	remembered *approvalMemory
 	httpSrv    *http.Server
+	// hashGate bounds concurrent Argon2 work globally (audit finding 4).
+	hashGate *auth.HashGate
+}
+
+// hashQueue is how many callers may wait behind the hash gate before new
+// arrivals get 429. Small on purpose: hashing is sub-second, so a healthy
+// queue drains in a blink and a deep one means a flood worth refusing.
+const hashQueue = 32
+
+// buildHashGate maps limits.hash_concurrency (three-state: unset→default,
+// 0→disabled, negative→rejected by config validation) onto a gate. Reading
+// the pointer directly matters: nil (struct-literal test configs, never
+// passed through Load) selects the safe default, while an explicit 0 is a
+// disabled — unbounded — gate, so unrelated tests never meet a surprise 429.
+func buildHashGate(cfg *config.Config) *auth.HashGate {
+	if cfg.Limits.HashConcurrency == nil {
+		return auth.NewHashGate(config.DefaultHashConcurrency, hashQueue)
+	}
+	n := *cfg.Limits.HashConcurrency
+	if n == 0 {
+		return nil
+	}
+	return auth.NewHashGate(n, hashQueue)
 }
 
 // New builds the full handler chain. Middleware order (outermost first):
@@ -52,6 +75,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		gens:       newGenRegistry(),
 		generator:  &agent.Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)},
 		remembered: newApprovalMemory(),
+		hashGate:   buildHashGate(cfg),
 		tools: tools.BuildFor(cfg, logger, nil, &artifactSink{
 			db:  db,
 			ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),

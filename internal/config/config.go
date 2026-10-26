@@ -139,6 +139,13 @@ type Limits struct {
 	RequestsPerMinute *int `yaml:"requests_per_minute"`
 	// Per-user hourly chat-message bucket (§9.11).
 	ChatMessagesPerHour *int `yaml:"chat_messages_per_hour"`
+	// HashConcurrency bounds concurrent Argon2 computations across ALL
+	// users — the global admission gate behind the per-IP login/register
+	// buckets (audit finding 4). Default 1: the parameters are heavy
+	// (64 MiB, 4 threads) and hashing is sub-second, so serialising costs
+	// honest users nothing while a flood can never exceed one hash's worth
+	// of memory and CPU. 0 disables the gate (queue stays bounded).
+	HashConcurrency *int `yaml:"hash_concurrency"`
 }
 
 type Database struct {
@@ -262,6 +269,7 @@ const (
 	DefaultChatMessagesPerHour    = 120
 	DefaultConcurrentStreamsUser  = 2
 	DefaultConcurrentStreamsTotal = 8
+	DefaultHashConcurrency        = 1
 )
 
 // Ptr returns &v — for assigning the optional (pointer) knobs in configs
@@ -393,6 +401,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Limits.ChatMessagesPerHour == nil {
 		c.Limits.ChatMessagesPerHour = Ptr(DefaultChatMessagesPerHour)
+	}
+	if c.Limits.HashConcurrency == nil {
+		c.Limits.HashConcurrency = Ptr(DefaultHashConcurrency)
 	}
 	if c.Scratchpad.MaxFileSize == 0 {
 		c.Scratchpad.MaxFileSize = 25 << 20
@@ -573,6 +584,7 @@ func (c *Config) Validate() error {
 		{"limits.concurrent_streams_total", c.Limits.ConcurrentStreamsTotal},
 		{"limits.requests_per_minute", c.Limits.RequestsPerMinute},
 		{"limits.chat_messages_per_hour", c.Limits.ChatMessagesPerHour},
+		{"limits.hash_concurrency", c.Limits.HashConcurrency},
 	} {
 		if k.v != nil && *k.v < 0 {
 			f.bad("%s: must be >= 0 (0 disables the limit)", k.name)

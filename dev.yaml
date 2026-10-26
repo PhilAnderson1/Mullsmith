@@ -81,6 +81,7 @@ limits:
   concurrent_streams_total: 8
   requests_per_minute: 120
   chat_messages_per_hour: 120
+  hash_concurrency: 1
 
 logging:
   level: debug                    # dev verbosity; info in production

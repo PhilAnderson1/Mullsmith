@@ -98,6 +98,7 @@ limits:
   concurrent_streams_total: 8     # all users combined (global backstop)
   requests_per_minute: 120        # per authenticated user, non-chat endpoints
   chat_messages_per_hour: 120     # per user
+  hash_concurrency: 1             # simultaneous Argon2 computations, all users
 
 logging:
   level: info                     # debug | info | warn | error

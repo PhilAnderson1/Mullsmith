@@ -97,7 +97,8 @@ limits:
   concurrent_streams_total: 8     # parallel SSE generations server-wide
   requests_per_minute: 120        # per authenticated user, non-chat endpoints
   chat_messages_per_hour: 120     # per user
-  # the four caps above: values shown are the program defaults; set a knob
+  hash_concurrency: 1             # simultaneous Argon2 computations (§9.11)
+  # the caps above: values shown are the program defaults; set a knob
   # to 0 to disable that control, negatives are a config error; the old
   # rate_limit: block is retired — everything lives under limits: now
 
@@ -720,9 +721,10 @@ open registration (startup warns).
 | Request body cap | `http.MaxBytesReader` on every route (`limits.max_body_bytes` = 1 MiB default); multipart streams to a spooled temp file with its own `max_file_size` cap and `defer os.Remove` on abort — never buffered whole in memory |
 | Field caps | message ≤ `max_message_chars`; titles/names/emails length-bounded; `attachment_ids` ≤ `limits.max_attachments`; pagination `limit` ≤ 200; unknown JSON fields → 400 (§9.3) |
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
-| Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login/register/password-change |
+| Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded |
+| Password hashing | **global gate** (`limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
 | Static/other API | token bucket per authenticated **user** (`limits.requests_per_minute`, 429 + `Retry-After`); user-keyed because the session already proves identity and IP-keying is hostage to NAT/proxy topology. Chat-stream POSTs are exempt — they answer to the hourly chat bucket and the generation caps above |
-| Disabling limits | the four caps under `limits:` (`concurrent_streams_per_user`, `concurrent_streams_total`, `requests_per_minute`, `chat_messages_per_hour`) are three-state: **unset** → program default (2 / 8 / 120 / 120), **0** → disabled by explicit operator choice, **negative** → config error. Shipped config files spell the defaults out so the live policy is readable; login/register throttle buckets are hardcoded and unaffected. The former `rate_limit:` block is retired: configs carrying it fail validation with a "move it into limits:" message |
+| Disabling limits | the caps under `limits:` (`concurrent_streams_per_user`, `concurrent_streams_total`, `requests_per_minute`, `chat_messages_per_hour`, `hash_concurrency`) are three-state: **unset** → program default (2 / 8 / 120 / 120 / 1), **0** → disabled by explicit operator choice, **negative** → config error. Shipped config files spell the defaults out so the live policy is readable; login/register throttle buckets are hardcoded and unaffected. The former `rate_limit:` block is retired: configs carrying it fail validation with a "move it into limits:" message |
 | Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; `WriteTimeout` disabled only for SSE routes, wrapped per-route otherwise |
 | SSE hygiene | server-side heartbeat comments every 25 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; small reader pool; TTL job deletes bounded per pass (≤ 1 000 rows/files) |

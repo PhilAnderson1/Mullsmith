@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"golang.org/x/crypto/argon2"
 
@@ -18,6 +19,15 @@ const (
 	keyLen  = 32
 	saltLen = 16
 )
+
+// hashWorkCount counts every Argon2 computation this process performs.
+// Cheap (one atomic) and used for observability plus the audit finding 4
+// regression tests: DummyVerify must cost exactly one hash, matching the
+// wrong-password path (spec §9.1 timing equalisation).
+var hashWorkCount atomic.Int64
+
+// HashWorkCount reports the number of Argon2 computations since process start.
+func HashWorkCount() int64 { return hashWorkCount.Load() }
 
 // HashPassword hashes with argon2id using the configured parameters and
 // returns a self-describing string (parameters embedded, so later config
@@ -31,6 +41,7 @@ func HashPassword(password string, p config.Argon2) (string, error) {
 	}
 	dk := argon2.IDKey([]byte(password), salt,
 		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen) // #nosec G115 -- config bounds 1..4096 / 1KiB..1GiB / 1..64 (§ auth.argon2)
+	hashWorkCount.Add(1)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, p.Memory, p.Time, p.Threads,
 		base64.RawStdEncoding.EncodeToString(salt),
@@ -68,6 +79,7 @@ func VerifyPassword(password, encoded string) bool {
 		return false // every hash we ever wrote is keyLen bytes (§9.1 fail closed)
 	}
 	got := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, keyLen)
+	hashWorkCount.Add(1)
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
@@ -75,12 +87,14 @@ func VerifyPassword(password, encoded string) bool {
 // login attempt (timing equalisation, spec §9.1).
 var dummySalt = []byte("gabkeep-dummy-salt")
 
-// DummyVerify performs a real argon2 hash of a throwaway value so responses
-// for unknown emails take as long as wrong-password responses.
+// DummyVerify performs one real Argon2 computation of a throwaway value so
+// that unknown-email logins cost exactly what wrong-password logins cost:
+// one IDKey with the configured parameters (spec §9.1). It used to compute
+// two (a want/got pair compared against itself), which inverted the
+// equalisation — unknown emails responded ~2x slower, an enumeration oracle
+// — and doubled the attacker-induced hashing load (audit finding 4).
 func DummyVerify(p config.Argon2) {
-	want := argon2.IDKey([]byte("gabkeep-timing-equaliser"), dummySalt,
+	_ = argon2.IDKey([]byte("gabkeep-timing-equaliser"), dummySalt,
 		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen) // #nosec G115 -- validated params
-	got := argon2.IDKey([]byte("gabkeep-timing-equaliser-other"), dummySalt,
-		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen) // #nosec G115 -- validated params
-	_ = subtle.ConstantTimeCompare(got, want)
+	hashWorkCount.Add(1)
 }

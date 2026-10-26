@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -70,6 +71,29 @@ func (s *Server) rememberRequested(requested bool) bool {
 	return requested && s.cfg.Auth.RememberLogin
 }
 
+// hashRun performs Argon2 work through the global gate (audit finding 4).
+// It returns true when f ran; on false the HTTP response is already written
+// (429 when the gate is saturated; nothing when the client hung up) and the
+// caller must return. A hash implementation failure — vanishing entropy,
+// say — is a 500.
+func (s *Server) hashRun(w http.ResponseWriter, r *http.Request, f func() error) bool {
+	err := s.hashGate.Run(r.Context(), f)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, auth.ErrHashBusy):
+		w.Header().Set("Retry-After", "2")
+		writeAPIError(w, r, http.StatusTooManyRequests, "server_busy",
+			"too many password operations in flight, try again shortly")
+	case errors.Is(err, context.Canceled):
+		// Queue spot released for a caller that left; no one to answer.
+	default:
+		s.logger.Error("password hashing failed", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+	}
+	return false
+}
+
 // --- POST /api/v1/auth/register (spec §5.1, §8) --------------------------------
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -116,10 +140,29 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := auth.HashPassword(body.Password, s.cfg.Auth.Argon2)
-	if err != nil {
-		s.logger.Error("password hash failed", "error", err)
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+	// Invite eligibility pre-flight (audit finding 4): a used/unknown code
+	// fails here without burning a hash. store.Register keeps consuming
+	// atomically, so two registrations racing on one code still reject
+	// exactly one — the loser just pays for a wasted hash.
+	if s.cfg.Auth.Registration == "invite-only" {
+		ok, err := s.store.InviteAvailable(r.Context(), strings.TrimSpace(body.Invite))
+		if err != nil {
+			s.logger.Error("invite pre-check failed", "error", err, "rid", RequestIDFrom(r.Context()))
+			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		if !ok {
+			writeAPIError(w, r, http.StatusForbidden, "invite_invalid", "invite code missing, used or unknown")
+			return
+		}
+	}
+
+	var hash string
+	if !s.hashRun(w, r, func() error {
+		var err error
+		hash, err = auth.HashPassword(body.Password, s.cfg.Auth.Argon2)
+		return err
+	}) {
 		return
 	}
 
@@ -196,13 +239,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user == nil {
-		auth.DummyVerify(s.cfg.Auth.Argon2) // equalise timing with wrong-password path
+		// Both failure paths take exactly one gate-wrapped hash, so a
+		// saturated gate answers 429 identically whether or not the email
+		// exists — timing equalisation holds under load too (spec §9.1).
+		if !s.hashRun(w, r, func() error { auth.DummyVerify(s.cfg.Auth.Argon2); return nil }) {
+			return
+		}
 		s.locks.Fail(lockKey, s.cfg.Auth.MaxFailedLogins, 15*time.Minute)
 		s.logger.Warn("login failed", "reason", "unknown_email", "ip", ip)
 		invalidCredentials(w, r)
 		return
 	}
-	if !auth.VerifyPassword(body.Password, user.PasswordHash) || user.Status != "active" {
+	ok := false
+	if !s.hashRun(w, r, func() error { ok = auth.VerifyPassword(body.Password, user.PasswordHash); return nil }) {
+		return
+	}
+	if !ok || user.Status != "active" {
 		s.locks.Fail(lockKey, s.cfg.Auth.MaxFailedLogins, 15*time.Minute)
 		s.logger.Warn("login failed", "reason", "bad_password", "ip", ip, "user", user.ID)
 		invalidCredentials(w, r)
@@ -262,6 +314,18 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
+	// Dedicated password-change throttle (audit finding 4): every call is
+	// two Argon2 operations, so the generic per-user API budget (120/min)
+	// is far too loose here. Per-user is the primary key — the endpoint
+	// proves identity — with a looser per-IP layer behind it.
+	const pwWindow = 15 * time.Minute
+	if !s.limiter.Allow("pw:"+user.ID, 5, pwWindow) ||
+		!s.limiter.Allow("pwip:"+ClientIP(r), 20, pwWindow) {
+		w.Header().Set("Retry-After", "900")
+		writeAPIError(w, r, http.StatusTooManyRequests, "pw_change_limited",
+			"too many password changes, try again later")
+		return
+	}
 	var body struct {
 		Current string `json:"current"`
 		New     string `json:"new"`
@@ -269,7 +333,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if !auth.VerifyPassword(body.Current, user.PasswordHash) {
+	pwOK := false
+	if !s.hashRun(w, r, func() error { pwOK = auth.VerifyPassword(body.Current, user.PasswordHash); return nil }) {
+		return
+	}
+	if !pwOK {
 		writeAPIError(w, r, http.StatusForbidden, "invalid_password", "current password is incorrect")
 		return
 	}
@@ -277,9 +345,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "weak_password", err.Error())
 		return
 	}
-	hash, err := auth.HashPassword(body.New, s.cfg.Auth.Argon2)
-	if err != nil {
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+	var hash string
+	if !s.hashRun(w, r, func() error {
+		var err error
+		hash, err = auth.HashPassword(body.New, s.cfg.Auth.Argon2)
+		return err
+	}) {
 		return
 	}
 	if err := s.store.SetPassword(r.Context(), user.ID, hash, time.Now()); err != nil {
