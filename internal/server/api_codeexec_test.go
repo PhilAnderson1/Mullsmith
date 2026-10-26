@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -59,6 +60,12 @@ func newCodeChatServer(t *testing.T, replies [][]string) (*authTest, *Server, *t
 	}
 
 	codeRunner, _, err := runner.NewForConfig(cfg)
+	if errors.Is(err, runner.ErrNoCgroup) {
+		// Metered jails cannot be built in an undelegated session — the
+		// product itself refuses to start here. Run with sudo -E to
+		// exercise these tests on a developer box.
+		t.Skipf("no per-run cgroup metering available (%v)", err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -130,5 +130,14 @@ func NewForConfig(cfg *config.Config) (Runner, []string, error) {
 		MaxFileSize: uint64(cfg.Scratchpad.MaxFileSize), // #nosec G115 -- config.Size parses only non-negative values
 		NetworkOpen: ce.AllowNetwork,
 	})
-	return r, warn, err
+	if err != nil {
+		return nil, nil, err
+	}
+	// Same fail-closed contract as the bwrap probe: per-run cgroup metering
+	// (audit2 finding 2) must be arming-capable here, or code_run promises
+	// bounds we cannot enforce. Delegate=yes on the unit is the usual fix.
+	if r.cgroupRoot == "" {
+		return nil, nil, ErrNoCgroup
+	}
+	return r, warn, nil
 }

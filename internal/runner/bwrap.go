@@ -37,8 +37,9 @@ import (
 
 // Bwrap is the sole production Runner.
 type Bwrap struct {
-	opts Options
-	gate *gate
+	opts       Options
+	gate       *gate
+	cgroupRoot string // resolved at construction; "" = metering unavailable ⇒ Run refuses
 }
 
 // Options configures the sandbox. All zero values get safe defaults in
@@ -46,12 +47,13 @@ type Bwrap struct {
 type Options struct {
 	Timeout      time.Duration
 	MaxOutput    int
-	MaxMemory    uint64 // RLIMIT_AS
+	MaxMemory    uint64 // RLIMIT_AS per process AND the per-run cgroup memory.max
 	MaxFileSize  uint64 // RLIMIT_FSIZE
 	GlobalCap    int
 	NetworkOpen  bool   // allow_network: keep the net namespace + resolver files
 	BwrapBin     string // resolved at startup; "" → LookPath("bwrap") in NewBwrap
 	LauncherPath string // self re-exec path override (tests)
+	CgroupRoot   string // per-run cgroup parent override (tests); "" → discovered
 }
 
 // ProbeBwrap proves the binary exists AND that an actual jail works here
@@ -101,7 +103,11 @@ func NewBwrap(opts Options) (*Bwrap, error) {
 	if opts.GlobalCap <= 0 {
 		opts.GlobalCap = 4
 	}
-	return &Bwrap{opts: opts, gate: newGate(opts.GlobalCap)}, nil
+	root := opts.CgroupRoot
+	if root == "" {
+		root = DiscoverCgroupRoot()
+	}
+	return &Bwrap{opts: opts, gate: newGate(opts.GlobalCap), cgroupRoot: root}, nil
 }
 
 // bwrapArgs builds the jail specification. scratchDir/workDir are HOST
@@ -224,6 +230,20 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// The per-run cgroup meter goes up BEFORE the launcher exists:
+	// placement is via clone3(CGROUP), so no payload process can ever
+	// run un-metered, and an arming failure means nothing runs at all
+	// (audit2 finding 2).
+	if b.cgroupRoot == "" {
+		return Outcome{}, ErrNoCgroup
+	}
+	runCg, cgFile, err := StartRunCgroup(b.cgroupRoot, randHex(), mem)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("%w: setup failed: %w", ErrNoCgroup, err)
+	}
+	defer cgFile.Close() // consumed by clone3; execve already hides it from the jail
+	defer runCg.Finish() // sweep stragglers, remove the cgroup
+
 	spec := sandboxSpec{
 		Binary: b.opts.BwrapBin,
 		Args:   bwrapArgs(req.ScratchDir, req.WorkDir, target, b.opts.NetworkOpen),
@@ -263,12 +283,17 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 	cmd.ExtraFiles = []*os.File{pr}
 	cmd.Stdin = strings.NewReader(req.Script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:   true,
-		Pdeathsig: syscall.SIGKILL,
+		Setpgid:     true,
+		Pdeathsig:   syscall.SIGKILL,
+		UseCgroupFD: true, // cloned straight into the run's cgroup — no move, no race
+		CgroupFD:    int(cgFile.Fd()),
 	}
 	// The default cancel kills only the direct child; the whole group
-	// (launcher, bwrap, payload) must go (§9.9 "kill process group").
+	// (launcher, bwrap, payload) must go (§9.9 "kill process group"), and
+	// cgroup.kill catches anything inside the jail that re-grouped itself
+	// away from us.
 	cmd.Cancel = func() error {
+		runCg.KillAll()
 		if cmd.Process != nil {
 			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
@@ -304,6 +329,7 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 	}
 	waitErr := cmd.Wait()
 	wg.Wait()
+	oomKilled := runCg.OOMKilled() // read before the deferred Finish() drops the dir
 
 	out := Outcome{
 		Stdout:    string(outBuf.take()),
@@ -325,6 +351,12 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 		}
 	default:
 		out.ExitCode = 0
+	}
+	if oomKilled {
+		// Without this line, an OOM-killed script is indistinguishable
+		// from any other death — to the model and to the logs.
+		out.Stderr = strings.TrimSuffix(out.Stderr, "\n") +
+			"\n[gabkeep: the run's process tree exceeded its total memory budget; the kernel killed part of it]"
 	}
 	return out, nil
 }

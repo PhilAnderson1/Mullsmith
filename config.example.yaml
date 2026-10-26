@@ -35,6 +35,11 @@ scratchpad:
     # writable, network off unless allow_network. Requires the bubblewrap
     # package; gabkeep refuses to start with enabled: true when bwrap is
     # missing or unprivileged user namespaces are disabled.
+    # max_memory is a PER-RUN aggregate: the whole process tree (children
+    # included) shares it via a per-run cgroup, which needs a delegated
+    # cgroup v2 subtree — for systemd use deploy/gabkeep.service as shipped
+    # (Delegate=yes + DelegateSubgroup=payload). Metering unavailable ⇒
+    # refuses to start, same fail-closed contract (§9.9).
     # (Old keys mode/container_image/run_as_user are retired — remove them.)
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }

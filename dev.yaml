@@ -23,7 +23,9 @@ scratchpad:
     enabled: true                 # M6 live testing (spec §9.9)
     # Single mode: every run is jailed by bubblewrap (bwrap). Install the
     # bubblewrap package or set enabled: false — gabkeep refuses to start
-    # without it.
+    # without it. Per-run cgroup metering (§9.9) needs a delegated cgroup
+    # v2 subtree: run `sudo go run ./cmd/gabkeep -config dev.yaml`, or
+    # expect code_run to refuse while the rest of the app works.
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
       - { id: sh, binary: /bin/sh }

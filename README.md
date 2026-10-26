@@ -30,6 +30,10 @@ artifacts under [`docs/`](docs/). See [Security](#security) for residual risks.
 * The `bubblewrap` package (`apt install bubblewrap`) — only if you enable
   `code_execution`; gabkeep refuses to start with code execution on when a
   working bwrap is missing (spec §9.9).
+* For `code_execution` under systemd: `Delegate=yes` on the unit (the shipped
+  `deploy/gabkeep.service` has it, with `DelegateSubgroup=payload`) so each run
+  can get a per-run cgroup resource meter — kernel ≥ 5.7 with cgroup v2. No
+  meterable subtree ⇒ code execution refuses to start, never runs un-metered.
 * An OpenAI-compatible endpoint for the model. v1 is text-only (current
   deployments use text chat models; image input support may come later).
 * To build: Go ≥ 1.24 (Ubuntu's `apt install golang-go` is fine if recent
@@ -176,6 +180,10 @@ per line, false-positive justifications included, is
   users' files and server configs have no path inside the jail — with
   rlimits, a scrubbed environment and no-new-privs underneath, and no
   network unless you set `allow_network: true` (gabkeep warns when you do).
+  Every run also gets its own cgroup v2 meter: total memory (no swap), task
+  count and CPU are capped for the whole process tree, so a multiplying
+  script cannot exhaust the host (spec §9.9; needs the unit's delegated
+  subtree, refuse-not-degrade).
   `bwrap` is a hard requirement when code execution is on: missing or
   non-functional bwrap stops gabkeep at startup, never a silent downgrade.
   Files a script produces can be shared back into the chat: assume anyone

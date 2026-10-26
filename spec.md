@@ -684,12 +684,14 @@ which also matters for privacy). `Server` header is just `gabkeep` (no version d
 
 ### 9.9 Code execution sandbox (defense in depth)
 
-One enforcement path, fail closed: **bubblewrap (bwrap)**. At startup gabkeep
-probes a real jail; if bwrap is missing or its namespaces do not work (kernel
-policy disabling unprivileged user namespaces), it **refuses to start** with
-`code_execution.enabled: true` — never a silent downgrade. The retired multi-mode
-knobs (`mode`, `container_image`, `run_as_user`) are rejected as removed keys.
-Layers:
+One enforcement path, fail closed: **bubblewrap (bwrap)** plus a **per-run cgroup
+v2 meter** for resources. At startup gabkeep probes a real jail; if bwrap is
+missing or its namespaces do not work (kernel policy disabling unprivileged user
+namespaces), or if per-run cgroup metering cannot be armed (no writable cgroup v2
+subtree — a systemd unit needs `Delegate=yes`; kernel < 5.7), it **refuses to
+start** with `code_execution.enabled: true` — never a silent downgrade. The
+retired multi-mode knobs (`mode`, `container_image`, `run_as_user`) are rejected
+as removed keys. Layers:
 
 1. **Opt-in.** `code_execution.enabled: false` by default — the product is fully useful
    (chat, search, files) without it.
@@ -710,9 +712,23 @@ Layers:
    rebuilt from a five-variable allowlist. Network: the net namespace is dropped
    unless `allow_network: true`, which instead shares the host netns plus
    read-only resolver/CA files and logs a startup warning.
-4. **Resource layer (outermost):** the re-exec launcher applies `RLIMIT_AS/CPU/
-   FSIZE/NOFILE`, `RLIMIT_CORE=0` and `PR_SET_NO_NEW_PRIVS` before exec'ing bwrap,
-   so bwrap and the payload inherit them (bwrap cannot raise limits back up).
+4. **Resource layer (outermost):** two meters. Per-process: the re-exec launcher
+   applies `RLIMIT_AS/CPU/FSIZE/NOFILE`, `RLIMIT_CORE=0` and `PR_SET_NO_NEW_PRIVS`
+   before exec'ing bwrap, so bwrap and the payload inherit them (bwrap cannot raise
+   limits back up). Per-run **aggregate** (rlimits reset per child, so a multiplying
+   script otherwise gets a fresh allowance each): the launcher is cloned **directly
+   into a per-run cgroup v2 child** (`CLONE_INTO_CGROUP` — no window where a payload
+   process exists before the meter; kernel ≥ 5.7) with `memory.max = max_memory`,
+   `memory.swap.max = 0`, `pids.max` (128) and `cpu.max` (one core). Timeout/cancel
+   kills via `cgroup.kill` (kernel ≥ 5.14; per-pid fallback on 5.7–5.13) plus the
+   process-group kill; a cgroup `oom_kill` appends a plain-language note to stderr so
+   an OOM death is never anonymous. The meter lives in a subtree **delegated to
+   gabkeep**: the systemd unit needs `Delegate=yes` (plus `DelegateSubgroup=payload`
+   on systemd ≥ 254 and no `ProtectControlGroups` — the kernel forbids controllers
+   where processes live; older systemd is handled by gabkeep moving its own process
+   into a subgroup). The root is discovered and *proven usable* (mkdir + controller
+   files + an actual clone probe) at startup — no proven root means refusal, never
+   an un-metered run.
 5. **Always:** wall-clock timeout (kill process group), output byte cap, max one
    concurrent run per user (queue of 1, else "busy"), global concurrency cap.
 6. **Approval:** default `code_run: confirm` → the human clicks "Allow run" before the

@@ -3,11 +3,13 @@ package runner_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,7 +45,82 @@ func bwrapOptions(t *testing.T) runner.Options {
 	return runner.Options{
 		Timeout: 10 * time.Second, MaxOutput: 1 << 20, MaxMemory: 256 << 20,
 		MaxFileSize: 1 << 20, GlobalCap: 4, LauncherPath: exe,
+		CgroupRoot: testCgroupRoot(t),
 	}
+}
+
+// testCgroupRoot prepares the parent dir for test jail cgroups. It prefers
+// the PRODUCTION discovery path (runner.DiscoverCgroupRoot: a Delegate=yes
+// unit, a root-run cgroup v2 box, or the self-placement shape) so in-unit
+// and sudo runs exercise exactly what the server does. Only when discovery
+// finds nothing does it fall back to a dedicated delegated directory under
+// the developer's user@.service.
+//
+// A clone probe gates more than directory writability: CLONE_INTO_CGROUP
+// additionally requires the CALLER's own cgroup to be owned by it (or
+// CAP_SYS_ADMIN). A plain login session's scope is root-owned, so
+// unprivileged test runs skip here; `sudo -E go test` and production (a
+// Delegate=yes unit chowned to its service user) both satisfy the rule.
+var testCgroupOnce sync.Once
+var testCgroupErr error
+var testCgroupDir string
+
+func testCgroupRoot(t *testing.T) string {
+	t.Helper()
+	testCgroupOnce.Do(func() {
+		if dir := runner.DiscoverCgroupRoot(); dir != "" {
+			testCgroupDir = dir // production discovery succeeded
+		} else {
+			uid := os.Getuid()
+			dir := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/gk-runner-tests", uid, uid)
+			if uid == 0 {
+				dir = "/sys/fs/cgroup/gk-runner-tests" // root: skip user-session plumbing
+			}
+			if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+				testCgroupErr = err
+				return
+			}
+			// Idempotent: re-listing an enabled controller is a no-op.
+			if err := os.WriteFile(dir+"/cgroup.subtree_control",
+				[]byte("+cpu +memory +pids"), 0o600); err != nil {
+				testCgroupErr = err
+				return
+			}
+			testCgroupDir = dir
+		}
+		// End-to-end probe: this is the whole question — can we clone into
+		// a meter and run anything at all?
+		exe, err := os.Executable()
+		if err != nil {
+			testCgroupErr = err
+			return
+		}
+		b, err := runner.NewBwrap(runner.Options{
+			Timeout: 10 * time.Second, MaxOutput: 1 << 16, MaxMemory: 64 << 20,
+			MaxFileSize: 1 << 16, LauncherPath: exe, CgroupRoot: testCgroupDir,
+		})
+		if err != nil {
+			testCgroupErr = err
+			return
+		}
+		s := t.TempDir()
+		for _, sub := range []string{"uploads", "artifacts", "work"} {
+			if err := os.Mkdir(filepath.Join(s, sub), 0o700); err != nil {
+				testCgroupErr = err
+				return
+			}
+		}
+		if _, err := b.Run(context.Background(), "userA", runner.Request{
+			RuntimeID: "sh", Binary: "/bin/sh", ScratchDir: s,
+			WorkDir: filepath.Join(s, "work"), Script: "true",
+		}); err != nil {
+			testCgroupErr = err
+		}
+	})
+	if testCgroupErr != nil {
+		t.Skipf("per-run cgroup metering unavailable here (%v) — runner refuses to run un-metered; on the dev box use sudo -E go test, in production use Delegate=yes", testCgroupErr)
+	}
+	return testCgroupDir
 }
 
 func newJail(t *testing.T) *runner.Bwrap {
@@ -427,8 +504,8 @@ func TestJailTimeoutKillsWholeTree(t *testing.T) {
 	s1, _ := os.Stat(beats)
 	time.Sleep(1200 * time.Millisecond) // five heartbeat intervals
 	s2, _ := os.Stat(beats)
-	if s2.Size() != s1.Size() {
-		return // no further writes: the whole tree died with the group kill
+	if s2.Size() == s1.Size() {
+		return // no further writes: the whole tree died with the kill
 	}
 	t.Errorf("jail grandchild survived the timeout kill (%d -> %d bytes)", s1.Size(), s2.Size())
 }
@@ -589,6 +666,16 @@ func TestNewForConfigDisabled(t *testing.T) {
 func TestNewForConfigEnabledBuildsJail(t *testing.T) {
 	requireBwrap(t)
 	r, _, err := runner.NewForConfig(codeExecConfig())
+	if errors.Is(err, runner.ErrNoCgroup) {
+		if r != nil {
+			t.Fatal("refused startup must not yield a runner")
+		}
+		// Fail closed at startup IS the correct behaviour where no cgroup
+		// subtree can be metered (plain login session). The full wiring is
+		// exercised wherever a root exists: `sudo go test`, or any
+		// Delegate=yes unit.
+		t.Skipf("startup correctly refused: %v", err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

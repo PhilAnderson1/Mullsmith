@@ -47,8 +47,13 @@ ProtectSystem=strict
 # never sees host /proc; ProtectSystem=strict already covers the tunables
 # for gabkeep's own process (everything outside ReadWritePaths is read-only).
 ProtectKernelModules=true
-ProtectKernelModules=true
-ProtectControlGroups=true
+# ProtectControlGroups is deliberately NOT set (§9.9 resource layer): it
+# remounts /sys/fs/cgroup read-only, which makes the per-run cgroup meter
+# impossible to arm — gabkeep then refuses code execution at startup (fail
+# closed, never un-metered). Safety here comes from ownership: the service
+# runs as gabkeep and only its delegated subtree below is user-writable. On
+# systemd ≥ 257 you can add `ProtectControlGroups=private` for mount-level
+# protection that still permits the delegated subtree.
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=false      # Go does not need it but JIT-free W^X breaks nothing; keep off for Go runtime compatibility
@@ -65,6 +70,17 @@ RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 # distro or an added directive (e.g. a custom SystemCallFilter, PrivateUsers=true
 # or ProtectKernelTunables, which blocks the jail's proc mount) gets in the way,
 # the probe fails loudly — adjust the unit rather than disabling the jail.
+
+# Code execution resource metering (§9.9): every jail run is charged to a
+# per-run cgroup (memory/pids/cpu aggregate caps) that gabkeep creates in the
+# subtree delegated to this unit. Delegate=yes hands the unit's cgroup subtree
+# to User=gabkeep; DelegateSubgroup=payload (systemd ≥ 254 — older versions
+# ignore the key and gabkeep performs the same move itself) starts the service
+# in a child cgroup so the kernel allows controllers on the delegation root.
+# Without working metering, gabkeep refuses code_run at startup (fail closed);
+# code_execution.enabled: false removes the requirement.
+Delegate=yes
+DelegateSubgroup=payload
 
 [Install]
 WantedBy=multi-user.target
