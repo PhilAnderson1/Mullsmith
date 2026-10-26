@@ -977,7 +977,14 @@ function closeFilesView() {
   show($("#files-panel"), false);
 }
 
+// Stale-response guard: loadFiles clears the list up front but appends
+// AFTER the await, so two overlapping loads (tab switch while a list is in
+// flight) used to merge into one list — the same file appearing twice.
+// Only the newest load may touch the DOM or the cursor.
+let filesLoadSeq = 0;
+
 async function loadFiles(reset) {
+  const gen = ++filesLoadSeq;
   if (reset) {
     state.filesCursor = "";
     $("#files-list").replaceChildren();
@@ -988,6 +995,7 @@ async function loadFiles(reset) {
   const data = work
     ? await api.listWork()
     : await api.listFiles(state.filesKind, reset ? "" : state.filesCursor);
+  if (gen !== filesLoadSeq) return; // superseded by a newer load — drop it
   state.filesCursor = data.next_cursor || "";
   const list = $("#files-list");
   for (const f of data.items || []) list.appendChild(fileRow(f));
@@ -1064,10 +1072,24 @@ function fileRow(f) {
     try {
       if (isDir || f.kind === "work") await api.deleteWork(f.path);
       else await api.deleteFile(f.id);
-      li.remove();
     } catch (err) {
-      del.disabled = false;
-      handleErr(err, "delete file");
+      if (!(err instanceof ApiError && err.status === 404)) {
+        del.disabled = false;
+        handleErr(err, "delete file");
+        return;
+      }
+      // Already gone server-side (a folder delete took it, or a script
+      // cleaned up). The row is stale — refresh shows the truth instead
+      // of an undeletable ghost.
+    }
+    // Reload the view rather than only removing this row: deleting a
+    // folder deletes every listed path under it, and those rows must go
+    // too (along with ancestor "N files inside" counts and the quota).
+    try {
+      await loadFiles(true);
+    } catch (err2) {
+      li.remove(); // delete itself succeeded — at least drop this row
+      handleErr(err2, "files refresh");
     }
   });
 
