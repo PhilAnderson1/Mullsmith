@@ -67,9 +67,11 @@ func (d *DB) CreateFile(ctx context.Context, f *File) error {
 	return err
 }
 
-// FindArtifactByPath returns the newest artifact row for user+rel_path —
-// files_share dedupe so re-sharing a rewritten file refreshes one row instead
-// of accumulating duplicates. Returns ErrFileNotFound when absent.
+// FindArtifactByPath returns the artifact row for user+rel_path, if any.
+// Uniqueness is enforced by idx_files_artifact_path (0005), so "the newest"
+// qualifier is gone: one canonical path, one row (audit2 finding 4). Callers
+// pass canonical paths (scratch.ParseRel segments rejoined).
+// Returns ErrFileNotFound when absent.
 func (d *DB) FindArtifactByPath(ctx context.Context, userID, relPath string) (File, error) {
 	f, err := scanFile(d.sqlDB.QueryRowContext(ctx,
 		`SELECT `+fileCols+` FROM files WHERE user_id = ? AND kind = 'artifact' AND rel_path = ?
@@ -102,14 +104,42 @@ func (d *DB) RegisteredPathsUnder(ctx context.Context, userID, prefix string) (m
 	return out, rows.Err()
 }
 
-// UpdateArtifactOnShare refreshes size/hash and slides the TTL window forward
-// (§8: artifact_ttl expires from last use).
-func (d *DB) UpdateArtifactOnShare(ctx context.Context, fileID, mediaType string,
-	size int64, sha256 []byte, expiresAt time.Time) error {
-	_, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE files SET media_type = ?, size = ?, sha256 = ?, expires_at = ? WHERE id = ?`,
-		mediaType, size, sha256, expiresAt.Unix(), fileID)
-	return err
+// UpsertArtifact registers a shared file or refreshes the existing row for
+// the same (user_id, rel_path) in ONE statement, so two concurrent shares of
+// the same path cannot both insert and leave two rows pointing at one file
+// (audit2 finding 4; the partial unique index idx_files_artifact_path is what
+// makes the ON CONFLICT target meaningful). The stored path must be canonical
+// — the caller rejoins the segments scratch.ParseRel produced. Returns the row
+// id: on refresh the existing id is returned, so download URLs stay stable
+// while size/hash are replaced and the TTL slides (§8). Provenance
+// conversation_id keeps its original value, as in the pre-upsert behavior.
+func (d *DB) UpsertArtifact(ctx context.Context, f *File) (string, error) {
+	if f.Kind != FileKindArtifact {
+		return "", errors.New("UpsertArtifact called for kind " + f.Kind)
+	}
+	var expires any
+	if !f.ExpiresAt.IsZero() {
+		expires = f.ExpiresAt.Unix()
+	}
+	var conv any
+	if f.ConversationID != "" {
+		conv = f.ConversationID
+	}
+	var id string
+	err := d.sqlDB.QueryRowContext(ctx,
+		`INSERT INTO files(id,user_id,conversation_id,kind,rel_path,media_type,name,size,sha256,created_at,expires_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(user_id, rel_path) WHERE kind = 'artifact' DO UPDATE SET
+		   media_type = excluded.media_type, name = excluded.name,
+		   size = excluded.size, sha256 = excluded.sha256,
+		   expires_at = excluded.expires_at
+		 RETURNING id`,
+		f.ID, f.UserID, conv, f.Kind, f.RelPath, f.MediaType, f.Name, f.Size, f.SHA256,
+		f.CreatedAt.Unix(), expires).Scan(&id)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // GetFileForUser fetches a file scoped to its owner — a different user's id

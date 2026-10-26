@@ -671,7 +671,12 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   `files_share`/artifact registration — a TTL'd row pointing at a user upload made cleanup
   or card-deletion destroy the original bytes; with uploads excluded, every on-disk path
   carries at most one DB row, so row-deletes unlink safely without refcounting
-  — audit finding 8). The checks run on segments **normalized by `ParseRel`**, the
+  — audit finding 8; audit2 finding 4 made that an enforced fact: artifact registration
+  stores the **canonical** path — the `ParseRel` segments rejoined — and upserts in one
+  statement under a partial unique index `(user_id, rel_path) WHERE kind = 'artifact'`,
+  so neither an alias spelling (`./work/x` vs `work/x`) nor a racing concurrent share can
+  open a second row on the same bytes, and expiring or deleting a row can never unlink
+  what another live row still points at). The checks run on segments **normalized by `ParseRel`**, the
   same normalizer the FS layer applies, so checker and doer cannot disagree: a raw-segment
   prefix check was bypassed by `./uploads/x`, whose leading `.` the FS layer strips
   (audit finding 7). Inside `code_run` the same rule is enforced harder — at the mount

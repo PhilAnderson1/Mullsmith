@@ -134,6 +134,53 @@ func TestAttachments(t *testing.T) {
 	}
 }
 
+// audit2 finding 4: one artifact row per (user, path), enforced by index;
+// the upsert refreshes in place and keeps the id (stable download URL).
+func TestArtifactPathUniqueAndUpsert(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	alice, bob := mkUser("ua@x.io"), mkUser("ub@x.io")
+	db.CreateUser(ctx, alice)
+	db.CreateUser(ctx, bob)
+
+	f := mkFile(alice.ID, FileKindArtifact, "work/r.md")
+	f.ExpiresAt = time.Now().Add(time.Hour)
+	id1, err := db.UpsertArtifact(ctx, f)
+	if err != nil || id1 != f.ID {
+		t.Fatalf("first upsert: %q, %v", id1, err)
+	}
+	reshare := mkFile(alice.ID, FileKindArtifact, "work/r.md") // fresh proposed id
+	reshare.Size = 99
+	reshare.SHA256 = []byte("ffffffffffffffffffffffffffffffff")
+	reshare.ExpiresAt = time.Now().Add(2 * time.Hour)
+	id2, err := db.UpsertArtifact(ctx, reshare)
+	if err != nil || id2 != id1 {
+		t.Fatalf("refresh must keep the row id: %q != %q (%v)", id2, id1, err)
+	}
+	row, err := db.GetFileForUser(ctx, alice.ID, id1)
+	if err != nil || row.Size != 99 || time.Until(row.ExpiresAt) < time.Hour {
+		t.Errorf("refresh did not land: %+v, %v", row, err)
+	}
+	items, _, _ := db.ListFiles(ctx, alice.ID, FileKindArtifact, "", 10)
+	if len(items) != 1 {
+		t.Errorf("rows for one path = %d, want 1", len(items))
+	}
+
+	// The index is the backstop: even a direct CreateFile that skips the
+	// upsert cannot add a second artifact row for the same path.
+	if err := db.CreateFile(ctx, mkFile(alice.ID, FileKindArtifact, "work/r.md")); err == nil {
+		t.Error("second artifact row for the same path was accepted")
+	}
+	// Partial by kind: uploads sharing the string are untouched.
+	if err := db.CreateFile(ctx, mkFile(alice.ID, FileKindUpload, "work/r.md")); err != nil {
+		t.Errorf("upload row blocked by the artifact index: %v", err)
+	}
+	// Partial by user: same path under another owner is a different file.
+	if err := db.CreateFile(ctx, mkFile(bob.ID, FileKindArtifact, "work/r.md")); err != nil {
+		t.Errorf("other user's artifact blocked: %v", err)
+	}
+}
+
 func TestExpiredArtifacts(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

@@ -40,25 +40,20 @@ func TestSweepExpiredArtifacts(t *testing.T) {
 	uid := maintUser(t, s.store, root)
 	ctx := context.Background()
 
-	put := func(rel string) string {
+	put := func(rel string, expires time.Time) string {
 		p := filepath.Join(root, uid, rel)
 		os.MkdirAll(filepath.Dir(p), 0o700)
 		os.WriteFile(p, []byte("bytes"), 0o600)
 		f := &store.File{ID: id.New(), UserID: uid, Kind: store.FileKindArtifact,
 			RelPath: rel, MediaType: "text/plain", Name: filepath.Base(rel), Size: 5,
-			SHA256: make([]byte, 32), CreatedAt: time.Now()}
+			SHA256: make([]byte, 32), CreatedAt: time.Now(), ExpiresAt: expires}
 		if err := s.store.CreateFile(ctx, f); err != nil {
 			t.Fatal(err)
 		}
 		return f.ID
 	}
-	expired := put("artifacts/old.txt")
-	// Backdate its expiry directly through the store surface we have:
-	if err := s.store.UpdateArtifactOnShare(ctx, expired, "text/plain", 5, make([]byte, 32),
-		time.Now().Add(-time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	fresh := put("artifacts/new.txt")
+	expired := put("artifacts/old.txt", time.Now().Add(-time.Minute))
+	fresh := put("artifacts/new.txt", time.Now().Add(time.Hour))
 
 	// Uploads never expire.
 	upRel := "uploads/keep.csv"

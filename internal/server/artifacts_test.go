@@ -113,3 +113,46 @@ func TestArtifactSinkRejectsUploadsNamespace(t *testing.T) {
 		t.Errorf("work registration: %q %v", id, err)
 	}
 }
+
+// audit2 finding 4: path aliases must not become a second row over the same
+// bytes — the audit registered work/report.txt and ./work/report.txt and
+// then watched maintenance delete the file out from under the live row.
+func TestArtifactSinkAliasesCollapse(t *testing.T) {
+	db := testStore(t)
+	sink := &artifactSink{db: db, ttl: time.Hour}
+	ctx := context.Background()
+	u := &store.User{Email: "alias@test.io", Name: "A", PasswordHash: "x", Status: "active",
+		CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	base := tools.ArtifactRecord{UserID: u.ID, RelPath: "work/r.md",
+		MediaType: "text/plain", Name: "r.md", Size: 10, SHA256: make([]byte, 32)}
+
+	first, err := sink.RegisterArtifact(ctx, base)
+	if err != nil || first == "" {
+		t.Fatalf("register: %q, %v", first, err)
+	}
+	for _, alias := range []string{"./work/r.md", "work//r.md", "./work/./r.md"} {
+		rec := base
+		rec.RelPath = alias
+		got, err := sink.RegisterArtifact(ctx, rec)
+		if err != nil || got != first {
+			t.Errorf("alias %q → id %q (%v), want the existing %q", alias, got, err, first)
+		}
+	}
+	row, err := db.GetFileForUser(ctx, u.ID, first)
+	if err != nil || row.RelPath != "work/r.md" {
+		t.Errorf("stored path = %q, want canonical work/r.md (%v)", row.RelPath, err)
+	}
+	items, _, _ := db.ListFiles(ctx, u.ID, store.FileKindArtifact, "", 10)
+	if len(items) != 1 {
+		t.Errorf("alias spellings left %d rows, want 1", len(items))
+	}
+	// "." parses to no segments — it names the user root, not a file.
+	dot := base
+	dot.RelPath = "."
+	if id, err := sink.RegisterArtifact(ctx, dot); err == nil || id != "" {
+		t.Errorf(`"." registered as an artifact: id=%q err=%v`, id, err)
+	}
+}

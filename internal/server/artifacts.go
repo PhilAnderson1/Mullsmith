@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"path"
 	"time"
 
 	"gabkeep/internal/id"
@@ -31,11 +32,15 @@ func (a *artifactSink) RegisterArtifact(ctx context.Context, rec tools.ArtifactR
 	// pointer at the user's upload made cleanup delete the original file
 	// (audit finding 8). With uploads excluded, every on-disk path carries
 	// at most one row and row-deletes can unlink without refcounting.
+	// "At most one row" is now a fact, not an argument: the path is stored
+	// CANONICAL — the parsed segments rejoined, so aliases like "./work/x"
+	// cannot sneak a second row onto the same bytes — and the (user_id,
+	// rel_path) pair is unique per kind by index (audit2 finding 4).
 	segs, err := scratch.ParseRel(rec.RelPath)
-	if err != nil {
+	if err != nil || len(segs) == 0 {
 		return "", errors.New("unsafe artifact path")
 	}
-	if len(segs) > 0 && segs[0] == "uploads" {
+	if segs[0] == "uploads" {
 		return "", errors.New("artifacts cannot point into uploads/ (user data must not expire)")
 	}
 	if rec.Size < 0 || (rec.SHA256 == nil && rec.Size > 0) {
@@ -43,25 +48,14 @@ func (a *artifactSink) RegisterArtifact(ctx context.Context, rec tools.ArtifactR
 	}
 	expires := time.Now().Add(ttl)
 
-	// Dedupe: re-sharing the same path refreshes the existing row so the
-	// download URL stays stable across rewrites within the TTL window.
-	if existing, err := a.db.FindArtifactByPath(ctx, rec.UserID, rec.RelPath); err == nil {
-		if err := a.db.UpdateArtifactOnShare(ctx, existing.ID, rec.MediaType, rec.Size, rec.SHA256, expires); err != nil {
-			return "", err
-		}
-		return existing.ID, nil
-	} else if !errors.Is(err, store.ErrFileNotFound) {
-		return "", err
-	}
-
+	// Dedupe atomically: re-sharing the same path refreshes the existing row
+	// (stable download URL) with no lookup window for concurrent shares to
+	// race through.
 	f := &store.File{
 		ID: id.New(), UserID: rec.UserID, ConversationID: rec.ConversationID,
-		Kind: store.FileKindArtifact, RelPath: rec.RelPath, MediaType: rec.MediaType,
+		Kind: store.FileKindArtifact, RelPath: path.Join(segs...), MediaType: rec.MediaType,
 		Name: rec.Name, Size: rec.Size, SHA256: rec.SHA256,
 		CreatedAt: time.Now(), ExpiresAt: expires,
 	}
-	if err := a.db.CreateFile(ctx, f); err != nil {
-		return "", err
-	}
-	return f.ID, nil
+	return a.db.UpsertArtifact(ctx, f)
 }

@@ -424,10 +424,14 @@ func (s FilesShare) Execute(ctx context.Context, inv Invocation) (Result, error)
 	if err != nil {
 		return Result{}, fsErr("files_share", err)
 	}
-	if len(segs) > 0 && segs[0] == "uploads" {
+	if len(segs) == 0 {
+		return Result{}, errors.New("path is required")
+	}
+	if segs[0] == "uploads" {
 		return Result{}, errors.New("uploads are the user's data and already downloadable " +
 			"from the Files page; share files under work/ or artifacts/ instead")
 	}
+	rel = path.Join(segs...) // canonical spelling all the way through (§8, audit2 finding 4)
 	fi, err := scratch.Stat(root, inv.UserID, rel)
 	if err != nil {
 		return Result{}, fsErr("files_share", err)
