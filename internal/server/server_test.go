@@ -355,12 +355,12 @@ func TestBodyLimit(t *testing.T) {
 	}
 }
 
-// The app shell AND every asset are no-store: the embedded FS cannot
-// revalidate (no ETag/Last-Modified), so any max-age ships stale JS after
-// a deploy. The URL stamping below is belt-and-braces (proxies, restored
-// tabs); module imports inside app.js (api.js, sse.js, markdown.js) are
-// NOT stamped and relied on the cache policy alone — the hour of 405'd
-// file deletes after the path-based-files deploy was exactly that hole.
+// The app shell is no-store while assets cache for an hour, so a deploy
+// without URL versioning leaves browsers running the PREVIOUS app.js
+// until expiry — production proved it twice. Every build (version change)
+// must therefore rotate the asset URLs the shell references. Module
+// imports inside app.js cannot be reached this way; see cacheControl for
+// the accepted lag window.
 func TestIndexAssetURLsAreVersioned(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s := New(testCfg(), testStore(t), logger, "abc123", nil)
@@ -394,26 +394,30 @@ func TestIndexAssetURLsAreVersioned(t *testing.T) {
 	}
 }
 
-// Regression: the stale-module incident. app.js imports api.js/sse.js/
-// markdown.js by BARE URL — the build stamp does not reach them — so the
-// only thing standing between a deploy and a browser mixing new app.js
-// with hour-old api.js was Cache-Control. (Symptom in prod: deletes hit
-// the dead DELETE /files/{id} route from the cached api.js: 405.)
-// Embedded assets have no ETag/Last-Modified, so revalidation cannot back
-// a max-age either: no-store is the only honest policy.
-func TestAssetsAreNotCacheable(t *testing.T) {
+// The owner-sanctioned asset caching contract (see middleware
+// cacheControl): assets are cacheable for exactly one hour, everything
+// else no-store. Pinned because a silent loosening here is what shipped
+// the stale-module 405 incident — if the hour ever bites again, the fix
+// is content-hashed URLs, never a longer max-age.
+func TestAssetCachingPolicy(t *testing.T) {
 	ts, _ := newTestServerWithDB(t, testCfg())
-	for _, p := range []string{"/assets/app/app.js", "/assets/app/api.js", "/assets/styles.css"} {
-		resp, err := ts.Client().Get(ts.URL + p)
+	for _, tc := range []struct{ path, want string }{
+		{"/assets/app/app.js", "public, max-age=3600"},
+		{"/assets/app/api.js", "public, max-age=3600"},
+		{"/assets/styles.css", "public, max-age=3600"},
+		{"/", "no-store"},
+		{"/api/v1/meta", "no-store"},
+	} {
+		resp, err := ts.Client().Get(ts.URL + tc.path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s = %d", p, resp.StatusCode)
+			t.Fatalf("GET %s = %d", tc.path, resp.StatusCode)
 		}
-		if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
-			t.Errorf("GET %s Cache-Control = %q, want no-store", p, cc)
+		if cc := resp.Header.Get("Cache-Control"); cc != tc.want {
+			t.Errorf("GET %s Cache-Control = %q, want %q", tc.path, cc, tc.want)
 		}
 	}
 }
