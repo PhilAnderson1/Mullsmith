@@ -765,18 +765,26 @@ details.tool-card summary::-webkit-details-marker { display: none; }
 .artifact-dl { flex: none; }
 
 /* Files view swaps into the chat main column (routing keeps the chat state
-   alive underneath; body class avoids touching each element from JS). */
+   alive underneath; body class avoids touching each element from JS).
+   The panel is a FULL-BLEED scroll container: centring/max-width belongs to
+   the inner .panel-body, not the scroller itself. When the scroller was the
+   centred 60rem box, its scrollbar floated mid-window on wide screens. */
 .files-panel {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* only the notch inset here; the 1rem bottom spacing lives in .panel-body,
+     so the totals match the old single-box layout exactly */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.panel-body {
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
-  overflow-y: auto;
-  padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
-  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
   width: 100%;
   max-width: 60rem;
   margin: 0 auto;
+  padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
 }
 body.files-open .thread,
 body.files-open .composer,
@@ -823,19 +831,11 @@ body.files-open .pending-files { display: none; }
 }
 .settings-panel {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
+  min-height: 0;
   overflow-y: auto;
-  padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
-  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
-  width: 100%;
-  /* match the files panel's footprint (the form itself stays narrow:
-     34rem centered here left a dead gutter and a scrollbar floating
-     mid-window) */
-  max-width: 60rem;
-  margin: 0 auto;
+  padding-bottom: env(safe-area-inset-bottom);
 }
+.settings-panel .panel-body { gap: 0.6rem; }
 body.settings-open .thread,
 body.settings-open .composer,
 body.settings-open .pending-files { display: none; }
