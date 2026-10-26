@@ -245,13 +245,11 @@ func (s *Server) staticAssetsHandler() http.HandlerFunc {
 }
 
 // versionedIndex is the app shell with a build stamp appended to the
-// /assets/* URLs. Assets cache for an hour (§ middleware cacheControl) and
-// the shell is no-store, so without rotating the URLs a deploy leaves
-// browsers running the PREVIOUS app.js until the cache expires — production
-// proved this: the Files-page ghost-row fix was invisible to a fresh page
-// load for an hour after rollout. Any build (version changes) revives the
-// assets immediately. Returns nil only if the embedded shell is missing,
-// which sinks to the plain file server.
+// /assets/* URLs. Belt-and-braces alongside the no-store policy (see
+// middleware cacheControl for why assets cannot carry any max-age): the
+// stamp defeats caches outside our control (proxies, rehydrated tabs) for
+// the URLs the shell references outright. It cannot reach module imports
+// inside app.js — those ride the no-store policy.
 func versionedIndex(ver string) []byte {
 	b, err := web.FS.ReadFile("index.html")
 	if err != nil {

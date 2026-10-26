@@ -236,17 +236,18 @@ func securityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 	}
 }
 
-// cacheControl: API, health and the app shell are never cached; fingerprinted
-// static assets may be (immutable once content-hashed in M2).
+// cacheControl: nothing this app serves is safe to hold in a browser
+// cache across deploys. The embedded FS carries no modtime, so there is
+// no ETag/Last-Modified and revalidation cannot work; any max-age on
+// /assets/ therefore ships stale JS after a release. The shell stamps the
+// URLs it references, but app.js imports api.js/sse.js/markdown.js by
+// bare URL — those imports bypass the stamp. Production proved it (the
+// path-based-files deploy): a fresh page load paired the NEW app.js with
+// the hour-old cached api.js, and file deletes 405'd against the dead
+// id-route. Content hashes (immutable + 1y) may return one day, but only
+// as a real fingerprinting build step, never as a wish.
 func cacheControl(path string) string {
-	switch {
-	case strings.HasPrefix(path, "/api/"), path == "/healthz", path == "/":
-		return "no-store"
-	case strings.HasPrefix(path, "/assets/"):
-		return "public, max-age=3600" // becomes immutable+1y with content hashes (M2)
-	default:
-		return "no-store"
-	}
+	return "no-store"
 }
 
 // --- body limit ------------------------------------------------------------------
