@@ -257,3 +257,94 @@ func TestCodeRunRegistrationGating(t *testing.T) {
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// --- audit finding 5: storage watchdog --------------------------------------
+
+// writerRunner simulates a runaway script: it keeps appending chunks to
+// work/ until the watchdog kills the run context.
+type writerRunner struct{}
+
+func (writerRunner) Run(ctx context.Context, _ string, req runner.Request) (runner.Outcome, error) {
+	f, err := os.Create(filepath.Join(req.WorkDir, "blob"))
+	if err != nil {
+		return runner.Outcome{}, err
+	}
+	defer f.Close()
+	chunk := make([]byte, 64<<10)
+	for {
+		select {
+		case <-ctx.Done():
+			return runner.Outcome{}, ctx.Err()
+		default:
+		}
+		if _, err := f.Write(chunk); err != nil {
+			return runner.Outcome{}, err
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestCodeRunWatchdogKillsQuotaBreach(t *testing.T) {
+	root := toolRoot(t)
+	c := codeTool(writerRunner{}, 256<<10) // 256 KiB quota
+	c.WatchInterval = 5 * time.Millisecond
+
+	_, err := run(t, c, root, `{"runtime":"sh","script":"fill it"}`)
+	if err == nil || !strings.Contains(err.Error(), "quota") {
+		t.Fatalf("err = %v, want watchdog quota kill", err)
+	}
+	// The kill bounds the overrun: one 64 KiB chunk per millisecond with a
+	// 5 ms poll means anything past a few MiB is an unfired watchdog.
+	info, err := os.Stat(filepath.Join(root, toolUser, "work", "blob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 8<<20 {
+		t.Errorf("runaway wrote %d bytes before the kill — watchdog never fired?", info.Size())
+	}
+}
+
+// napRunner does nothing until its context dies or d elapses.
+type napRunner struct{ d time.Duration }
+
+func (n napRunner) Run(ctx context.Context, _ string, _ runner.Request) (runner.Outcome, error) {
+	select {
+	case <-time.After(n.d):
+		return runner.Outcome{ExitCode: 0}, nil
+	case <-ctx.Done():
+		return runner.Outcome{}, ctx.Err()
+	}
+}
+
+// The global free-space floor is a trigger even when this user is nowhere
+// near quota — several users' growth must not push the host past the line.
+func TestCodeRunWatchdogKillsOnDiskFloor(t *testing.T) {
+	root := toolRoot(t)
+	c := codeTool(napRunner{d: 5 * time.Second}, 1<<30) // quota far out of reach
+	c.WatchInterval = 5 * time.Millisecond
+	c.DiskFloor = func(string) bool { return false }
+
+	start := time.Now()
+	_, err := run(t, c, root, `{"runtime":"sh","script":"sleep"}`)
+	if err == nil || !strings.Contains(err.Error(), "nearly full") {
+		t.Fatalf("err = %v, want floor kill", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Errorf("kill took %v — floor check is not polling", time.Since(start))
+	}
+}
+
+// A clean run must pass through untouched, watchdog ticking and all.
+func TestCodeRunWatchdogPassesCleanRun(t *testing.T) {
+	root := toolRoot(t)
+	fr := &fakeRunner{out: runner.Outcome{ExitCode: 0, Stdout: "fine"}}
+	c := codeTool(fr, 1<<20)
+	c.WatchInterval = 5 * time.Millisecond
+	res, err := run(t, c, root, `{"runtime":"sh","script":"echo fine"}`)
+	if err != nil {
+		t.Fatalf("clean run killed: %v", err)
+	}
+	if !strings.Contains(res.Content, `"exit_code":0`) {
+		t.Errorf("payload = %s", res.Content)
+	}
+}

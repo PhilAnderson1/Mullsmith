@@ -41,6 +41,7 @@ limits:
   requests_per_minute: 100000
   chat_messages_per_hour: 100000
   hash_concurrency: 16
+  concurrent_uploads: 64
 
 logging:
   level: warn

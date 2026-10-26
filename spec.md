@@ -98,6 +98,7 @@ limits:
   requests_per_minute: 120        # per authenticated user, non-chat endpoints
   chat_messages_per_hour: 120     # per user
   hash_concurrency: 1             # simultaneous Argon2 computations (§9.11)
+  concurrent_uploads: 8           # in-flight uploads, all users (§9.11)
   # the caps above: values shown are the program defaults; set a knob
   # to 0 to disable that control, negatives are a config error; the old
   # rate_limit: block is retired — everything lives under limits: now
@@ -630,6 +631,12 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
 - Quotas checked before write and again on close (bytes may have grown); `FSIZE` rlimit
   enforced too (§9.9); a global free-disk-space floor (5%) pauses uploads, `code_run`, and
   registration with 503 rather than corrupting state (§9.11).
+- The quota picture is never stale where bytes land: an upload's quota decision is taken
+  at **commit time** against freshly-walked usage, serialized with every other commit by a
+  mutex, so concurrent uploads cannot spend the same free bytes twice; and while a script
+  runs, a **storage watchdog** re-measures every second — user past quota, or the host
+  past the floor, kills the jail (same process-group SIGKILL path as the timeout) and
+  keeps partial output (§9.11, audit finding 5).
 
 ### 9.8 Security headers (every response; contract, not suggestion)
 
@@ -723,12 +730,14 @@ open registration (startup warns).
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
 | Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded |
 | Password hashing | **global gate** (`limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
+| Upload capacity | `limits.concurrent_uploads` (default 8) gates in-flight uploads server-wide — full ⇒ instant `429 server_busy` + `Retry-After`, bounding temp bytes to N × `max_file_size` regardless of the request bucket. The quota decision itself is **atomic**: fresh usage re-read and rename under one mutex, so concurrent uploads can never share a stale "used" figure (audit finding 5) |
+| Runaway script | a 1 s **storage watchdog** wraps every `code_run`: user bytes past `user_quota`, or the host past the 5 % free-space floor, cancels the run context — the runner kills the whole jail (process-group SIGKILL, §9.9). Partial output stays on disk; the over-quota user is blocked by the ordinary pre-checks until cleanup. Overrun per run ≈ one poll interval of writing, versus unbounded before (audit finding 5) |
 | Static/other API | token bucket per authenticated **user** (`limits.requests_per_minute`, 429 + `Retry-After`); user-keyed because the session already proves identity and IP-keying is hostage to NAT/proxy topology. Chat-stream POSTs are exempt — they answer to the hourly chat bucket and the generation caps above |
-| Disabling limits | the caps under `limits:` (`concurrent_streams_per_user`, `concurrent_streams_total`, `requests_per_minute`, `chat_messages_per_hour`, `hash_concurrency`) are three-state: **unset** → program default (2 / 8 / 120 / 120 / 1), **0** → disabled by explicit operator choice, **negative** → config error. Shipped config files spell the defaults out so the live policy is readable; login/register throttle buckets are hardcoded and unaffected. The former `rate_limit:` block is retired: configs carrying it fail validation with a "move it into limits:" message |
+| Disabling limits | the caps under `limits:` (`concurrent_streams_per_user`, `concurrent_streams_total`, `requests_per_minute`, `chat_messages_per_hour`, `hash_concurrency`, `concurrent_uploads`) are three-state: **unset** → program default (2 / 8 / 120 / 120 / 1 / 8), **0** → disabled by explicit operator choice, **negative** → config error. Shipped config files spell the defaults out so the live policy is readable; login/register throttle buckets are hardcoded and unaffected. The former `rate_limit:` block is retired: configs carrying it fail validation with a "move it into limits:" message |
 | Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; `WriteTimeout` disabled only for SSE routes, wrapped per-route otherwise |
 | SSE hygiene | server-side heartbeat comments every 25 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; small reader pool; TTL job deletes bounded per pass (≤ 1 000 rows/files) |
-| Disk exhaustion | per-user quota + global free-space floor (§9.7); artifact TTL + orphan sweep (§8) |
+| Disk exhaustion | per-user quota + global free-space floor (§9.7); atomic upload quota commit + global upload concurrency gate; per-run storage watchdog kills quota/floor breaches (§9.11); artifact TTL + orphan sweep (§8) |
 | Code exec | timeout + output caps + global per-user concurrency (§9.9) |
 
 ### 9.12 Secrets, sensitive data & error handling

@@ -99,6 +99,7 @@ limits:
   requests_per_minute: 120        # per authenticated user, non-chat endpoints
   chat_messages_per_hour: 120     # per user
   hash_concurrency: 1             # simultaneous Argon2 computations, all users
+  concurrent_uploads: 8           # in-flight uploads, all users (§9.11)
 
 logging:
   level: info                     # debug | info | warn | error

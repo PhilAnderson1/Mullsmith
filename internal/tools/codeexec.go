@@ -8,6 +8,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"gabkeep/internal/config"
@@ -33,6 +34,95 @@ type CodeRun struct {
 	Timeout   time.Duration
 	MaxOutput int
 	UserQuota int64
+	// WatchInterval is the storage watchdog's poll period; zero selects
+	// storageWatchInterval. Tests shorten it to keep kill timing crisp.
+	WatchInterval time.Duration
+	// DiskFloor overrides the global free-space probe (test seam;
+	// nil = scratch.DiskFloorOK).
+	DiskFloor func(root string) bool
+}
+
+// storageWatchInterval is how often a running script's storage footprint is
+// re-measured. The pre-flight checkQuota is stale the moment the script
+// starts: without this guard one approved 30 s run could write at disk
+// speed past its quota — and repeat the trick after deleting output —
+// all the way down to the host's 5 % free-space floor (audit finding 5).
+const storageWatchInterval = time.Second
+
+// storageWatch carries the watchdog's kill decision. fire reports whether
+// the kill still counts: once Execute has taken the run's outcome
+// (stopAndTake), a late tick must not relabel a finished run as killed.
+type storageWatch struct {
+	mu     sync.Mutex
+	reason string
+	taken  bool
+}
+
+func (w *storageWatch) fire(reason string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.taken {
+		return false
+	}
+	w.reason = reason
+	return true
+}
+
+func (w *storageWatch) stopAndTake() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.taken = true
+	return w.reason
+}
+
+// watchStorage polls while a script runs: user bytes past quota, or the
+// global free-space floor breached, cancels the run context. The runner
+// kills the entire jail on cancellation (CommandContext + process-group
+// SIGKILL, §9.9), so overrun is bounded to roughly one poll interval of
+// writing. The returned func joins the poller and reports the kill reason
+// ("" when the watchdog never fired).
+func (c CodeRun) watchStorage(ctx context.Context, cancel context.CancelFunc, root, userID string) func() string {
+	interval := c.WatchInterval
+	if interval <= 0 {
+		interval = storageWatchInterval
+	}
+	floor := c.DiskFloor
+	if floor == nil {
+		floor = scratch.DiskFloorOK
+	}
+	w := &storageWatch{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if !floor(root) {
+					if w.fire("terminated: server storage is nearly full") {
+						cancel()
+					}
+					return
+				}
+				if c.UserQuota > 0 {
+					over, err := scratch.DirSizeExceeds(root, userID, c.UserQuota)
+					if err == nil && over {
+						if w.fire("terminated: storage quota exceeded; partial output kept") {
+							cancel()
+						}
+						return
+					}
+				}
+			}
+		}
+	}()
+	return func() string {
+		<-done
+		return w.stopAndTake()
+	}
 }
 
 func (CodeRun) Name() string { return "code_run" }
@@ -129,7 +219,13 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		return Result{}, err
 	}
 
-	out, err := c.Runner.Run(ctx, inv.UserID, runner.Request{
+	// Storage watchdog (audit finding 5): the run context is cancellable so
+	// a poller can kill a script that writes past its quota or endangers
+	// the host's free-space floor mid-run.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := c.watchStorage(runCtx, cancel, root, inv.UserID)
+	out, err := c.Runner.Run(runCtx, inv.UserID, runner.Request{
 		RuntimeID:  args.Runtime,
 		Binary:     binary,
 		ScratchDir: userRoot,
@@ -138,6 +234,10 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		Timeout:    c.Timeout,
 		MaxOutput:  c.MaxOutput,
 	})
+	cancel() // stop the poller even on a normal return
+	if reason := stop(); reason != "" {
+		return Result{}, fmt.Errorf("code_run: %s", reason)
+	}
 	if err != nil {
 		// Runner errors are already operator-sanitized (busy, sandbox
 		// refusal); surface them to the model as a tool failure.

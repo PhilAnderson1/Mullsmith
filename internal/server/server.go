@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gabkeep/internal/agent"
@@ -36,6 +37,13 @@ type Server struct {
 	httpSrv    *http.Server
 	// hashGate bounds concurrent Argon2 work globally (audit finding 4).
 	hashGate *auth.HashGate
+	// uploadSem bounds in-flight uploads across ALL users — temp files and
+	// quota decisions together; nil = unbounded (limits.concurrent_uploads:
+	// 0). commitMu serializes each upload's fresh-usage-check-then-rename so
+	// concurrent requests can never spend the same bytes twice (audit
+	// finding 5).
+	uploadSem chan struct{}
+	commitMu  sync.Mutex
 }
 
 // hashQueue is how many callers may wait behind the hash gate before new
@@ -59,6 +67,22 @@ func buildHashGate(cfg *config.Config) *auth.HashGate {
 	return auth.NewHashGate(n, hashQueue)
 }
 
+// buildUploadGate maps limits.concurrent_uploads (three-state like the
+// other knobs; default 8) onto a channel gate. 8 comfortably exceeds what
+// a browser fires in parallel per host (~6), so honest sessions never see
+// it, while in-flight upload temp bytes stay bounded at 8 × max_file_size
+// no matter what the per-minute request bucket allows.
+func buildUploadGate(cfg *config.Config) chan struct{} {
+	if cfg.Limits.ConcurrentUploads == nil {
+		return make(chan struct{}, config.DefaultConcurrentUploads)
+	}
+	n := *cfg.Limits.ConcurrentUploads
+	if n == 0 {
+		return nil
+	}
+	return make(chan struct{}, n)
+}
+
 // New builds the full handler chain. Middleware order (outermost first):
 // requestID → logRequests → recoverPanics → securityHeaders → csrfProtect →
 // bodyLimit → mux.
@@ -76,6 +100,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		generator:  &agent.Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)},
 		remembered: newApprovalMemory(),
 		hashGate:   buildHashGate(cfg),
+		uploadSem:  buildUploadGate(cfg),
 		tools: tools.BuildFor(cfg, logger, nil, &artifactSink{
 			db:  db,
 			ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),

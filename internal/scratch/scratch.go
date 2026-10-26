@@ -3,6 +3,7 @@
 package scratch
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,6 +11,43 @@ import (
 
 	"gabkeep/internal/id"
 )
+
+// errOverLimit ends a DirSizeExceeds walk the instant the sum crosses the
+// line — the watchdog must stay cheap even over a pathological directory.
+var errOverLimit = errors.New("scratch: over size limit")
+
+// DirSizeExceeds reports whether the regular-file bytes under the user root
+// exceed limit, short-circuiting the walk as soon as the running total
+// crosses it (audit finding 5: the code_run watchdog polls once per second
+// while a hostile script floods new files into the tree).
+func DirSizeExceeds(root, userID string, limit int64) (bool, error) {
+	dir, err := UserRoot(root, userID)
+	if err != nil {
+		return false, err
+	}
+	var total int64
+	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // same fail-soft policy as DirSize
+		}
+		if d.Type().IsRegular() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+				if total > limit {
+					return errOverLimit
+				}
+			}
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, errOverLimit):
+		return true, nil
+	case err != nil && !os.IsNotExist(err):
+		return false, err
+	}
+	return false, nil
+}
 
 // Subdirectories created for every user.
 var subdirs = []string{"uploads", "artifacts", "work"}

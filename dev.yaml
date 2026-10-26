@@ -82,6 +82,7 @@ limits:
   requests_per_minute: 120
   chat_messages_per_hour: 120
   hash_concurrency: 1
+  concurrent_uploads: 8
 
 logging:
   level: debug                    # dev verbosity; info in production

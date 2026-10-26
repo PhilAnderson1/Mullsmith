@@ -146,6 +146,13 @@ type Limits struct {
 	// honest users nothing while a flood can never exceed one hash's worth
 	// of memory and CPU. 0 disables the gate (queue stays bounded).
 	HashConcurrency *int `yaml:"hash_concurrency"`
+	// ConcurrentUploads bounds simultaneous in-flight uploads across ALL
+	// users — temp files plus the atomic quota commit together (audit
+	// finding 5). Default 8: a browser tops out around 6 parallel uploads
+	// per host, so honest sessions never touch it, while the per-minute
+	// request bucket alone would let a script wave unbounded
+	// max_file_size temporaries through. 0 disables (unbounded).
+	ConcurrentUploads *int `yaml:"concurrent_uploads"`
 }
 
 type Database struct {
@@ -270,6 +277,7 @@ const (
 	DefaultConcurrentStreamsUser  = 2
 	DefaultConcurrentStreamsTotal = 8
 	DefaultHashConcurrency        = 1
+	DefaultConcurrentUploads      = 8
 )
 
 // Ptr returns &v — for assigning the optional (pointer) knobs in configs
@@ -404,6 +412,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Limits.HashConcurrency == nil {
 		c.Limits.HashConcurrency = Ptr(DefaultHashConcurrency)
+	}
+	if c.Limits.ConcurrentUploads == nil {
+		c.Limits.ConcurrentUploads = Ptr(DefaultConcurrentUploads)
 	}
 	if c.Scratchpad.MaxFileSize == 0 {
 		c.Scratchpad.MaxFileSize = 25 << 20
@@ -585,6 +596,7 @@ func (c *Config) Validate() error {
 		{"limits.requests_per_minute", c.Limits.RequestsPerMinute},
 		{"limits.chat_messages_per_hour", c.Limits.ChatMessagesPerHour},
 		{"limits.hash_concurrency", c.Limits.HashConcurrency},
+		{"limits.concurrent_uploads", c.Limits.ConcurrentUploads},
 	} {
 		if k.v != nil && *k.v < 0 {
 			f.bad("%s: must be >= 0 (0 disables the limit)", k.name)

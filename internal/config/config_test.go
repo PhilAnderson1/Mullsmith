@@ -177,6 +177,9 @@ func TestOptionalLimitKnobs(t *testing.T) {
 		if got := Deref(cfg.Limits.HashConcurrency); got != DefaultHashConcurrency {
 			t.Errorf("hash_concurrency = %d, want %d", got, DefaultHashConcurrency)
 		}
+		if got := Deref(cfg.Limits.ConcurrentUploads); got != DefaultConcurrentUploads {
+			t.Errorf("concurrent_uploads = %d, want %d", got, DefaultConcurrentUploads)
+		}
 	})
 
 	t.Run("explicit zero disables", func(t *testing.T) {
@@ -187,6 +190,7 @@ limits:
   requests_per_minute: 0
   chat_messages_per_hour: 0
   hash_concurrency: 0
+  concurrent_uploads: 0
 `)
 		for name, p := range map[string]*int{
 			"concurrent_streams_per_user": cfg.Limits.ConcurrentStreamsPerUser,
@@ -194,6 +198,7 @@ limits:
 			"requests_per_minute":         cfg.Limits.RequestsPerMinute,
 			"chat_messages_per_hour":      cfg.Limits.ChatMessagesPerHour,
 			"hash_concurrency":            cfg.Limits.HashConcurrency,
+			"concurrent_uploads":          cfg.Limits.ConcurrentUploads,
 		} {
 			if p == nil || *p != 0 {
 				t.Errorf("%s = %v, want explicit 0 (disabled)", name, p)
@@ -207,6 +212,7 @@ limits:
 		{"limits:\n  requests_per_minute: -1\n", "limits.requests_per_minute"},
 		{"limits:\n  chat_messages_per_hour: -1\n", "limits.chat_messages_per_hour"},
 		{"limits:\n  hash_concurrency: -2\n", "limits.hash_concurrency"},
+		{"limits:\n  concurrent_uploads: -1\n", "limits.concurrent_uploads"},
 	}
 	for _, tc := range negatives {
 		t.Run("negative rejected: "+tc.key, func(t *testing.T) {

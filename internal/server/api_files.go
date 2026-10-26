@@ -108,10 +108,27 @@ func fileJSON(f *store.File) map[string]any {
 // because the applicable cap is max_file_size, not max_body_bytes).
 func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
+	// Global upload concurrency gate (audit finding 5): bounds in-flight
+	// temp bytes and quota-walk stampedes independently of the request-rate
+	// bucket. Refused outright — a saturated upload lane is a flood, and
+	// honest clients retry naturally.
+	if s.uploadSem != nil {
+		select {
+		case s.uploadSem <- struct{}{}:
+			defer func() { <-s.uploadSem }()
+		default:
+			w.Header().Set("Retry-After", "2")
+			writeAPIError(w, r, http.StatusTooManyRequests, "server_busy",
+				"too many concurrent uploads, try again shortly")
+			return
+		}
+	}
 	if !scratch.DiskFloorOK(s.cfg.Scratchpad.Root) {
 		writeAPIError(w, r, http.StatusServiceUnavailable, "storage_low", "server storage is nearly full")
 		return
 	}
+	// Advisory fail-fast: an already-full user never pays for streaming.
+	// The authoritative decision is commitUpload, against fresh usage.
 	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
 	if err != nil {
 		s.logger.Error("quota read failed", "error", err, "rid", RequestIDFrom(r.Context()))
@@ -190,19 +207,9 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "upload_failed", "upload could not be read")
 		return
 	}
-	if used+n > int64(s.cfg.Scratchpad.UserQuota) {
-		writeAPIError(w, r, http.StatusInsufficientStorage, "quota_exceeded", "storage quota exceeded")
-		return
-	}
-
 	fileID := id.New()
 	rel := "uploads/" + fileID + ext
-	// #nosec G703 -- destination = configured root + session user's ULID +
-	// our own ULID + ext; uploadExtension came from path.Ext, which can never
-	// emit '/', and user.ID/fileID are server-generated ULIDs.
-	if err := os.Rename(tempName, filepath.Join(s.cfg.Scratchpad.Root, user.ID, rel)); err != nil {
-		s.logger.Error("upload rename", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+	if !s.commitUpload(w, r, user.ID, tempName, rel, n) {
 		return
 	}
 	// Re-check the floor after landing bytes: refuse service for the next
@@ -226,6 +233,38 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("upload ok", "file", fileID, "bytes", n, "user", user.ID, "rid", RequestIDFrom(r.Context()))
 	writeJSON(w, http.StatusCreated, fileJSON(rec))
+}
+
+// commitUpload is the atomic quota decision for an upload (audit finding
+// 5): usage is re-read FRESH and the rename executed while holding commitMu,
+// shared by every upload commit — so N concurrent requests can no longer all
+// spend the same stale "used" figure (the audit stored 1,400 bytes under a
+// 1,024-byte quota). The second committer sees the first one's landed bytes;
+// overshoot is zero. Cross-user serialization is accepted: quotas are
+// per-user, commits are milliseconds, and the upload gate already bounds
+// how many requests are in this section.
+func (s *Server) commitUpload(w http.ResponseWriter, r *http.Request, userID, tempName, rel string, n int64) bool {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, userID)
+	if err != nil {
+		s.logger.Error("quota read failed", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return false
+	}
+	if used+n > int64(s.cfg.Scratchpad.UserQuota) {
+		writeAPIError(w, r, http.StatusInsufficientStorage, "quota_exceeded", "storage quota exceeded")
+		return false
+	}
+	// #nosec G703 -- destination = configured root + session user's ULID +
+	// our own ULID + ext; uploadExtension came from path.Ext, which can never
+	// emit '/', and user.ID/fileID are server-generated ULIDs.
+	if err := os.Rename(tempName, filepath.Join(s.cfg.Scratchpad.Root, userID, rel)); err != nil {
+		s.logger.Error("upload rename", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return false
+	}
+	return true
 }
 
 type multipartPart struct {
