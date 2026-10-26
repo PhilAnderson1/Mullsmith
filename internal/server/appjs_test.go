@@ -85,3 +85,48 @@ func TestJSFilesListRefreshDiscardsStaleAndGhosts(t *testing.T) {
 		t.Error("delete handler must treat an already-gone path as stale, not a hard error")
 	}
 }
+
+// The 2026-10 owner batch, pinned where it can silently rot:
+// (1) the regenerate button died after the first click because only
+// msgNode-attached bubbles had a listener — a completed stream (the new
+// last bubble) rendered the button with no handler;
+// (2) opening a chat must count as activity (list re-orders by use, not
+// creation);
+// (3) with registration closed the login page must hide the whole
+// "No account yet?" sentence, not just the link;
+// (4) the waiting spinner is CSS-driven (no braille JS timer — the frozen
+// glyph was the iPad complaint) and must never leave a setInterval behind.
+func TestJSRegenerateActivationLoginSpinnerContracts(t *testing.T) {
+	b, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+
+	finish := jsFuncBody(t, src, "function finishGeneration(")
+	if !strings.Contains(finish, "attachRegen(") {
+		t.Error("finishGeneration must attach the regen listener (only-worked-once bug)")
+	}
+	if !strings.Contains(src, "attachRegen(el);") {
+		t.Error("msgNode must attach the regen listener too (server-loaded bubbles)")
+	}
+
+	sel := jsFuncBody(t, src, "async function selectConversation(")
+	if !strings.Contains(sel, "promoteConversation(") {
+		t.Error("selectConversation must promote the opened chat (activity ordering)")
+	}
+	promote := jsFuncBody(t, src, "function promoteConversation(")
+	if !strings.Contains(promote, "touchConversation(") {
+		t.Error("promoteConversation must bump the server, or the order resets on reload")
+	}
+
+	meta := jsFuncBody(t, src, "function applyMetaFlags(")
+	if !strings.Contains(meta, `login-switch`) {
+		t.Error("closed registration must hide the whole #login-switch sentence, not just the link")
+	}
+
+	spinner := jsFuncBody(t, src, "function spinnerNode(")
+	if strings.Contains(spinner, "setInterval") {
+		t.Error("spinner must be CSS-animated; the JS braille timer frozen on iOS was the bug")
+	}
+}

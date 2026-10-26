@@ -23,6 +23,7 @@ const state = {
   pending: [], // { path, name, size, uploading }
   filesOpen: false,
   filesKind: "",
+  settingsOpen: false,
 };
 
 // --- tiny DOM helpers -------------------------------------------------------
@@ -101,6 +102,7 @@ function showAuth() {
   state.pending = [];
   renderPending();
   closeFilesView();
+  closeSettingsView();
   show($("#view-chat"), false);
   show($("#view-auth"), true);
   routeAuthForm();
@@ -157,9 +159,15 @@ function applyMetaFlags() {
   if (m.registration === "closed") {
     $("#auth-mode-note").textContent = "Accounts are created by the administrator.";
     show($("#auth-mode-note"), true);
-    show($("#link-register"), false);
-  } else if (m.registration === "invite-only") {
-    show($("#auth-mode-note"), true);
+    // Hide the WHOLE "No account yet?" sentence, not just the link — the
+    // question itself is noise when nobody can register (the <p> owns the
+    // text, so hiding #link-register alone left the sentence on screen).
+    show($("#login-switch"), false);
+  } else {
+    show($("#login-switch"), true);
+    if (m.registration === "invite-only") {
+      show($("#auth-mode-note"), true);
+    }
   }
   const sel = $("#model-picker");
   sel.replaceChildren();
@@ -289,6 +297,21 @@ function applyTitle(id, title) {
   if (id === state.currentId) $("#topbar-title").textContent = title;
 }
 
+// promoteConversation records "opened" as activity (owner request): bump
+// the server (fire-and-forget — ordering is cosmetic and self-heals on the
+// next load) and reorder our local list + DOM immediately so the click
+// visibly moves the chat to the top without waiting on the round-trip.
+function promoteConversation(id) {
+  api.touchConversation(id).catch(() => {});
+  const i = state.convs.findIndex((c) => c.id === id);
+  if (i > 0) {
+    const [c] = state.convs.splice(i, 1);
+    state.convs.unshift(c);
+    const row = document.querySelector(`#conv-list .conv-item[data-id="${CSS.escape(id)}"]`);
+    if (row) $("#conv-list").prepend(row);
+  }
+}
+
 async function loadConversations() {
   const data = await api.listConversations(state.query, "");
   state.convs = data.items;
@@ -359,10 +382,7 @@ function msgNode(m) {
     showStatusNote(el, `status: ${m.status}`);
   }
 
-  const regen = el.querySelector(".regen-btn");
-  if (regen && m.role === "assistant" && m.id) {
-    regen.addEventListener("click", () => regenerateFrom(el, m.id));
-  }
+  if (m.role === "assistant") attachRegen(el);
   return el;
 }
 
@@ -375,6 +395,7 @@ function showStatusNote(el, text) {
 async function selectConversation(id) {
   if (id === state.currentId) return;
   await abandonInflight(); // a live stream belongs to the old thread
+  promoteConversation(id); // opening is activity: move the row to the top
   try {
     state.currentConv = await api.getConversation(id);
     state.currentId = id;
@@ -539,39 +560,29 @@ function appendUserBubble(text, files) {
   return el;
 }
 
-// --- busy spinner (opencode-style braille dots) ---------------------------------
+// --- busy spinner (pure-CSS dots) ------------------------------------------------
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-// spinnerNode returns an inline span whose glyph cycles every 100 ms; the
-// timer handle is parked on st so finish/abandon can stop it.
+// spinnerNode returns an inline three-dot span animated entirely by CSS
+// (styles.css .spinner). The old version cycled braille glyphs from a JS
+// timer and drew a FROZEN glyph when prefers-reduced-motion matched — on
+// iPads (iOS turns Reduce Motion on for several accessibility features)
+// the "thinking" icon therefore displayed but never moved and read as
+// broken. CSS keyframes need no timers, no exotic glyphs, and under
+// reduced motion the dots fade softly instead of going dead still.
 function spinnerNode(st) {
   const span = document.createElement("span");
   span.className = "spinner";
   span.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 3; i++) span.appendChild(document.createElement("i"));
   st.spinNode = span; // stopSpinner removes it from the DOM
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    span.textContent = "⠿"; // steady dots instead of motion
-    return span;
-  }
-  span.textContent = SPINNER_FRAMES[0];
-  let i = 0;
-  st.spinTimer = setInterval(() => {
-    i = (i + 1) % SPINNER_FRAMES.length;
-    span.textContent = SPINNER_FRAMES[i];
-  }, 100);
   return span;
 }
 
-// stopSpinner ends the animation AND unmounts the glyph. Called on the first
-// streamed answer token (the dots only mean "waiting") and on every exit
-// path, so a stale bubble can never keep spinning.
+// stopSpinner unmounts the dots. Called on the first streamed answer token
+// (the dots only mean "waiting") and on every exit path, so a stale bubble
+// can never keep spinning. The animation lives and dies with the node.
 function stopSpinner(st) {
   if (!st) return;
-  if (st.spinTimer) {
-    clearInterval(st.spinTimer);
-    st.spinTimer = 0;
-  }
   if (st.spinNode) {
     st.spinNode.remove();
     st.spinNode = 0;
@@ -963,6 +974,7 @@ async function onAttachPick(ev) {
 
 function openFilesView() {
   if (state.filesOpen) return;
+  if (state.settingsOpen) closeSettingsView(); // one overlay panel at a time
   state.filesOpen = true;
   document.body.classList.add("files-open");
   show($("#files-panel"), true);
@@ -974,6 +986,67 @@ function closeFilesView() {
   state.filesOpen = false;
   document.body.classList.remove("files-open");
   show($("#files-panel"), false);
+}
+
+// --- settings view (account details, default prompt, password) -------------------
+
+function openSettingsView() {
+  if (state.settingsOpen) return;
+  if (state.filesOpen) closeFilesView(); // one overlay panel at a time
+  state.settingsOpen = true;
+  document.body.classList.add("settings-open");
+  fillSettingsForm();
+  show($("#settings-panel"), true);
+  if (isPhone()) closeDrawer();
+}
+
+function closeSettingsView() {
+  state.settingsOpen = false;
+  document.body.classList.remove("settings-open");
+  show($("#settings-panel"), false);
+}
+
+// The form is always re-seeded from the server-truth copy of the user, so
+// a half-typed edit never survives a re-open looking saved when it is not.
+function fillSettingsForm() {
+  const me = state.me || {};
+  $("#settings-name").value = me.name || "";
+  $("#settings-email").value = me.email || "";
+  $("#settings-prompt").value = me.default_system_prompt || "";
+  $("#form-password").reset();
+}
+
+async function onSettingsSave(ev) {
+  ev.preventDefault();
+  try {
+    state.me = await api.updateMe({
+      name: $("#settings-name").value.trim(),
+      email: $("#settings-email").value.trim(),
+      default_system_prompt: $("#settings-prompt").value.trim(),
+    });
+    $("#user-chip").textContent = state.me.name || state.me.email;
+    toast("Settings saved", false);
+  } catch (err) {
+    handleErr(err, "save settings");
+  }
+}
+
+async function onPasswordSave(ev) {
+  ev.preventDefault();
+  const cur = $("#pw-current").value;
+  const next = $("#pw-new").value;
+  if (next !== $("#pw-confirm").value) {
+    toast("New passwords do not match.");
+    return;
+  }
+  try {
+    await api.changePassword(cur, next);
+    $("#form-password").reset();
+    // The server rotated our session cookie (other sessions were revoked).
+    toast("Password updated", false);
+  } catch (err) {
+    handleErr(err, "change password");
+  }
 }
 
 // Stale-response guard: loadFiles clears the list up front but appends
@@ -1255,6 +1328,7 @@ function finishGeneration(st, done) {
   }
   nodes.el.dataset.id = done.message_id || st.msgId || "";
   refreshLastAssistant();
+  if (nodes.el.dataset.id) attachRegen(nodes.el); // the button becomes visible now — make it work
   maybeScroll();
 }
 
@@ -1270,6 +1344,21 @@ async function stopStream() {
   } finally {
     $("#btn-stop").disabled = false;
   }
+}
+
+// The regen button only exists on an assistant bubble once it is the
+// .last-assistant (CSS), but the LISTENER must be attached wherever a
+// bubble becomes regenerateable — both when loaded from the server
+// (msgNode) and when a live generation completes (finishGeneration).
+// Without the finishGeneration path the button on the just-streamed
+// bubble was decorative: the first click (on a server-loaded bubble)
+// worked, every later click did nothing. dataset.bound keeps double
+// wiring impossible if a bubble is ever re-rendered in place.
+function attachRegen(el) {
+  const regen = el.querySelector(".regen-btn");
+  if (!regen || regen.dataset.bound) return;
+  regen.dataset.bound = "1";
+  regen.addEventListener("click", () => regenerateFrom(el, el.dataset.id));
 }
 
 async function regenerateFrom(el, msgId) {
@@ -1406,7 +1495,12 @@ function onHashChange() {
     openFilesView();
     return;
   }
+  if (location.hash === "#/settings") {
+    openSettingsView();
+    return;
+  }
   if (state.filesOpen) closeFilesView();
+  if (state.settingsOpen) closeSettingsView();
   const m = location.hash.match(/^#\/c\/([A-Za-z0-9]{1,40})$/);
   if (m) {
     selectConversation(m[1]);
@@ -1448,6 +1542,14 @@ async function boot() {
   $("#btn-files-close").addEventListener("click", () => {
     location.hash = state.currentId ? `#/c/${state.currentId}` : "";
   });
+  $("#btn-settings").addEventListener("click", () => {
+    location.hash = "#/settings";
+  });
+  $("#btn-settings-close").addEventListener("click", () => {
+    location.hash = state.currentId ? `#/c/${state.currentId}` : "";
+  });
+  $("#form-profile").addEventListener("submit", onSettingsSave);
+  $("#form-password").addEventListener("submit", onPasswordSave);
   for (const fb of document.querySelectorAll(".files-filter")) {
     fb.addEventListener("click", () => {
       state.filesKind = fb.dataset.kind || "";

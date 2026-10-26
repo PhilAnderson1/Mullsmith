@@ -100,6 +100,10 @@ export const api = {
   },
   abortGeneration: (id) =>
     request("POST", `/api/v1/generations/${encodeURIComponent(id)}/abort`),
+  // Opening a chat counts as activity: the server bumps updated_at so the
+  // list (ordered by updated_at DESC) shows recency of use, not of creation.
+  touchConversation: (id) =>
+    request("POST", `/api/v1/conversations/${encodeURIComponent(id)}/touch`),
   resolveApproval: (genId, approvalId, approve, remember = false) =>
     request("POST", `/api/v1/generations/${encodeURIComponent(genId)}/approvals`, {
       approval_id: approvalId,
@@ -108,6 +112,11 @@ export const api = {
     }),
 
   uploadFile,
+  // Settings page: profile details + default prompt in one PATCH; the
+  // password endpoint is separate because it revokes other sessions.
+  updateMe: (patch) => request("PATCH", "/api/v1/auth/me", patch),
+  changePassword: (current, next) =>
+    request("POST", "/api/v1/auth/password", { current, new: next }),
   // kind is the plural directory name: uploads | artifacts | work ("" = all).
   listFiles: (kind) => request("GET", "/api/v1/files" + (kind ? "?kind=" + encodeURIComponent(kind) : "")),
   // The one file identity is the scratchpad-relative path — for the three
