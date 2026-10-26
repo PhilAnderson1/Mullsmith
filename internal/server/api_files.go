@@ -86,6 +86,22 @@ func uploadExtension(name string, blocked []string) (string, bool) {
 
 // diskFloorOK moved to scratch.DiskFloorOK (§9.7, shared with the fs tools).
 
+// uploadMultipartAllowance is the framing headroom over max_file_size for
+// a whole upload request: boundary lines, part headers and any ignored
+// form fields — the UI sends none, so 64 KiB is generous by design (audit
+// finding 6). uploadMaxParts bounds part-iteration waste; a legitimate
+// upload carries exactly one part.
+const (
+	uploadMultipartAllowance = 64 << 10
+	uploadMaxParts           = 64
+)
+
+// uploadTooLarge answers the 413 shared by the budget-exhausted paths.
+func uploadTooLarge(w http.ResponseWriter, r *http.Request) {
+	writeAPIError(w, r, http.StatusRequestEntityTooLarge, "upload_too_large",
+		"request exceeds the upload size limit")
+}
+
 func fileJSON(f *store.File) map[string]any {
 	j := map[string]any{
 		"id":              f.ID,
@@ -140,19 +156,38 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Whole-request cap (audit finding 6): this route skips the generic
+	// max_body_bytes because the file part streams to disk under
+	// max_file_size — but unwrapped, everything ELSE in the request was
+	// free: ignored fields drained by p.Close(), or the entire body to EOF
+	// when no file part appears. One budget now covers the whole stream:
+	// the file cap plus fixed framing allowance. Every read path — part
+	// scan, Close-drain, streaming copy — fails with MaxBytesError once
+	// it is spent, answered as 413 below.
+	r.Body = http.MaxBytesReader(w, r.Body, int64(s.cfg.Scratchpad.MaxFileSize)+uploadMultipartAllowance)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		writeAPIError(w, r, http.StatusBadRequest, "bad_multipart", "multipart/form-data with a \"file\" part required")
 		return
 	}
 	var part *multipartPart
-	for {
+	for parts := 0; ; {
 		p, err := mr.NextPart()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if IsBodyTooLarge(err) {
+				uploadTooLarge(w, r)
+				return
+			}
 			writeAPIError(w, r, http.StatusBadRequest, "bad_multipart", "malformed multipart body")
+			return
+		}
+		parts++
+		if parts > uploadMaxParts { // iteration bound; the byte budget alone
+			_ = p.Close() // would still admit ~10^6 tiny parts (audit 6)
+			writeAPIError(w, r, http.StatusBadRequest, "too_many_parts", "upload carries too many form fields")
 			return
 		}
 		if p.FormName() == "file" && p.FileName() != "" {
@@ -204,6 +239,10 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds the size limit")
 		return
 	case err != nil:
+		if IsBodyTooLarge(err) { // budget spent mid-copy (oversized part)
+			uploadTooLarge(w, r)
+			return
+		}
 		writeAPIError(w, r, http.StatusBadRequest, "upload_failed", "upload could not be read")
 		return
 	}

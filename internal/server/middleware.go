@@ -231,9 +231,11 @@ func cacheControl(path string) string {
 
 func bodyLimit(next http.Handler, max int64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The upload route enforces its own, larger max_file_size cap while
-		// streaming the part to disk — it must not be clamped to
-		// max_body_bytes (§9.11).
+		// The upload route enforces its own, larger cap — max_file_size
+		// plus a framing allowance, applied inside the handler while it
+		// streams the part to disk — so it must not be clamped to
+		// max_body_bytes here (§9.11; audit finding 6 closed the exemption's
+		// unbounded leftovers).
 		upload := r.Method == http.MethodPost && r.URL.Path == "/api/v1/files"
 		if r.Body != nil && !upload {
 			r.Body = http.MaxBytesReader(w, r.Body, max)
