@@ -382,14 +382,17 @@ func TestUploadsNamespaceCoversDotPrefixedPaths(t *testing.T) {
 		t.Errorf("upload modified through the bypass: %q %v", b, err)
 	}
 
-	// Normalized "./" stays legal OUTSIDE uploads, and ".uploads" is a
-	// different directory — the rule is the normalized first segment, not
-	// string matching.
+	// Normalized "./" stays legal inside work/, and a raw-prefix bypass
+	// of the uploads rule is still dead: the rule reads NORMALIZED first
+	// segments, not strings. ".uploads/x" — once allowed as a sibling
+	// directory — now falls to the root rule: nothing may be created
+	// beside work/, uploads/ and artifacts/.
 	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": "./work/ok.txt", "content": "fine"})); err != nil {
 		t.Errorf("./work/ok.txt refused: %v", err)
 	}
-	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": ".uploads/x", "content": "fine"})); err != nil {
-		t.Errorf(".uploads/x (hidden sibling dir) refused: %v", err)
+	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": ".uploads/x", "content": "fine"})); err == nil ||
+		!strings.Contains(err.Error(), "root is not writable") {
+		t.Errorf(".uploads/x accepted: %v, want root-litter refusal", err)
 	}
 	// Plain form still refused, and traversal dies in ParseRel as before.
 	if _, err := run(t, w, root, argsJSON(t, map[string]string{"path": "uploads/plain.txt", "content": "x"})); err == nil {
@@ -426,5 +429,28 @@ func TestFilesShareRejectsUploads(t *testing.T) {
 	writeDirect(t, root, "work/gen.md", "# report\n")
 	if _, err := run(t, share, root, argsJSON(t, map[string]string{"path": "work/gen.md"})); err != nil {
 		t.Errorf("share work/gen.md: %v", err)
+	}
+}
+
+// The scratchpad ROOT is reserved: only work/ and artifacts/ accept model
+// writes, at any depth, but never the layout directories themselves and
+// never a bare root-level name (files there are invisible to the Files
+// page and unaccounted for by the workflow).
+func TestWriteTargetRootIsReserved(t *testing.T) {
+	w := FsWrite{}
+	// Refused: bare root entries, the layout dirs, and the root itself.
+	for _, p := range []string{
+		"stray.txt", "mydir/nested.txt", "bin_listing.txt",
+		"work", "artifacts", "uploads", ".", "/",
+	} {
+		if _, err := run(t, w, toolRoot(t), argsJSON(t, map[string]string{"path": p, "content": "x"})); err == nil {
+			t.Errorf("fs_write(%q) accepted; root is reserved", p)
+		}
+	}
+	// Allowed: real files inside the two writable namespaces, nested too.
+	for _, p := range []string{"work/a.txt", "work/sub/deep/b.txt", "artifacts/r.md"} {
+		if _, err := run(t, w, toolRoot(t), argsJSON(t, map[string]string{"path": p, "content": "x"})); err != nil {
+			t.Errorf("fs_write(%q) refused: %v", p, err)
+		}
 	}
 }

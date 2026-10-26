@@ -723,14 +723,20 @@ as removed keys. Layers:
 3. **The jail (always):** a per-run `bwrap --unshare-all --new-session --clearenv`
    with fresh user/mount/PID/IPC/net/UTS/cgroup namespaces. The visible filesystem
    is exactly: read-only host `/usr` (interpreters + libraries), minimal `/dev`
-   and `/proc`, and the user's own scratchpad mounted read-write at `/scratchpad`
-   (also the working directory): `work/` and `artifacts/` writable, `uploads/`
-   overlaid **read-only** so runs can read originals but never mutate them
-   (§9.4) — jail paths match the fs_* tools' relative paths exactly.
+   and `/proc`, and the user's own scratchpad **root mounted read-only** at
+   `/scratchpad` (also the working directory), the three designated directories
+   overlaid individually: `work/` **read-write** — the script's only writable
+   territory — and `uploads/` + `artifacts/` **read-only** so runs read inputs
+   in place but mutate nothing gabkeep holds records for (§9.4). A script can
+   never create an entry beside the three directories: root-level litter breaks
+   the layout the Files page and the sweeper assume. Jail paths match the
+   fs_* tools' writable paths exactly (`fs_write`/`fs_delete` obey the same
+   work/+artifacts/ allowlist).
    The database, other users' scratchpads and server
    config/secrets have **no path** inside the jail; a fresh PID namespace cannot
-   see or signal server processes. `HOME` = `/scratchpad`, `TMPDIR` = its `work/`
-   dir (quota'd filesystem); environment is
+   see or signal server processes. `HOME` and `TMPDIR` both point at the `work/`
+   dir (quota'd filesystem; a read-only root leaves no home for caches);
+   environment is
    rebuilt from a five-variable allowlist. Network: the net namespace is dropped
    unless `allow_network: true`, which instead shares the host netns plus
    read-only resolver/CA files and logs a startup warning.

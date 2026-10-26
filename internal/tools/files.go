@@ -321,15 +321,33 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 // "./uploads/x" has "." as its first raw segment yet lands in uploads/
 // after normalization (audit finding 7). Used by both writers, fs_write
 // and fs_delete, so both are held to the same validation.
+//
+// POSITIVE allowlist (root-litter fix): the first segment must be work/
+// or artifacts/ — a bare "notes.txt" would land in the user's data ROOT
+// beside the three directories, where the Files page cannot list or
+// delete it and the jail now refuses writes anyway. Layout directories
+// themselves (a lone "work"/"artifacts"/"uploads" as a delete target)
+// are likewise out of reach: the workflow needs their CONTENTS, not the
+// mount points.
 func checkWriteTarget(rel string) error {
 	segs, err := scratch.ParseRel(rel)
 	if err != nil {
 		return err
 	}
-	if len(segs) > 0 && segs[0] == "uploads" {
-		return errors.New("uploads/ is read-only for the model; write under work/ or artifacts/")
+	if len(segs) == 0 {
+		return errors.New("path must be inside work/ or artifacts/")
 	}
-	return nil
+	switch segs[0] {
+	case "uploads":
+		return errors.New("uploads/ is read-only for the model; write under work/ or artifacts/")
+	case "work", "artifacts":
+		if len(segs) == 1 {
+			return errors.New("path must be a file inside work/ or artifacts/, not the directory itself")
+		}
+		return nil
+	default:
+		return errors.New("the scratchpad root is not writable; write under work/ or artifacts/")
+	}
 }
 
 // --- fs_delete ---------------------------------------------------------------
@@ -339,8 +357,8 @@ type FsDelete struct{}
 func (FsDelete) Name() string { return "fs_delete" }
 
 func (FsDelete) Description() string {
-	return "Delete one file or empty directory inside the scratchpad (uploads/ is protected). " +
-		"Directories must be empty."
+	return "Delete one file or empty directory under work/ or artifacts/ (uploads/ is " +
+		"protected and the scratchpad root is reserved). Directories must be empty."
 }
 
 func (FsDelete) Parameters() map[string]any {

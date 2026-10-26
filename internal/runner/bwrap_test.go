@@ -193,55 +193,89 @@ func TestJailScratchWritableAndVisibleOnHost(t *testing.T) {
 	b := newJail(t)
 	d := scratchDirs(t)
 	out, err := b.Run(t.Context(), "userA", d.req(
-		`echo inside > work/wrote.txt; echo root too > "loose file.txt"`))
+		`echo inside > work/wrote.txt
+echo x > "loose file.txt" 2>/dev/null && echo "WRITE-ROOT(!)"
+mkdir mydir 2>/dev/null && echo "MKDIR-ROOT(!)"
+rm -f uploads 2>/dev/null
+touch artifacts/evil.txt 2>/dev/null && echo "WRITE-ARTIFACTS(!)"
+exit 0`))
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
 	}
-	for host, want := range map[string]string{
-		filepath.Join(d.work, "wrote.txt"):         "inside",
-		filepath.Join(d.scratch, "loose file.txt"): "root too",
+	if got, err := os.ReadFile(filepath.Join(d.work, "wrote.txt")); err != nil ||
+		strings.TrimSpace(string(got)) != "inside" {
+		t.Errorf("work/ write inside jail not visible on host: %q %v", got, err)
+	}
+	// The user root is read-only: nothing a script tries may appear
+	// beside the three designated directories (root-litter fix).
+	for _, forbidden := range []string{"WRITE-ROOT(!)", "MKDIR-ROOT(!)", "WRITE-ARTIFACTS(!)"} {
+		if strings.Contains(out.Stdout, forbidden) {
+			t.Errorf("jail let a script write where it must not (%s)", forbidden)
+		}
+	}
+	for _, host := range []string{
+		filepath.Join(d.scratch, "loose file.txt"),
+		filepath.Join(d.scratch, "mydir"),
+		filepath.Join(d.scratch, "artifacts", "evil.txt"),
 	} {
-		got, err := os.ReadFile(host)
-		if err != nil || strings.TrimSpace(string(got)) != want {
-			t.Errorf("write inside jail not visible at %s: %q %v", host, got, err)
+		if _, err := os.Stat(host); !os.IsNotExist(err) {
+			t.Errorf("refused write still landed on host: %s", host)
 		}
 	}
 }
 
-func TestJailUploadsReadOnlyArtifactsWritable(t *testing.T) {
+// Only work/ accepts writes. uploads/ and artifacts/ stay readable (the
+// workflow reads inputs in place) but are gabkeep-managed: a script that
+// mutates or deletes them would corrupt data whose records live in the
+// files table.
+func TestJailOnlyWorkIsWritable(t *testing.T) {
 	b := newJail(t)
 	d := scratchDirs(t)
 	orig := filepath.Join(d.scratch, "uploads", "data.csv")
 	if err := os.WriteFile(orig, []byte("a,b,c\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	shared := filepath.Join(d.scratch, "artifacts", "shared.txt")
+	if err := os.WriteFile(shared, []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	out, err := b.Run(t.Context(), "userA", d.req(`
-cat uploads/data.csv                    # readable in place
-	echo "mutated" > uploads/data.csv 2>/dev/null && echo "WRITE-UPLOADS(!)"
-	rm -f uploads/data.csv 2>/dev/null && [ ! -e uploads/data.csv ] && echo "DELETE-UPLOADS(!)"
-	touch artifacts/generated.txt && echo artifacts-ok
-	echo x > uploads/new-upload.txt 2>/dev/null && echo "CREATE-UPLOADS(!)"
-	exit 0   # the refused writes above must not set the run's exit status
+cat uploads/data.csv                      # readable in place
+cat artifacts/shared.txt                  # readable in place
+echo "mutated" > uploads/data.csv 2>/dev/null && echo "WRITE-UPLOADS(!)"
+rm -f uploads/data.csv 2>/dev/null && [ ! -e uploads/data.csv ] && echo "DELETE-UPLOADS(!)"
+echo x > uploads/new-upload.txt 2>/dev/null && echo "CREATE-UPLOADS(!)"
+echo x > artifacts/shared.txt 2>/dev/null && echo "MUTATE-ARTIFACTS(!)"
+rm -f artifacts/shared.txt 2>/dev/null && [ ! -e artifacts/shared.txt ] && echo "DELETE-ARTIFACTS(!)"
+touch artifacts/generated.txt 2>/dev/null && echo "CREATE-ARTIFACTS(!)"
+echo ok > work/script-output.txt && echo work-ok
+exit 0   # the refused writes above must not set the run's exit status
 `))
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run failed: %v %+v", err, out)
 	}
-	if !strings.Contains(out.Stdout, "a,b,c") {
-		t.Errorf("uploads not readable in jail: %q", out.Stdout)
+	if !strings.Contains(out.Stdout, "a,b,c") || !strings.Contains(out.Stdout, "shared") {
+		t.Errorf("uploads/artifacts not readable in jail: %q", out.Stdout)
 	}
-	for _, forbidden := range []string{"WRITE-UPLOADS(!)", "DELETE-UPLOADS(!)", "CREATE-UPLOADS(!)"} {
+	for _, forbidden := range []string{
+		"WRITE-UPLOADS(!)", "DELETE-UPLOADS(!)", "CREATE-UPLOADS(!)",
+		"MUTATE-ARTIFACTS(!)", "DELETE-ARTIFACTS(!)", "CREATE-ARTIFACTS(!)",
+	} {
 		if strings.Contains(out.Stdout, forbidden) {
-			t.Errorf("uploads overlay was not read-only (%s): stdout %q", forbidden, out.Stdout)
+			t.Errorf("jail write that must be refused succeeded (%s)", forbidden)
 		}
 	}
-	if !strings.Contains(out.Stdout, "artifacts-ok") {
-		t.Errorf("artifacts should be writable: %q", out.Stdout)
+	if !strings.Contains(out.Stdout, "work-ok") {
+		t.Errorf("work/ must stay writable: %q", out.Stdout)
 	}
-	if _, err := os.Stat(filepath.Join(d.scratch, "artifacts", "generated.txt")); err != nil {
-		t.Errorf("artifact not visible on host: %v", err)
+	if _, err := os.Stat(filepath.Join(d.work, "script-output.txt")); err != nil {
+		t.Errorf("work/ write not visible on host: %v", err)
 	}
 	if b, err := os.ReadFile(orig); err != nil || string(b) != "a,b,c\n" {
 		t.Errorf("original upload mutated on host: %q %v", b, err)
+	}
+	if b, err := os.ReadFile(shared); err != nil || string(b) != "shared\n" {
+		t.Errorf("artifact mutated on host: %q %v", b, err)
 	}
 }
 
@@ -378,7 +412,8 @@ func TestJailEnvIsScrubbed(t *testing.T) {
 	if strings.Contains(out.Stdout, "SECRET-KEY") {
 		t.Error("host environment leaked into the jail")
 	}
-	for _, want := range []string{"P=/usr/bin:/bin", "H=/scratchpad", "T=/scratchpad/work"} {
+	// HOME rides the writable work dir, not the (read-only) scratchpad root.
+	for _, want := range []string{"P=/usr/bin:/bin", "H=/scratchpad/work", "T=/scratchpad/work"} {
 		if !strings.Contains(out.Stdout, want) {
 			t.Errorf("env allowlist missing %q: %q", want, out.Stdout)
 		}
@@ -688,5 +723,19 @@ func TestNewForConfigEnabledBuildsJail(t *testing.T) {
 	}
 	if strings.Contains(out.Stdout, "etc/gabkeep") || strings.Contains(out.Stdout, "var") {
 		t.Errorf("unexpected host paths in jail root: %q", out.Stdout)
+	}
+}
+
+// A caller asking for WorkDir == the scratch root must be refused: the
+// work overlay is the jail's only writable mount, so that request would
+// re-expose the whole tree.
+func TestRunRefusesWorkDirEqualToRoot(t *testing.T) {
+	b := newJail(t)
+	d := scratchDirs(t)
+	r := d.req(`true`)
+	r.WorkDir = d.scratch
+	if _, err := b.Run(t.Context(), "userA", r); err == nil ||
+		!strings.Contains(err.Error(), "subdirectory") {
+		t.Errorf("Run(WorkDir == scratch root) = %v, want refusal", err)
 	}
 }

@@ -111,10 +111,10 @@ func NewBwrap(opts Options) (*Bwrap, error) {
 }
 
 // bwrapArgs builds the jail specification. scratchDir/workDir are HOST
-// paths: the user's scratchpad root (mounted rw at /scratchpad, uploads
-// overlaid read-only) and its work dir (becomes the payload's TMPDIR).
-// target is the interpreter's host-resolved path (must be under /usr).
-// Pure function: unit-testable without executing anything.
+// paths: the user's scratchpad root (mounted READ-ONLY at /scratchpad)
+// and its work dir — the one writable directory, overlaid rw at its own
+// position. target is the interpreter's host-resolved path (must be under
+// /usr). Pure function: unit-testable without executing anything.
 func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
 	// Where workDir sits inside the jail, computed from the caller's own
 	// paths so the runner stays layout-agnostic (tmpfiles land on the
@@ -129,7 +129,7 @@ func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
 		"--new-session",     // detach from any controlling terminal
 		"--clearenv",        // payload env is exactly what we set below
 		"--setenv", "PATH", "/usr/bin:/bin",
-		"--setenv", "HOME", "/scratchpad",
+		"--setenv", "HOME", tmpInJail, // $HOME must be writable: caches go to work/
 		"--setenv", "TMPDIR", tmpInJail,
 		"--setenv", "LANG", "C",
 		"--setenv", "LC_ALL", "C",
@@ -164,15 +164,23 @@ func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
 		)
 	}
 
-	// The user's own file tree, mounted exactly as the fs_* tools see it:
-	// root read-write (work/, artifacts/ writable), uploads/ overlaid
-	// READ-ONLY so scripts can read originals but never mutate them (§9.4).
-	// The overlay is deliberately a hard bind (no -try): the tool layer has
-	// run scratch.EnsureUserDirs, so a missing uploads dir means a broken
-	// layout — fail closed rather than hand the payload a writable uploads/.
+	// The user's file tree, presented as the workflow intends it (§9.9):
+	// the ROOT is read-only — scripts that scribble beside work/, uploads/
+	// and artifacts/ corrupt the layout the UI and sweeper assume — so
+	// the three designated directories are passed separately:
+	//   work/       READ-WRITE (the script's own territory, and TMPDIR/$HOME)
+	//   uploads/    READ-ONLY  (user data: readable in place, never mutated)
+	//   artifacts/  READ-ONLY  (shared-file storage: only gabkeep writes rows+bytes)
+	// Later binds overlay the earlier root bind; bwrap applies them in
+	// order. uploads/ and artifacts/ are hard binds (no -try): the tool
+	// layer ran scratch.EnsureUserDirs, so a missing directory means a
+	// broken layout — fail closed rather than hand the payload a writable
+	// view of it through the root bind.
 	return append(args,
-		"--bind", scratchDir, "/scratchpad",
+		"--ro-bind", scratchDir, "/scratchpad",
+		"--bind", workDir, tmpInJail,
 		"--ro-bind", filepath.Join(scratchDir, "uploads"), "/scratchpad/uploads",
+		"--ro-bind", filepath.Join(scratchDir, "artifacts"), "/scratchpad/artifacts",
 		"--chdir", "/scratchpad",
 		target, "-", // interpreter; script arrives on stdin
 	)
@@ -195,8 +203,10 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 		return Outcome{}, errors.New("runner: work dir does not exist")
 	}
 	if rel, err := filepath.Rel(req.ScratchDir, req.WorkDir); err != nil ||
-		filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return Outcome{}, errors.New("runner: work dir must live inside the scratch dir")
+		rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// "." is refused deliberately: the jail's only writable overlay is
+		// WorkDir — letting it equal the root would re-expose everything.
+		return Outcome{}, errors.New("runner: work dir must be a strict subdirectory inside the scratch dir")
 	}
 	// Resolve the allowlisted binary to its real path and require it to
 	// live under /usr — that is the only tree the jail mounts. Handles
