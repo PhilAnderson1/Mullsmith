@@ -505,6 +505,17 @@ CLI mints codes), `closed` (admin CLI creates users).
     everywhere" (and password change) deletes session rows; per-session revocation with
     device info (`user_agent`) is a v1.1 candidate.
 - Login throttling: per-account lockout + per-IP token bucket (hardcoded; §9.11).
+  Login enforces the same **254-byte email ceiling** as registration before the lock
+  check, DB lookup, hashing, or lock-key construction — oversized emails were being
+  retained verbatim as lockout keys (audit2 finding 1). Lock keys are stored as
+  SHA-256 digests at the `LoginLocks` boundary, and both auth maps are hard-capped
+  (16,384 entries ≈ a few MB): `LoginLocks` saturation evicts only the oldest
+  non-locked records and drops a newcomer's failure rather than evicting a live
+  lockout; `Limiter` sweeps are rate-limited to ~1/s (previously every admitted
+  request above 4,096 entries scanned the whole map) and a brand-new IP at saturation
+  is admitted untracked rather than punished. Residual under a lock-map flood: a
+  newly targeted account may go briefly untracked — brute force stays bounded by the
+  hash gate (~1 verify/s) and the per-IP login bucket.
 - CSRF: double-submit cookie + `X-Gabkeep-CSRF` header on all mutating API calls.
 
 ### 9.2 Authorization & access control (IDOR prevention)
@@ -744,7 +755,7 @@ open registration (startup warns).
 | Request body cap | `http.MaxBytesReader` on every route (`limits.max_body_bytes` = 1 MiB default); multipart streams to a spooled temp file with its own `max_file_size` cap and `defer os.Remove` on abort — never buffered whole in memory |
 | Field caps | message ≤ `max_message_chars`; titles/names/emails length-bounded; `attachment_ids` ≤ `limits.max_attachments`; pagination `limit` ≤ 200; unknown JSON fields → 400 (§9.3) |
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
-| Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded |
+| Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded. Both auth maps hard-capped at 16,384 entries with lockout-preserving saturation; lock keys SHA-256-digested; login rejects emails over `auth.MaxEmailLen` (254 B) up front (audit2 finding 1) |
 | Password hashing | **global gate** (`limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
 | Upload capacity | `limits.concurrent_uploads` (default 8) gates in-flight uploads server-wide — full ⇒ instant `429 server_busy` + `Retry-After`, bounding temp bytes to N × `max_file_size` regardless of the request bucket. The quota decision itself is **atomic**: fresh usage re-read and rename under one mutex, so concurrent uploads can never share a stale "used" figure (audit finding 5). The whole upload request is capped by `http.MaxBytesReader` at `max_file_size` + 64 KiB framing allowance, part count at 64: ignored multipart fields and no-file bodies can no longer drain unboundedly past both body limits (audit finding 6) |
 | Runaway script | a 1 s **storage watchdog** wraps every `code_run`: user bytes past `user_quota`, or the host past the 5 % free-space floor, cancels the run context — the runner kills the whole jail (process-group SIGKILL, §9.9). Partial output stays on disk; the over-quota user is blocked by the ordinary pre-checks until cleanup. Overrun per run ≈ one poll interval of writing, versus unbounded before (audit finding 5) |

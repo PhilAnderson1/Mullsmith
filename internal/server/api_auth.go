@@ -225,6 +225,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(body.Email))
+	// Length gate BEFORE the lock check, DB lookup, hashing and lock-key
+	// construction: the retained lock key is built from this string, and
+	// unbounded inputs accumulated attacker-sized entries in the lockout
+	// map (audit2 finding 1). Length only, not full ValidEmail — a syntax
+	// verdict here would be an "is-that-an-address" oracle beside the
+	// §9.1 equal-cost failure paths.
+	if len(email) > auth.MaxEmailLen {
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "email is too long")
+		return
+	}
 	lockKey := "acct:" + email
 
 	if s.locks.Locked(lockKey) {

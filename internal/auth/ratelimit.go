@@ -1,8 +1,31 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
 	"sync"
 	"time"
+)
+
+// maxLimiterEntries / maxLockEntries hard-cap the two auth maps (audit2
+// finding 1): before the caps, distinct unauthenticated keys (fresh IPs, or
+// attacker-sized login emails retained by failed attempts) grew the maps
+// without bound and turned every admitted request into an O(n) cleanup
+// scan. Buckets and hashed lock records are small and uniform, so the caps
+// bound retained bytes to a few MB.
+const (
+	maxLimiterEntries = 16384
+	maxLockEntries    = 16384
+
+	// gcThreshold: above this many buckets, sweep opportunistically
+	// (rate-limited to ~1/s — the old code scanned on EVERY admitted
+	// request, audit2 finding 1).
+	gcThreshold = 4096
+
+	// evictFraction is the batch size cleared at saturation, so the O(n)
+	// selection runs once per evictionFraction inserts, not per insert.
+	evictFraction = maxLimiterEntries / 4
 )
 
 // Limiter is a small in-memory token bucket per key (spec §9.11). Lazy
@@ -10,6 +33,7 @@ import (
 type Limiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
+	gcAt    time.Time
 }
 
 type bucket struct {
@@ -23,6 +47,13 @@ func NewLimiter() *Limiter {
 	return &Limiter{buckets: map[string]*bucket{}}
 }
 
+// Len reports retained buckets (observability and cap regression tests).
+func (l *Limiter) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.buckets)
+}
+
 // Allow consumes one token from key's bucket, configured as "rate events per
 // window" (burst capacity = rate).
 func (l *Limiter) Allow(key string, rate int, window time.Duration) bool {
@@ -32,6 +63,13 @@ func (l *Limiter) Allow(key string, rate int, window time.Duration) bool {
 
 	b, ok := l.buckets[key]
 	if !ok {
+		if len(l.buckets) >= maxLimiterEntries && !l.makeRoomLocked(now) {
+			// A flood of fresh keys must not cost unbounded memory, and a
+			// brand-new IP must not be punished for it either: admit
+			// WITHOUT retaining a bucket. Existing buckets keep throttling
+			// their own IPs; the hash gate is the real backstop (spec §9.1).
+			return true
+		}
 		b = &bucket{tokens: float64(rate), cap: float64(rate), refill: float64(rate) / window.Seconds(), last: now}
 		l.buckets[key] = b
 	}
@@ -44,10 +82,37 @@ func (l *Limiter) Allow(key string, rate int, window time.Duration) bool {
 		return false
 	}
 	b.tokens--
-	if len(l.buckets) > 4096 {
+	// Opportunistic cleanup, rate-limited to ~1/s: above gcThreshold entries
+	// the old code scanned the whole map on EVERY admitted request (audit2).
+	if len(l.buckets) > gcThreshold && now.Sub(l.gcAt) > time.Second {
+		l.gcAt = now
 		l.gcLocked(now)
 	}
 	return true
+}
+
+// makeRoomLocked frees space for one new key: idle buckets first, then the
+// least-recently-used quarter in a single batch (amortising the selection
+// over evictFraction later inserts). Idle buckets were within a refill of
+// expiry anyway; evicting one costs that IP a stale counter, never the
+// server's memory.
+func (l *Limiter) makeRoomLocked(now time.Time) bool {
+	l.gcLocked(now)
+	if len(l.buckets) < maxLimiterEntries {
+		return true
+	}
+	byLast := make([]time.Time, 0, len(l.buckets))
+	for _, b := range l.buckets {
+		byLast = append(byLast, b.last)
+	}
+	sort.Slice(byLast, func(i, j int) bool { return byLast[i].Before(byLast[j]) })
+	cutoff := byLast[evictFraction-1]
+	for k, b := range l.buckets {
+		if !b.last.After(cutoff) {
+			delete(l.buckets, k)
+		}
+	}
+	return len(l.buckets) < maxLimiterEntries
 }
 
 // gcLocked drops buckets idle for more than 10 minutes; called opportunistically.
@@ -61,10 +126,17 @@ func (l *Limiter) gcLocked(now time.Time) {
 
 // LoginLocks tracks failed logins per account and locks after a threshold
 // (spec §9.1: max_failed_logins per 15 minutes → 15-minute lockout).
+//
+// Keys are stored as SHA-256 digests: the raw input may be an
+// attacker-sized string (login never echoed a length check before
+// audit2), and a digest pins every record to a fixed ~64-byte key. The map
+// is additionally hard-capped — digests alone bound the entry SIZE, not
+// the entry COUNT.
 type LoginLocks struct {
-	mu   sync.Mutex
-	m    map[string]*failRecord
-	gcAt time.Time
+	mu          sync.Mutex
+	m           map[string]*failRecord
+	gcAt        time.Time
+	noRoomUntil time.Time // negative cache: nothing evictable until then
 }
 
 type failRecord struct {
@@ -77,11 +149,23 @@ func NewLoginLocks() *LoginLocks {
 	return &LoginLocks{m: map[string]*failRecord{}}
 }
 
+func hashLockKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+// Len reports retained records (observability and cap regression tests).
+func (l *LoginLocks) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.m)
+}
+
 // Locked reports whether the account is currently locked.
 func (l *LoginLocks) Locked(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	r, ok := l.m[key]
+	r, ok := l.m[hashLockKey(key)]
 	if !ok {
 		return false
 	}
@@ -89,9 +173,15 @@ func (l *LoginLocks) Locked(key string) bool {
 }
 
 // Fail records one failed attempt; when count reaches max within the window
-// the account is locked for the same window length.
+// the account is locked for the same window length. Saturation policy
+// (audit2): existing records always update, and ACTIVE LOCKOUTS ARE NEVER
+// EVICTED — when the map holds nothing but locked records, a brand-new
+// key's failure is dropped instead of evicting someone's lockout. The
+// leftover exposure (a newcomer momentarily untracked) stays bounded by
+// the per-IP login bucket and the hash gate.
 func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 	now := time.Now()
+	hk := hashLockKey(key)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -104,10 +194,17 @@ func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 		}
 	}
 
-	r, ok := l.m[key]
-	if !ok || now.Sub(r.firstAt) > window {
+	r, ok := l.m[hk]
+	if !ok {
+		if len(l.m) >= maxLockEntries {
+			// noRoomUntil short-circuits the scan while the map is known
+			// immovable, so refusals stay O(1) instead of O(map) each.
+			if now.Before(l.noRoomUntil) || !l.makeRoomLocked(now) {
+				return
+			}
+		}
 		r = &failRecord{count: 0, firstAt: now}
-		l.m[key] = r
+		l.m[hk] = r
 	}
 	r.count++
 	if r.count >= max {
@@ -115,9 +212,42 @@ func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 	}
 }
 
+// makeRoomLocked evicts the oldest NON-locked records in a batch (unlocked
+// first — a live lockout is untouchable). Returns false only if every
+// retained record is locked.
+func (l *LoginLocks) makeRoomLocked(now time.Time) bool {
+	var unlocked []time.Time
+	for _, r := range l.m {
+		if !now.Before(r.lockedUntil) {
+			unlocked = append(unlocked, r.firstAt)
+		}
+	}
+	if len(unlocked) == 0 {
+		l.noRoomUntil = now.Add(time.Second)
+		return false
+	}
+	n := len(unlocked) / 4
+	if n < 1 {
+		n = 1
+	}
+	sort.Slice(unlocked, func(i, j int) bool { return unlocked[i].Before(unlocked[j]) })
+	cutoff := unlocked[n-1]
+	freed := 0
+	for k, r := range l.m {
+		if freed >= evictFraction {
+			break
+		}
+		if !now.Before(r.lockedUntil) && !r.firstAt.After(cutoff) {
+			delete(l.m, k)
+			freed++
+		}
+	}
+	return len(l.m) < maxLockEntries
+}
+
 // Reset clears failures after a successful login.
 func (l *LoginLocks) Reset(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.m, key)
+	delete(l.m, hashLockKey(key))
 }

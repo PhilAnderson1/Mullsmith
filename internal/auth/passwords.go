@@ -48,9 +48,15 @@ func init() {
 
 func isCommon(lowered string) bool { return commonList[lowered] }
 
+// MaxEmailLen is the RFC 5321 upper bound for a full address. Login and
+// registration enforce the same ceiling (login historically did not —
+// audit2 finding 1, where unvalidated oversized emails were retained as
+// account-lock keys).
+const MaxEmailLen = 254
+
 // ValidEmail does a pragmatic address check (syntax + domain dot + length).
 func ValidEmail(email string) bool {
-	if len(email) > 254 {
+	if len(email) > MaxEmailLen {
 		return false
 	}
 	addr, err := mail.ParseAddress(email)
