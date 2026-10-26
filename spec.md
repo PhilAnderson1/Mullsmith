@@ -664,8 +664,13 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   user is write-frozen by the ordinary pre-checks until cleanup, never silently deleted
   (audit2 finding 3). Residuals stated honestly: script writes between polls can still
   overshoot (≤ one interval of writing, itself capped by the jail's memory budget, §9.9);
-  `chmod`-hidden directories and inode counts escape byte-walks. Only filesystem-level
-  quotas (ext4 project quotas / XFS) are a true hard ceiling; deployment defers them by
+  inode counts stay outside the byte meter. What does NOT escape: a `chmod`-hidden
+  directory — every quota scan walks the tree or returns **"usage could not be verified"**,
+  and no scan error is ever read as "within quota" (upload, `fs_write`, staging, `code_run`
+  pre-flight, the watchdog — which cancels the run — and the final weigh-in all fail
+  closed); restoring read access restores accounting with nothing to repair. Only
+  filesystem-level quotas (ext4 project quotas / XFS) are a true hard ceiling;
+  deployment defers them by
   operator choice.
 - `uploads/` is the model's one forbidden namespace (`fs_write`/`fs_delete`, and
   `files_share`/artifact registration — a TTL'd row pointing at a user upload made cleanup

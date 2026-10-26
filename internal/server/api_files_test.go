@@ -305,3 +305,46 @@ func truncStr(s string, n int) string {
 	}
 	return s
 }
+
+// audit2 finding 3 (accounting bypass): while the user's tree cannot be
+// walked, uploads are REFUSED (usage unknown ≠ within quota); once read
+// access is restored, uploads proceed — nothing was deleted or rewritten.
+func TestUploadRejectedWhenUsageUnverifiable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions; needs an unprivileged reader")
+	}
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "blind@test.io", "gk-code-1")
+	dirs, err := filepath.Glob(filepath.Join(cfg.Scratchpad.Root, "*"))
+	if err != nil || len(dirs) != 1 {
+		t.Fatalf("user dirs = %v (%v)", dirs, err)
+	}
+	work := filepath.Join(dirs[0], "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(work, 0o700) })
+	if err := os.Chmod(work, 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := a.upload("x.bin", []byte("small"))
+	if resp.StatusCode != http.StatusInsufficientStorage {
+		t.Fatalf("upload over unreadable tree = %d, want 507", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "storage_unverified") {
+		t.Errorf("body = %s, want storage_unverified with a clear message", body)
+	}
+
+	if err := os.Chmod(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resp = a.upload("x.bin", []byte("small"))
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("upload after restore = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+}

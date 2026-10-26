@@ -436,3 +436,114 @@ func TestCodeRunWatchdogPassesCleanRun(t *testing.T) {
 		t.Errorf("payload = %s", res.Content)
 	}
 }
+
+// --- audit2 finding 3 (accounting bypass): unverifiable ⇒ fail closed ------
+
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions; unreadable-tree tests need an unprivileged reader")
+	}
+}
+
+// scanBlinder is the script from the audit: it hides its directory from
+// every byte-walk (chmod 000), then runs until the watchdog kills it.
+type scanBlinder struct{}
+
+func (scanBlinder) Run(ctx context.Context, _ string, req runner.Request) (runner.Outcome, error) {
+	if err := os.Chmod(req.WorkDir, 0o000); err != nil {
+		return runner.Outcome{}, err
+	}
+	<-ctx.Done()
+	return runner.Outcome{}, ctx.Err()
+}
+
+func TestWatchdogCancelsOnUnverifiableScan(t *testing.T) {
+	skipIfRoot(t)
+	root := toolRoot(t)
+	work := filepath.Join(root, toolUser, "work")
+	t.Cleanup(func() { _ = os.Chmod(work, 0o700) })
+
+	c := codeTool(scanBlinder{}, 1<<20)
+	c.WatchInterval = 5 * time.Millisecond
+	_, err := run(t, c, root, `{"runtime":"sh","script":"hide and wait"}`)
+	if err == nil || !strings.Contains(err.Error(), "terminated") ||
+		!strings.Contains(err.Error(), "could not be verified") {
+		t.Fatalf("err = %v, want watchdog cancel for unverifiable usage", err)
+	}
+}
+
+// A run that hides its output and finishes before any poll must not report
+// success: the final weigh-in gets an ERROR, not a false "under quota".
+// Bytes stay on disk (no silent deletion), and restoring access restores
+// ordinary service.
+func TestCodeRunShortRunCannotReportUnverifiableSuccess(t *testing.T) {
+	skipIfRoot(t)
+	root := toolRoot(t)
+	work := filepath.Join(root, toolUser, "work")
+	t.Cleanup(func() { _ = os.Chmod(work, 0o700) })
+
+	fr := &fakeRunner{
+		out: runner.Outcome{ExitCode: 0, Stdout: "all done\n"},
+		side: func(req runner.Request) {
+			if err := os.WriteFile(filepath.Join(req.WorkDir, "stash.bin"),
+				[]byte(strings.Repeat("s", 100)), 0o600); err != nil {
+				t.Error(err)
+			}
+			if err := os.Chmod(req.WorkDir, 0o000); err != nil {
+				t.Error(err)
+			}
+		},
+	}
+	tool := codeTool(fr, 1<<20)
+	tool.WatchInterval = time.Hour // the poller can never catch this one
+	_, err := run(t, tool, root, `{"runtime":"sh","script":"write and hide"}`)
+	if err == nil || !strings.Contains(err.Error(), "run finished but storage usage could not be verified") {
+		t.Fatalf("err = %v, want final weigh-in refusal", err)
+	}
+	if err := os.Chmod(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, serr := os.Stat(filepath.Join(work, "stash.bin")); serr != nil {
+		t.Errorf("output must be kept, not auto-deleted: %v", serr)
+	}
+	// Access restored → accurate accounting → runs are authorized again.
+	fr2 := &fakeRunner{out: runner.Outcome{ExitCode: 0}}
+	if _, err := run(t, codeTool(fr2, 1<<20), root, `{"runtime":"sh","script":"true"}`); err != nil {
+		t.Errorf("after restore: %v, want ordinary success", err)
+	}
+}
+
+// Application-managed writes and new runs are refused BEFORE touching the
+// tree or the runner while usage is unverifiable — and permitted again,
+// without repair, once read access is restored.
+func TestUnreadableTreeRefusesWritesUntilRestored(t *testing.T) {
+	skipIfRoot(t)
+	root := toolRoot(t)
+	work := filepath.Join(root, toolUser, "work")
+	t.Cleanup(func() { _ = os.Chmod(work, 0o700) })
+	if err := os.Chmod(work, 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := run(t, FsWrite{UserQuota: 1 << 20}, root,
+		argsJSON(t, map[string]string{"path": "work/note.txt", "content": "hi"})); err == nil ||
+		!strings.Contains(err.Error(), "could not be verified") {
+		t.Errorf("fs_write over unreadable tree: %v, want refusal", err)
+	}
+	fr := &fakeRunner{}
+	if _, err := run(t, codeTool(fr, 1<<20), root,
+		`{"runtime":"sh","script":"true","files":["uploads/whatever.csv"]}`); err == nil ||
+		!strings.Contains(err.Error(), "could not be verified") {
+		t.Errorf("staged code_run over unreadable tree: %v, want refusal", err)
+	}
+	if fr.calls != 0 {
+		t.Error("runner reached despite unverifiable usage")
+	}
+
+	os.Chmod(work, 0o700)
+	if _, err := run(t, FsWrite{UserQuota: 1 << 20}, root,
+		argsJSON(t, map[string]string{"path": "work/note.txt", "content": "hi"})); err != nil {
+		t.Errorf("fs_write after restore: %v, want success", err)
+	}
+}

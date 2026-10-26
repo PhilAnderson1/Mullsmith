@@ -16,34 +16,67 @@ import (
 // line — the watchdog must stay cheap even over a pathological directory.
 var errOverLimit = errors.New("scratch: over size limit")
 
-// DirSizeExceeds reports whether the regular-file bytes under the user root
-// exceed limit, short-circuiting the walk as soon as the running total
-// crosses it (audit finding 5: the code_run watchdog polls once per second
-// while a hostile script floods new files into the tree).
+// scanAbort decides how a WalkDir callback error affects a quota scan
+// (audit2 finding 3, accounting bypass): an entry that vanished mid-walk
+// (the user deleted it, a maintenance sweep collected it) contributes zero
+// bytes and must NOT fail the scan — the race is routine and the bytes are
+// genuinely gone. Every other error (unreadable directory after a hostile
+// chmod 000, I/O failure, metadata we cannot read) means the total would be
+// a guess, so it aborts: quota decisions must never trust an incomplete
+// scan. Callers surface the failure; hiding bytes makes usage
+// unverifiable, not free.
+//
+// d may be nil when err != nil; callers must check err before touching d.
+func scanAbort(err error) error {
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// DirSizeExceeds reports whether the regular-file bytes under the user
+// root exceed limit, short-circuiting the walk as soon as the running
+// total crosses it (audit finding 5: the code_run watchdog polls once per
+// second while a hostile script floods new files into the tree).
+//
+// A non-nil error means usage is UNKNOWN — the result is not "false"
+// (fail closed, audit2 finding 3): callers must refuse the operation they
+// were about to authorize. A missing user root is the one incomplete tree
+// that legitimately reports zero usage: a fresh user holds no bytes.
 func DirSizeExceeds(root, userID string, limit int64) (bool, error) {
 	dir, err := UserRoot(root, userID)
 	if err != nil {
 		return false, err
 	}
 	var total int64
-	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+	var rootMissing bool
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // same fail-soft policy as DirSize
+			if p == dir && errors.Is(err, fs.ErrNotExist) {
+				rootMissing = true
+				return nil
+			}
+			return scanAbort(err)
 		}
 		if d.Type().IsRegular() {
-			if info, err := d.Info(); err == nil {
-				total += info.Size()
-				if total > limit {
-					return errOverLimit
-				}
+			info, ierr := d.Info()
+			if ierr != nil {
+				return scanAbort(ierr) // metadata unreadable ⇒ total incomplete
+			}
+			total += info.Size()
+			if total > limit {
+				return errOverLimit
 			}
 		}
 		return nil
 	})
+	if rootMissing {
+		return false, nil
+	}
 	switch {
 	case errors.Is(err, errOverLimit):
 		return true, nil
-	case err != nil && !os.IsNotExist(err):
+	case err != nil:
 		return false, err
 	}
 	return false, nil
@@ -84,25 +117,40 @@ func RemoveUserDirs(root, userID string) error {
 	return os.RemoveAll(dir)
 }
 
-// DirSize sums bytes under the user root (drives the /me quota figure).
+// DirSize sums bytes under the user root (drives the /me quota figure and
+// every quota decision). A non-nil error means usage is UNKNOWN, not zero
+// (fail closed, audit2 finding 3): an unreadable directory — a script's
+// chmod 000 trick — or unreadable metadata aborts the walk instead of
+// silently contributing nothing. A missing user root legitimately sums to
+// zero.
 func DirSize(root, userID string) (int64, error) {
 	dir, err := UserRoot(root, userID)
 	if err != nil {
 		return 0, err
 	}
 	var total int64
-	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+	var rootMissing bool
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // unreadable entries do not fail the quota estimate
+			if p == dir && errors.Is(err, fs.ErrNotExist) {
+				rootMissing = true
+				return nil
+			}
+			return scanAbort(err)
 		}
 		if d.Type().IsRegular() {
-			if info, err := d.Info(); err == nil {
-				total += info.Size()
+			info, ierr := d.Info()
+			if ierr != nil {
+				return scanAbort(ierr)
 			}
+			total += info.Size()
 		}
 		return nil
 	})
-	if err != nil && !os.IsNotExist(err) {
+	if rootMissing {
+		return 0, nil
+	}
+	if err != nil {
 		return 0, err
 	}
 	return total, nil

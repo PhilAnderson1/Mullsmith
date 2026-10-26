@@ -145,10 +145,13 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	// Advisory fail-fast: an already-full user never pays for streaming.
 	// The authoritative decision is commitUpload, against fresh usage.
+	// An unverifiable scan REFUSES the upload (audit2 finding 3): unknown
+	// usage never authorizes a write; raw scan errors stay in the log.
 	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
 	if err != nil {
 		s.logger.Error("quota read failed", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		writeAPIError(w, r, http.StatusInsufficientStorage, "storage_unverified",
+			"Storage usage could not be verified; check scratchpad permissions")
 		return
 	}
 	if used >= int64(s.cfg.Scratchpad.UserQuota) {
@@ -285,10 +288,15 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 func (s *Server) commitUpload(w http.ResponseWriter, r *http.Request, userID, tempName, rel string, n int64) bool {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
+	// Fail closed (audit2 finding 3): if usage cannot be walked, the
+	// upload is refused — not treated as zero — until the tree is readable
+	// again. No bytes move, so no cleanup is needed beyond temp removal by
+	// the caller.
 	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, userID)
 	if err != nil {
 		s.logger.Error("quota read failed", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		writeAPIError(w, r, http.StatusInsufficientStorage, "storage_unverified",
+			"Storage usage could not be verified; check scratchpad permissions")
 		return false
 	}
 	if used+n > int64(s.cfg.Scratchpad.UserQuota) {

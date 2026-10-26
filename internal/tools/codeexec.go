@@ -113,7 +113,17 @@ func (c CodeRun) watchStorage(ctx context.Context, cancel context.CancelFunc, ro
 				}
 				if c.UserQuota > 0 {
 					over, err := scratch.DirSizeExceeds(root, userID, c.UserQuota)
-					if err == nil && over {
+					if err != nil {
+						// An incomplete scan never reads as "within quota":
+						// the script may be hiding its output behind a
+						// chmod-000 directory (audit2 finding 3). Kill the
+						// run; partial output stays on disk as usual.
+						if w.fire("terminated: storage usage could not be verified; check scratchpad permissions") {
+							cancel()
+						}
+						return
+					}
+					if over {
 						if w.fire("terminated: storage quota exceeded; partial output kept") {
 							cancel()
 						}
@@ -264,9 +274,15 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	// 2 KiB against a 1 KiB quota and was told "success". Weigh the tree
 	// once at run end so overruns are reported truthfully; partial output
 	// is kept (§9.9) and the ordinary pre-checks hold the user in arrears
-	// until they clean up (audit2 finding 3).
+	// until they clean up (audit2 finding 3). An unverifiable scan is an
+	// ERROR, never a silent pass: a script that chmods its output
+	// unreadable has hidden bytes from exactly this check.
 	if c.UserQuota > 0 {
-		if over, derr := scratch.DirSizeExceeds(root, inv.UserID, c.UserQuota); derr == nil && over {
+		over, derr := scratch.DirSizeExceeds(root, inv.UserID, c.UserQuota)
+		if derr != nil {
+			return Result{}, errors.New("code_run: run finished but storage usage could not be verified; check scratchpad permissions")
+		}
+		if over {
 			return Result{}, errors.New("code_run: storage quota exceeded during run; partial output kept — free space before the next run")
 		}
 	}
@@ -354,7 +370,7 @@ func precheckStagedSizes(root, userID string, rels []string, quota int64) error 
 	}
 	used, err := scratch.DirSize(root, userID)
 	if err != nil {
-		return errors.New("quota check failed")
+		return errors.New("code_run: storage usage could not be verified; check scratchpad permissions")
 	}
 	if used+add > quota {
 		return fmt.Errorf("code_run: staging %s would exceed the storage quota (%s used)",

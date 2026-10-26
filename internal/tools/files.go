@@ -50,14 +50,18 @@ func scratchRoot(inv Invocation) (string, error) {
 	return inv.Scratchpad, nil
 }
 
-// checkQuota enforces per-user bytes before/after a write (§9.7).
+// checkQuota enforces per-user bytes before/after a write (§9.7). An
+// undeterminable usage FAILS the check: "unknown" never authorizes a write
+// (audit2 finding 3 — chmod-000 must not make bytes invisible AND free).
+// The scan error itself (paths included) belongs in server logs, not in
+// the model/user-facing message.
 func checkQuota(root, userID string, quota int64) error {
 	if quota <= 0 {
 		return nil
 	}
 	used, err := scratch.DirSize(root, userID)
 	if err != nil {
-		return errors.New("quota check failed")
+		return errors.New("storage usage could not be verified; check scratchpad permissions")
 	}
 	if used >= quota {
 		return errors.New("storage quota exceeded")
@@ -288,9 +292,17 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		_ = scratch.Remove(root, inv.UserID, rel)
 		return Result{}, errors.New("write failed")
 	}
-	// Quota again after close — bytes may have crossed the line (§9.7).
+	// Quota again after close — bytes may have crossed the line (§9.7). A
+	// failed re-scan keeps the file (no auto-delete on an unknown total)
+	// but never reports success: the write landed UNVERIFIED (audit2
+	// finding 3, fail closed).
 	if w.UserQuota > 0 {
-		if used, err := scratch.DirSize(root, inv.UserID); err == nil && used > w.UserQuota {
+		used, derr := scratch.DirSize(root, inv.UserID)
+		if derr != nil {
+			return Result{}, errors.New("wrote " + quoteShort(rel) +
+				", but storage usage could not be verified; check scratchpad permissions")
+		}
+		if used > w.UserQuota {
 			_ = scratch.Remove(root, inv.UserID, rel)
 			return Result{}, errors.New("write would exceed the storage quota; file removed")
 		}
