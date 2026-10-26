@@ -808,7 +808,7 @@ body.files-open .pending-files { display: none; }
 }
 .kind-badge.artifact { border-color: var(--accent); color: var(--accent); }
 .kind-badge.work { border-style: dashed; color: var(--fg-muted); }
-.kind-badge.work-dir { border-style: dashed; color: var(--fg-muted); }
+.kind-badge.dir { border-style: dashed; color: var(--fg-muted); }
 .f-path {
   color: var(--fg-muted);
   font-size: 0.72rem;

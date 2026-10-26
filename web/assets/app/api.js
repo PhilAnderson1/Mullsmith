@@ -108,15 +108,9 @@ export const api = {
     }),
 
   uploadFile,
-  listFiles: (kind, cursor) => {
-    const p = new URLSearchParams();
-    if (kind) p.set("kind", kind);
-    if (cursor) p.set("cursor", cursor);
-    const qs = p.toString();
-    return request("GET", "/api/v1/files" + (qs ? "?" + qs : ""));
-  },
-  deleteFile: (id) => request("DELETE", `/api/v1/files/${encodeURIComponent(id)}`),
-  listWork: () => request("GET", "/api/v1/files/work"),
-  deleteWork: (path) =>
-    request("DELETE", "/api/v1/files/work?path=" + encodeURIComponent(path)),
+  // kind is the plural directory name: uploads | artifacts | work ("" = all).
+  listFiles: (kind) => request("GET", "/api/v1/files" + (kind ? "?kind=" + encodeURIComponent(kind) : "")),
+  // The one file identity is the scratchpad-relative path — for the three
+  // layout directories alike. No ids, no cursors: the disk is the truth.
+  deleteFile: (path) => request("DELETE", "/api/v1/files?path=" + encodeURIComponent(path)),
 };

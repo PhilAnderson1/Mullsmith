@@ -19,11 +19,10 @@ const state = {
   currentConv: null,
   messagesCursor: "",
   inflight: null, // live generation: { controller, genId, msgId, raw, ... }
-  // uploads staged in the composer, sent as attachment_ids with the message
-  pending: [], // { id, name, size, uploading }
+  // uploads staged in the composer, sent as attachment_paths with the message
+  pending: [], // { path, name, size, uploading }
   filesOpen: false,
   filesKind: "",
-  filesCursor: "",
 };
 
 // --- tiny DOM helpers -------------------------------------------------------
@@ -509,7 +508,7 @@ async function sendFromComposer() {
   input.value = "";
   autosizeComposer();
   const body = { content: text.trim() };
-  if (attachments.length) body.attachment_ids = attachments.map((f) => f.id);
+  if (attachments.length) body.attachment_paths = attachments.map((f) => f.path);
   await startGeneration(
     `/api/v1/conversations/${encodeURIComponent(state.currentId)}/messages`,
     body,
@@ -884,9 +883,9 @@ function artifactFromAudit(c) {
   } catch {
     return null; // truncated mid-JSON: no card beats a wrong card
   }
-  if (!parsed || parsed.error || typeof parsed.file_id !== "string") return null;
+  if (!parsed || parsed.error || typeof parsed.path !== "string") return null;
   return artifactCard({
-    id: parsed.file_id, name: parsed.name, bytes: parsed.bytes,
+    path: parsed.path, name: parsed.name, bytes: parsed.bytes,
     url: parsed.url, note: parsed.note,
   });
 }
@@ -941,12 +940,12 @@ async function onAttachPick(ev) {
       toast(`${file.name}: exceeds the ${humanSize(caps.max_file_size)} limit.`);
       continue;
     }
-    const entry = { id: "", name: file.name, size: file.size, uploading: true };
+    const entry = { path: "", name: file.name, size: file.size, uploading: true };
     state.pending.push(entry);
     renderPending();
     try {
       const rec = await api.uploadFile(file);
-      entry.id = rec.id;
+      entry.path = rec.path;
       entry.uploading = false;
     } catch (err) {
       state.pending = state.pending.filter((x) => x !== entry);
@@ -980,32 +979,25 @@ function closeFilesView() {
 // Stale-response guard: loadFiles clears the list up front but appends
 // AFTER the await, so two overlapping loads (tab switch while a list is in
 // flight) used to merge into one list — the same file appearing twice.
-// Only the newest load may touch the DOM or the cursor.
+// Only the newest load may touch the DOM.
 let filesLoadSeq = 0;
 
+// One endpoint for everything: the server physically walks uploads/,
+// artifacts/ and work/, so there is no cursor and no second listing —
+// each tab is one request (kind filter "" = all).
 async function loadFiles(reset) {
   const gen = ++filesLoadSeq;
-  if (reset) {
-    state.filesCursor = "";
-    $("#files-list").replaceChildren();
-  }
-  // The Work tab is a physical directory view, not the registered-files
-  // table: no cursor, newest-modified first, server caps the response.
-  const work = state.filesKind === "work";
-  const data = work
-    ? await api.listWork()
-    : await api.listFiles(state.filesKind, reset ? "" : state.filesCursor);
+  if (reset) $("#files-list").replaceChildren();
+  const data = await api.listFiles(state.filesKind);
   if (gen !== filesLoadSeq) return; // superseded by a newer load — drop it
-  state.filesCursor = data.next_cursor || "";
   const list = $("#files-list");
   for (const f of data.items || []) list.appendChild(fileRow(f));
-  if (work && data.truncated) {
+  if (data.truncated) {
     const li = document.createElement("li");
     li.className = "f-sub";
     li.textContent = "Only the most recent files are shown.";
     list.appendChild(li);
   }
-  show($("#btn-files-more"), Boolean(state.filesCursor));
   const q = data.quota || {};
   const used = q.used_bytes || 0;
   const total = q.total_bytes || 0;
@@ -1016,7 +1008,7 @@ async function loadFiles(reset) {
 function fileRow(f) {
   const li = document.createElement("li");
   li.className = "file-row";
-  const isDir = f.kind === "work-dir";
+  const isDir = f.kind === "dir";
   const main = document.createElement("div");
   main.className = "f-main";
   const name = document.createElement("div");
@@ -1070,8 +1062,9 @@ function fileRow(f) {
     if (!(await confirmDialog(msg))) return;
     del.disabled = true;
     try {
-      if (isDir || f.kind === "work") await api.deleteWork(f.path);
-      else await api.deleteFile(f.id);
+      // One delete for every kind — the path is the whole identity, and
+      // directories go recursively server-side.
+      await api.deleteFile(f.path);
     } catch (err) {
       if (!(err instanceof ApiError && err.status === 404)) {
         del.disabled = false;
@@ -1455,9 +1448,6 @@ async function boot() {
   $("#btn-files-close").addEventListener("click", () => {
     location.hash = state.currentId ? `#/c/${state.currentId}` : "";
   });
-  $("#btn-files-more").addEventListener("click", () =>
-    loadFiles(false).catch((e) => handleErr(e, "more files"))
-  );
   for (const fb of document.querySelectorAll(".files-filter")) {
     fb.addEventListener("click", () => {
       state.filesKind = fb.dataset.kind || "";
