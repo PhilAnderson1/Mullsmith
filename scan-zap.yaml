@@ -35,7 +35,8 @@ auth:
   cookie_secure: true
   max_failed_logins: 1000     # do not lock the scanner out mid-scan
 
-rate_limit:
+limits:
+  # scanner must never meet a throttle (§9.12)
   requests_per_minute: 100000
   chat_messages_per_hour: 100000
 

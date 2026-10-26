@@ -94,7 +94,7 @@ type Config struct {
 	LLM        LLM        `yaml:"llm"`
 	Tools      Tools      `yaml:"tools"`
 	Auth       Auth       `yaml:"auth"`
-	RateLimit  RateLimit  `yaml:"rate_limit"`
+	RateLimit  RateLimit  `yaml:"rate_limit"` // retired; see Validate
 	Logging    Logging    `yaml:"logging"`
 
 	// Path is the config file path; relative dirs resolve against its folder.
@@ -124,15 +124,21 @@ type Limits struct {
 	MaxBodyBytes    Size `yaml:"max_body_bytes"`
 	MaxMessageChars int  `yaml:"max_message_chars"`
 	MaxAttachments  int  `yaml:"max_attachments"`
-	// The two caps below are optional pointers so an explicit 0 (disable)
+	// The four caps below are optional pointers so an explicit 0 (disable)
 	// is distinguishable from "unset" (take the hardcoded default):
-	// unset → default, 0 → unlimited, negative → config error (§9.11).
+	// unset → default, 0 → unlimited/disabled, negative → config error
+	// (§9.11). requests_per_minute and chat_messages_per_hour moved here
+	// from the retired rate_limit block.
 	ConcurrentStreamsPerUser *int `yaml:"concurrent_streams_per_user"`
 	// ConcurrentStreamsTotal caps generations running at once across ALL
 	// users; the global backstop behind the per-user cap (§9.11). One
 	// shared LLM endpoint saturates long before a handful of users each
 	// hit their personal cap.
 	ConcurrentStreamsTotal *int `yaml:"concurrent_streams_total"`
+	// Per-user API token bucket over non-chat endpoints (§9.11).
+	RequestsPerMinute *int `yaml:"requests_per_minute"`
+	// Per-user hourly chat-message bucket (§9.11).
+	ChatMessagesPerHour *int `yaml:"chat_messages_per_hour"`
 }
 
 type Database struct {
@@ -240,18 +246,20 @@ type Argon2 struct {
 	Threads int `yaml:"threads"`
 }
 
+// RateLimit is retired: its two knobs moved into limits (§9.11). The type
+// exists only so Validate can name the move to operators of old configs
+// instead of yaml's generic unknown-key error.
 type RateLimit struct {
-	// Optional limits: unset → default, 0 → disabled, negative → error.
-	RequestsPerMinute   *int `yaml:"requests_per_minute"`
+	RequestsPerMinute   *int `yaml:"requests_per_minute"` // retired
 	ChatMessagesPerHour *int `yaml:"chat_messages_per_hour"`
 }
 
-// Shipped defaults for the optional caps (limits + rate_limit). Sample and
+// Shipped defaults for the optional caps under limits. Sample and
 // production configs spell these same values out; 0 on any of them turns
 // that single control off (operator's explicit choice, §9.11).
 const (
 	DefaultRequestsPerMinute      = 120
-	DefaultChatMessagesPerHour    = 60
+	DefaultChatMessagesPerHour    = 120
 	DefaultConcurrentStreamsUser  = 2
 	DefaultConcurrentStreamsTotal = 8
 )
@@ -377,6 +385,15 @@ func (c *Config) setDefaults() {
 	if c.Limits.ConcurrentStreamsTotal == nil {
 		c.Limits.ConcurrentStreamsTotal = Ptr(DefaultConcurrentStreamsTotal)
 	}
+	// Unset keys fall back to defaults; an explicit 0 stays 0 and disables
+	// that control (validation rejects negatives). Shipped configs spell the
+	// defaults out so the effective policy is visible at a glance.
+	if c.Limits.RequestsPerMinute == nil {
+		c.Limits.RequestsPerMinute = Ptr(DefaultRequestsPerMinute)
+	}
+	if c.Limits.ChatMessagesPerHour == nil {
+		c.Limits.ChatMessagesPerHour = Ptr(DefaultChatMessagesPerHour)
+	}
 	if c.Scratchpad.MaxFileSize == 0 {
 		c.Scratchpad.MaxFileSize = 25 << 20
 	}
@@ -471,15 +488,6 @@ func (c *Config) setDefaults() {
 	if c.Auth.Argon2 == (Argon2{}) {
 		c.Auth.Argon2 = Argon2{Time: 1, Memory: 65536, Threads: 4}
 	}
-	// Unset keys fall back to defaults; an explicit 0 stays 0 and disables
-	// that limit (validation rejects negatives). Shipped configs spell the
-	// defaults out so the effective policy is visible at a glance.
-	if c.RateLimit.RequestsPerMinute == nil {
-		c.RateLimit.RequestsPerMinute = Ptr(DefaultRequestsPerMinute)
-	}
-	if c.RateLimit.ChatMessagesPerHour == nil {
-		c.RateLimit.ChatMessagesPerHour = Ptr(DefaultChatMessagesPerHour)
-	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
@@ -563,12 +571,17 @@ func (c *Config) Validate() error {
 	}{
 		{"limits.concurrent_streams_per_user", c.Limits.ConcurrentStreamsPerUser},
 		{"limits.concurrent_streams_total", c.Limits.ConcurrentStreamsTotal},
-		{"rate_limit.requests_per_minute", c.RateLimit.RequestsPerMinute},
-		{"rate_limit.chat_messages_per_hour", c.RateLimit.ChatMessagesPerHour},
+		{"limits.requests_per_minute", c.Limits.RequestsPerMinute},
+		{"limits.chat_messages_per_hour", c.Limits.ChatMessagesPerHour},
 	} {
 		if k.v != nil && *k.v < 0 {
 			f.bad("%s: must be >= 0 (0 disables the limit)", k.name)
 		}
+	}
+	// rate_limit: retired — the two knobs moved into limits:. Name the
+	// move instead of silently ignoring values an old config still carries.
+	if c.RateLimit.RequestsPerMinute != nil || c.RateLimit.ChatMessagesPerHour != nil {
+		f.bad("rate_limit: retired — move requests_per_minute and chat_messages_per_hour into the limits: block")
 	}
 
 	if c.Database.Dir == "" {

@@ -13,7 +13,7 @@ import (
 
 func TestUserAPILimitEnforced(t *testing.T) {
 	cfg := scratchCfg(t)
-	cfg.RateLimit.RequestsPerMinute = config.Ptr(3)
+	cfg.Limits.RequestsPerMinute = config.Ptr(3)
 	a := newAuthTest(t, cfg)
 	signupAs(a, "rl@test.io", "gk-code-1")
 
@@ -37,7 +37,7 @@ func TestUserAPILimitEnforced(t *testing.T) {
 func TestChatStreamExemptFromMinuteBucket(t *testing.T) {
 	fake := newFakeLLM(t, scriptReply("ok"))
 	cfg := chatCfg(t, fake.URL)
-	cfg.RateLimit.RequestsPerMinute = config.Ptr(1) // chat routes must ignore this
+	cfg.Limits.RequestsPerMinute = config.Ptr(1) // chat routes must ignore this
 	a := signedInChat(t, cfg)
 
 	// Drain the (non-chat) bucket with an ordinary call, then prove the
@@ -68,7 +68,7 @@ func TestChatHourlyBucket(t *testing.T) {
 		scriptReply("fine")(w, r)
 	})
 	cfg := chatCfg(t, fake.URL)
-	cfg.RateLimit.ChatMessagesPerHour = config.Ptr(2)
+	cfg.Limits.ChatMessagesPerHour = config.Ptr(2)
 	a := signedInChat(t, cfg)
 
 	for i := 0; i < 2; i++ {

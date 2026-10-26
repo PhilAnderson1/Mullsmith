@@ -162,10 +162,10 @@ func TestOptionalLimitKnobs(t *testing.T) {
 
 	t.Run("unset takes defaults", func(t *testing.T) {
 		cfg := load(t, "")
-		if got := Deref(cfg.RateLimit.RequestsPerMinute); got != DefaultRequestsPerMinute {
+		if got := Deref(cfg.Limits.RequestsPerMinute); got != DefaultRequestsPerMinute {
 			t.Errorf("requests_per_minute = %d, want %d", got, DefaultRequestsPerMinute)
 		}
-		if got := Deref(cfg.RateLimit.ChatMessagesPerHour); got != DefaultChatMessagesPerHour {
+		if got := Deref(cfg.Limits.ChatMessagesPerHour); got != DefaultChatMessagesPerHour {
 			t.Errorf("chat_messages_per_hour = %d, want %d", got, DefaultChatMessagesPerHour)
 		}
 		if got := Deref(cfg.Limits.ConcurrentStreamsPerUser); got != DefaultConcurrentStreamsUser {
@@ -181,15 +181,14 @@ func TestOptionalLimitKnobs(t *testing.T) {
 limits:
   concurrent_streams_per_user: 0
   concurrent_streams_total: 0
-rate_limit:
   requests_per_minute: 0
   chat_messages_per_hour: 0
 `)
 		for name, p := range map[string]*int{
 			"concurrent_streams_per_user": cfg.Limits.ConcurrentStreamsPerUser,
 			"concurrent_streams_total":    cfg.Limits.ConcurrentStreamsTotal,
-			"requests_per_minute":         cfg.RateLimit.RequestsPerMinute,
-			"chat_messages_per_hour":      cfg.RateLimit.ChatMessagesPerHour,
+			"requests_per_minute":         cfg.Limits.RequestsPerMinute,
+			"chat_messages_per_hour":      cfg.Limits.ChatMessagesPerHour,
 		} {
 			if p == nil || *p != 0 {
 				t.Errorf("%s = %v, want explicit 0 (disabled)", name, p)
@@ -200,8 +199,8 @@ rate_limit:
 	negatives := []struct{ key, wantErr string }{
 		{"limits:\n  concurrent_streams_per_user: -1\n", "limits.concurrent_streams_per_user"},
 		{"limits:\n  concurrent_streams_total: -3\n", "limits.concurrent_streams_total"},
-		{"rate_limit:\n  requests_per_minute: -1\n", "rate_limit.requests_per_minute"},
-		{"rate_limit:\n  chat_messages_per_hour: -1\n", "rate_limit.chat_messages_per_hour"},
+		{"limits:\n  requests_per_minute: -1\n", "limits.requests_per_minute"},
+		{"limits:\n  chat_messages_per_hour: -1\n", "limits.chat_messages_per_hour"},
 	}
 	for _, tc := range negatives {
 		t.Run("negative rejected: "+tc.key, func(t *testing.T) {
@@ -215,6 +214,22 @@ rate_limit:
 			}
 		})
 	}
+
+	// The retired rate_limit: block must fail with a message naming the
+	// move, never silently win over or override limits:.
+	t.Run("retired rate_limit names the move", func(t *testing.T) {
+		_, err := Load(writeCfg(t, minimalYAML+`
+rate_limit:
+  requests_per_minute: 300
+`))
+		if err == nil {
+			t.Fatal("retired rate_limit accepted, want error")
+		}
+		if !strings.Contains(err.Error(), "rate_limit") ||
+			!strings.Contains(err.Error(), "limits:") {
+			t.Errorf("error = %v, want it to point at the limits: block", err)
+		}
+	})
 }
 
 func TestValidationCases(t *testing.T) {

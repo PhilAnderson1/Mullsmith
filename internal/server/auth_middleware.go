@@ -109,13 +109,13 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Per-user API token bucket (§9.11 rate_limit.requests_per_minute —
+		// Per-user API token bucket (§9.11 limits.requests_per_minute —
 		// configured but never enforced, audit finding 3). Keyed by user,
 		// not IP: the identity is already proven here, and IP-keying is
 		// hostage to NAT and proxy topology. Chat streaming routes are the
 		// documented exception ("non-chat endpoints") — they answer to the
 		// hourly chat bucket and the generation caps instead.
-		if max := config.Deref(s.cfg.RateLimit.RequestsPerMinute); max > 0 && !isChatStreamRoute(r) &&
+		if max := config.Deref(s.cfg.Limits.RequestsPerMinute); max > 0 && !isChatStreamRoute(r) &&
 			!s.limiter.Allow("api:"+user.ID, max, time.Minute) {
 			w.Header().Set("Retry-After", "1")
 			writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited",
