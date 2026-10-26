@@ -90,8 +90,8 @@ func TestJSFilesListRefreshDiscardsStaleAndGhosts(t *testing.T) {
 // (1) the regenerate button died after the first click because only
 // msgNode-attached bubbles had a listener — a completed stream (the new
 // last bubble) rendered the button with no handler;
-// (2) opening a chat must count as activity (list re-orders by use, not
-// creation);
+// (2) opening a chat must NOT reorder the list — only posting moves a
+// conversation (revised owner rule: last-post ordering, touch removed);
 // (3) with registration closed the login page must hide the whole
 // "No account yet?" sentence, not just the link;
 // (4) the waiting spinner is CSS-driven (no braille JS timer — the frozen
@@ -112,12 +112,19 @@ func TestJSRegenerateActivationLoginSpinnerContracts(t *testing.T) {
 	}
 
 	sel := jsFuncBody(t, src, "async function selectConversation(")
-	if !strings.Contains(sel, "promoteConversation(") {
-		t.Error("selectConversation must promote the opened chat (activity ordering)")
+	if strings.Contains(sel, "promoteConversation(") {
+		t.Error("opening a chat must NOT promote it (only posts reorder the list)")
 	}
 	promote := jsFuncBody(t, src, "function promoteConversation(")
-	if !strings.Contains(promote, "touchConversation(") {
-		t.Error("promoteConversation must bump the server, or the order resets on reload")
+	if strings.Contains(promote, "touchConversation(") {
+		t.Error("the touch-on-open endpoint is gone; promotion must be local only")
+	}
+	if strings.Contains(src, "touchConversation") {
+		t.Error("no client code may still reference the removed touch endpoint")
+	}
+	send := jsFuncBody(t, src, "async function sendFromComposer(")
+	if !strings.Contains(send, "promoteConversation(") {
+		t.Error("posting a message must promote the chat (mirror server order)")
 	}
 
 	meta := jsFuncBody(t, src, "function applyMetaFlags(")

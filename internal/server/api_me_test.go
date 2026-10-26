@@ -140,10 +140,13 @@ func TestNewConversationsSeedDefaultPrompt(t *testing.T) {
 	}
 }
 
-func TestTouchConversationReordersList(t *testing.T) {
+// Owner rule (revised 2026-10-26): the list is ordered by LAST POST, not
+// by last opened. AddMessage bumps conversations.updated_at; the old
+// "touch on open" endpoint is gone and must stay gone (404).
+func TestPostingReordersList(t *testing.T) {
 	a := newAuthTest(t, authCfg(t))
 	a.invite("gk-code-1")
-	a.register("touch@test.io", "str0ng-passphrase-1", false)
+	a.register("order@test.io", "str0ng-passphrase-1", false)
 	me := decodeBody(t, a.do(http.MethodGet, "/api/v1/auth/me", nil))
 	uid := me["id"].(string)
 
@@ -159,28 +162,29 @@ func TestTouchConversationReordersList(t *testing.T) {
 	if err := a.db.CreateConversation(ctx, newer); err != nil {
 		t.Fatal(err)
 	}
-	// Activity ordering: the more recently touched chat leads.
 	list := decodeBody(t, a.do(http.MethodGet, "/api/v1/conversations", nil))
 	items := list["items"].([]any)
 	if len(items) != 2 {
 		t.Fatalf("list = %v", list)
 	}
 	if items[0].(map[string]any)["id"] != newer.ID {
-		t.Errorf("newer activity should lead: %v", items[0])
+		t.Errorf("newest post should lead: %v", items[0])
 	}
-	// Touching the older chat moves it to the top without any message.
-	resp := a.do(http.MethodPost, "/api/v1/conversations/"+older.ID+"/touch", nil)
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("touch = %d, want 204", resp.StatusCode)
+	// Posting into the older chat moves it to the top (AddMessage owns the
+	// updated_at bump — no separate endpoint involved).
+	msg := &store.Message{ID: id.New(), ConversationID: older.ID, Role: "user",
+		Content: "continuing an old thread", Status: "complete", CreatedAt: time.Now()}
+	if err := a.db.AddMessage(ctx, uid, msg); err != nil {
+		t.Fatal(err)
 	}
 	list = decodeBody(t, a.do(http.MethodGet, "/api/v1/conversations", nil))
 	items = list["items"].([]any)
 	if items[0].(map[string]any)["id"] != older.ID {
-		t.Errorf("touch did not promote the chat: %v", items[0])
+		t.Errorf("post did not promote the chat: %v", items[0])
 	}
-	// Unknown id → 404 (and never another user's row: touch rides user_id).
-	if resp := a.do(http.MethodPost, "/api/v1/conversations/nope/touch", nil); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("touch unknown = %d, want 404", resp.StatusCode)
+	// The activation-bump endpoint must no longer exist.
+	if resp := a.do(http.MethodPost, "/api/v1/conversations/"+older.ID+"/touch", nil); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("touch endpoint should be gone, got %d", resp.StatusCode)
 	} else {
 		resp.Body.Close()
 	}

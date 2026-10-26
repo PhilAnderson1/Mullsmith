@@ -124,7 +124,6 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	mux.Handle("GET /api/v1/conversations/{id}", s.authRequired(s.handleConversationGet))
 	mux.Handle("PATCH /api/v1/conversations/{id}", s.authRequired(s.handleConversationPatch))
 	mux.Handle("DELETE /api/v1/conversations/{id}", s.authRequired(s.handleConversationDelete))
-	mux.Handle("POST /api/v1/conversations/{id}/touch", s.authRequired(s.handleConversationTouch))
 	mux.Handle("GET /api/v1/conversations/{id}/messages", s.authRequired(s.handleConversationMessages))
 	mux.Handle("POST /api/v1/conversations/{id}/messages", s.authRequired(s.handleChatSend))
 	mux.Handle("POST /api/v1/messages/{id}/regenerate", s.authRequired(s.handleRegenerate))

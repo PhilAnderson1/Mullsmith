@@ -198,25 +198,6 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, conversationJSON(c))
 }
 
-// --- POST /api/v1/conversations/{id}/touch ------------------------------------------
-
-// handleConversationTouch records "opened it" as activity: the list sorts
-// by updated_at DESC, so activating a chat brings it to the top even
-// before any new message lands (owner request 2026-10-26).
-func (s *Server) handleConversationTouch(w http.ResponseWriter, r *http.Request) {
-	user := UserFrom(r.Context())
-	ok, err := s.store.TouchConversation(r.Context(), user.ID, r.PathValue("id"))
-	if err != nil {
-		s.writeConvErr(w, r, err)
-		return
-	}
-	if !ok {
-		s.writeConvErr(w, r, store.ErrConversationNotFound)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // --- GET / PATCH / DELETE /api/v1/conversations/{id} ----------------------------------
 
 func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {

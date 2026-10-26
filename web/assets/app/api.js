@@ -100,10 +100,6 @@ export const api = {
   },
   abortGeneration: (id) =>
     request("POST", `/api/v1/generations/${encodeURIComponent(id)}/abort`),
-  // Opening a chat counts as activity: the server bumps updated_at so the
-  // list (ordered by updated_at DESC) shows recency of use, not of creation.
-  touchConversation: (id) =>
-    request("POST", `/api/v1/conversations/${encodeURIComponent(id)}/touch`),
   resolveApproval: (genId, approvalId, approve, remember = false) =>
     request("POST", `/api/v1/generations/${encodeURIComponent(genId)}/approvals`, {
       approval_id: approvalId,

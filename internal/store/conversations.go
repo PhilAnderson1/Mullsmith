@@ -165,21 +165,6 @@ func (d *DB) SetTitleIfDefault(ctx context.Context, convID, title string) (bool,
 	return n > 0, err
 }
 
-// Touch bumps a live conversation's updated_at: "activity" for the list
-// ordering also includes simply opening a chat, not just new messages
-// (AddMessage bumps it too). Ownership rides the WHERE clause so the
-// touch can never reach another user's row. Reports whether it wrote.
-func (d *DB) TouchConversation(ctx context.Context, userID, convID string) (bool, error) {
-	res, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE conversations SET updated_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
-		time.Now().Unix(), convID, userID)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n > 0, err
-}
-
 func (d *DB) SoftDeleteConversation(ctx context.Context, userID, convID string) error {
 	res, err := d.sqlDB.ExecContext(ctx,
 		`UPDATE conversations SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,

@@ -297,12 +297,13 @@ function applyTitle(id, title) {
   if (id === state.currentId) $("#topbar-title").textContent = title;
 }
 
-// promoteConversation records "opened" as activity (owner request): bump
-// the server (fire-and-forget — ordering is cosmetic and self-heals on the
-// next load) and reorder our local list + DOM immediately so the click
-// visibly moves the chat to the top without waiting on the round-trip.
+// promoteConversation is a LOCAL mirror of server-side ordering: posting a
+// message bumps the conversation's updated_at (store AddMessage), so the
+// chat belongs at the top — reorder the list + DOM immediately instead of
+// waiting for the next load. Opening a chat is NOT activity (owner rule):
+// only posts move a conversation, so this is called from the send and
+// regenerate paths, never from selectConversation.
 function promoteConversation(id) {
-  api.touchConversation(id).catch(() => {});
   const i = state.convs.findIndex((c) => c.id === id);
   if (i > 0) {
     const [c] = state.convs.splice(i, 1);
@@ -395,7 +396,6 @@ function showStatusNote(el, text) {
 async function selectConversation(id) {
   if (id === state.currentId) return;
   await abandonInflight(); // a live stream belongs to the old thread
-  promoteConversation(id); // opening is activity: move the row to the top
   try {
     state.currentConv = await api.getConversation(id);
     state.currentId = id;
@@ -543,6 +543,8 @@ async function sendFromComposer() {
       // Accepted: the server now owns these uploads, clear the tray.
       state.pending = state.pending.filter((f) => !attachments.includes(f));
       renderPending();
+      // The post bumped updated_at server-side — mirror the new order now.
+      promoteConversation(state.currentId);
     }
   );
 }
@@ -1376,7 +1378,8 @@ async function regenerateFrom(el, msgId) {
   await startGeneration(
     `/api/v1/messages/${encodeURIComponent(msgId)}/regenerate`,
     undefined,
-    () => loadFirstMessages().catch((e) => handleErr(e, "reload messages"))
+    () => loadFirstMessages().catch((e) => handleErr(e, "reload messages")),
+    () => promoteConversation(state.currentId) // a fresh reply is a post too
   );
 }
 

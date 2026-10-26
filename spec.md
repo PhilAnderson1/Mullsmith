@@ -333,7 +333,6 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 |---|---|---|
 | GET | `/api/v1/conversations?q=&cursor=` | List user's conversations (newest updated first, optional title search). |
 | POST | `/api/v1/conversations` | `{title?, model?, system_prompt?}` → create. A missing `system_prompt` inherits the user's `default_system_prompt` (the row stores the copy; later default edits never rewrite existing chats). |
-| POST | `/api/v1/conversations/{id}/touch` | Activity bump: opening a chat re-orders the list (ordered by `updated_at DESC`, so activation moves it to the top). |
 | GET | `/api/v1/conversations/{id}` | Metadata + pinned files. |
 | PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt. |
 | DELETE | `/api/v1/conversations/{id}` | Soft delete. |
