@@ -628,6 +628,13 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   `openat`-style relative to the user's root so a swap mid-resolution can't escape.
   Tools receive only `user_id` — they physically cannot construct a path into another
   user's tree or outside the scratchpad root.
+- Opens require a **regular file, checked on the opened fd**: read opens carry
+  `O_NONBLOCK|O_NOFOLLOW` + `fstat`; write opens drop `O_TRUNC` for the same check and
+  truncate afterwards via `Ftruncate` on the pinned fd. A script-created FIFO (the only
+  special file the jail permits — device-node creation is denied, verified against the
+  live jail) can therefore never block the server's open on `fs_read`, download, share or
+  `fs_write`, and no special file is ever truncated. Fd-level beats a pre-`Stat` guard
+  because a swap racing `code_run` slips past path-level checks (audit finding 9).
 - Quotas checked before write and again on close (bytes may have grown); `FSIZE` rlimit
   enforced too (§9.9); a global free-disk-space floor (5%) pauses uploads, `code_run`, and
   registration with 503 rather than corrupting state (§9.11).

@@ -162,12 +162,21 @@ func mapOpenErr(err error) error {
 		return ErrIsDir
 	case errors.Is(err, unix.ELOOP):
 		return fmt.Errorf("%w: symlink in path", ErrPathUnsafe)
+	case errors.Is(err, unix.ENXIO):
+		// O_WRONLY|O_NONBLOCK on a FIFO nobody is reading: a pipe stands
+		// at this path (audit finding 9).
+		return fmt.Errorf("%w: a pipe or socket stands in the way", ErrPathUnsafe)
 	default:
 		return err
 	}
 }
 
-// OpenFile opens an existing file inside the user's scratchpad.
+// OpenFile opens an existing file inside the user's scratchpad. Only
+// REGULAR files come out: the open carries O_NONBLOCK (so a script-made
+// FIFO cannot block this very open awaiting a partner — audit finding 9)
+// and the type check runs via fstat on the OPENED fd, so a swap racing
+// code_run can't slip past a path-level pre-check the way a Stat-first
+// guard can.
 func OpenFile(root, userID, rel string) (*os.File, error) {
 	or, err := openParent(root, userID, rel)
 	if err != nil {
@@ -178,11 +187,26 @@ func OpenFile(root, userID, rel string) (*os.File, error) {
 		return nil, ErrIsDir
 	}
 	fd, err := unix.Openat(int(or.parent.Fd()), or.final,
-		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, mapOpenErr(err)
 	}
-	return os.NewFile(uintptr(fd), or.final), nil
+	f := os.NewFile(uintptr(fd), or.final)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		_ = f.Close()
+		return nil, mapOpenErr(err)
+	}
+	switch st.Mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		return f, nil
+	case unix.S_IFDIR:
+		_ = f.Close()
+		return nil, ErrIsDir
+	default:
+		_ = f.Close()
+		return nil, fmt.Errorf("%w: %s is a special file (pipe/socket/device)", ErrPathUnsafe, or.final)
+	}
 }
 
 // CreateFile creates or truncates a file inside the user's scratchpad,
@@ -206,13 +230,36 @@ func CreateFile(root, userID, rel string, perms os.FileMode) (*os.File, error) {
 		return nil, err
 	}
 	defer or.parent.Close()
+	// O_NONBLOCK: a FIFO sitting at the target fails fast (ENXIO with no
+	// reader) instead of blocking the open until some reader shows up.
+	// O_TRUNC is deliberately ABSENT — the fd-level type check must run
+	// before anything is truncated (audit finding 9); regular files are
+	// truncated immediately after, via Ftruncate on the pinned fd.
 	fd, err := unix.Openat(int(or.parent.Fd()), or.final,
-		unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
 		uint32(perms.Perm()))
 	if err != nil {
 		return nil, mapOpenErr(err)
 	}
-	return os.NewFile(uintptr(fd), or.final), nil
+	f := os.NewFile(uintptr(fd), or.final)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		_ = f.Close()
+		return nil, mapOpenErr(err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = f.Close()
+		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			return nil, ErrIsDir
+		}
+		return nil, fmt.Errorf("%w: %s is a special file (pipe/socket/device); refusing to open or truncate",
+			ErrPathUnsafe, or.final)
+	}
+	if err := unix.Ftruncate(fd, 0); err != nil {
+		_ = f.Close()
+		return nil, mapOpenErr(err)
+	}
+	return f, nil
 }
 
 // MkdirAll creates the directory chain rel inside the user's scratchpad.
