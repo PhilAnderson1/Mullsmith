@@ -698,9 +698,13 @@ open registration (startup warns).
   loopback address with TLS off; `cookie_secure: true` impossible on http; `public_url`
   scheme mismatching actual listener; HSTS off under TLS.
 - **Trusted proxies:** `X-Forwarded-For` / `X-Forwarded-Proto` are honored **only** when
-  the TCP peer is inside a `server.trusted_proxies` CIDR; otherwise ignored. This closes
-  client IP spoofing that would otherwise bypass every per-IP rate limit and pollute
-  security logs. The leftmost untrusted XFF hop is the client IP. `X-Forwarded-Proto`
+  the TCP peer is inside a `server.trusted_proxies` CIDR; otherwise ignored. XFF chains
+  are evaluated **right-to-left** (the Cloudflare "rightmost untrusted" rule): appending
+  proxies write the true client to the right of any client-forged prefix, so the client
+  is the first non-trusted hop scanning back from the right — the leftmost rule would
+  instead hand attackers their own forged IP and let them evade per-IP limits
+  (audit finding 2). Malformed or over-long (>16 hops) chains, and all-trusted chains,
+  fall back to the socket peer. `X-Forwarded-Proto`
   from a trusted proxy sets the `Secure` cookie decision.
 - TLS floor: 1.2 minimum, prefer 1.3; modern curve/cipher suites; session tickets off.
 - Backups (sqlite copy + scratchpad copy) contain **all user PII and chat** — README

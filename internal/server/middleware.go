@@ -83,26 +83,39 @@ func logRequests(next http.Handler, logger *slog.Logger) http.Handler {
 	})
 }
 
+// maxXFFHops bounds a forwarded chain's length. A legitimate chain is
+// "client, ...internal hops..." — a handful at most; anything longer is a
+// junk-filled attempt to hide inside the header.
+const maxXFFHops = 16
+
 // ClientIP resolves the caller address. X-Forwarded-For is honored only when
-// the TCP peer is a trusted proxy (spec §9.10): the leftmost hop that is not
-// itself trusted is the client.
+// the TCP peer is a trusted proxy (spec §9.10), and the chain is then
+// evaluated RIGHT-TO-LEFT: appending proxies (nginx et al.) write the true
+// client address to the RIGHT of whatever the client forged, so the client
+// is the first non-trusted hop found scanning back from the right. The
+// leftmost-untrusted rule instead returns the attacker's own prefix
+// (audit finding 2). Malformed or over-long chains, and chains whose hops
+// are all trusted, fall back to the socket peer — the only address actually
+// observed.
 func ClientIP(r *http.Request) string {
 	peer := peerAddr(r)
-	if len(trustedFrom(r.Context())) == 0 || peer == nil || !ipTrusted(*peer, trustedFrom(r.Context())) {
+	trusted := trustedFrom(r.Context())
+	if len(trusted) == 0 || peer == nil || !ipTrusted(*peer, trusted) {
 		return peerString(peer)
 	}
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff == "" {
+	// Values() joins repeated header lines in wire order; nginx's
+	// proxy_add_x_forwarded_for appends the real client to the last one.
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	if len(hops) > maxXFFHops {
 		return peerString(peer)
 	}
-	for _, hop := range strings.Split(xff, ",") {
-		hop = strings.TrimSpace(hop)
-		addr, err := netip.ParseAddr(hop)
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
 		if err != nil {
-			continue
+			return peerString(peer) // junk at the observed end: trust only the peer
 		}
 		addr = addr.Unmap()
-		if !ipTrusted(addr, trustedFrom(r.Context())) {
+		if !ipTrusted(addr, trusted) {
 			return addr.String()
 		}
 	}

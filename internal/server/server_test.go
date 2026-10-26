@@ -239,7 +239,7 @@ func TestMethodNotAllowed(t *testing.T) {
 func TestClientIPTrustedProxies(t *testing.T) {
 	// Helper to run ClientIP behind the securityHeaders middleware (which
 	// injects trusted nets into the context).
-	resolve := func(nets []netip.Prefix, xff string) string {
+	resolve := func(nets []netip.Prefix, xff ...string) string {
 		cfg := testCfg()
 		cfg.TrustedNets = nets
 		var got string
@@ -249,8 +249,8 @@ func TestClientIPTrustedProxies(t *testing.T) {
 		h = securityHeaders(cfg)(h)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.RemoteAddr = "127.0.0.1:5555"
-		if xff != "" {
-			req.Header.Set("X-Forwarded-For", xff)
+		for _, v := range xff {
+			req.Header.Add("X-Forwarded-For", v)
 		}
 		h.ServeHTTP(httptest.NewRecorder(), req)
 		return got
@@ -262,9 +262,63 @@ func TestClientIPTrustedProxies(t *testing.T) {
 	}
 
 	trusted := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
-	// Trusted proxy passes a public client: leftmost untrusted hop wins.
+
+	// Trusted proxy passes a public client (untrusted) — resolves to it.
 	if got := resolve(trusted, "203.0.113.7, 127.0.0.1"); got != "203.0.113.7" {
 		t.Errorf("trusted proxy: ClientIP = %q, want 203.0.113.7", got)
+	}
+
+	// Audit finding 2: an appending proxy puts the REAL client rightmost,
+	// after the attacker's forged prefix. Right-to-left must answer with
+	// the real client, never the forged one.
+	if got := resolve(trusted, "1.2.3.4, 198.51.100.9"); got != "198.51.100.9" {
+		t.Errorf("spoofed prefix: ClientIP = %q, want 198.51.100.9 (the appended real client)", got)
+	}
+
+	// Interior trusted hops are skipped over, right to left.
+	nets2 := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8")}
+	if got := resolve(nets2, "203.0.113.9, 10.0.0.5, 127.0.0.1"); got != "203.0.113.9" {
+		t.Errorf("trusted interior hop: ClientIP = %q, want 203.0.113.9", got)
+	}
+
+	// Every hop trusted ⇒ only the peer is a defensible answer.
+	if got := resolve(nets2, "127.0.0.1, 10.0.0.1"); got != "127.0.0.1" {
+		t.Errorf("all-trusted chain: ClientIP = %q, want peer 127.0.0.1", got)
+	}
+
+	// Junk at the observed (right) end: the chain was not completed by the
+	// proxy, so nothing left of the junk is trustworthy — peer wins even
+	// though 203.0.113.9 parses.
+	if got := resolve(trusted, "203.0.113.9, evil"); got != "127.0.0.1" {
+		t.Errorf("malformed right end: ClientIP = %q, want peer 127.0.0.1", got)
+	}
+
+	// Junk left of the real client is harmless: the walk resolves before
+	// reaching it.
+	if got := resolve(trusted, "garbage, nonsense, 203.0.113.5"); got != "203.0.113.5" {
+		t.Errorf("junk left of client: ClientIP = %q, want 203.0.113.5", got)
+	}
+
+	// Over-long chains are junk by definition ⇒ peer.
+	long := strings.Repeat("1.1.1.1, ", maxXFFHops) + "203.0.113.2"
+	if got := resolve(trusted, long); got != "127.0.0.1" {
+		t.Errorf("over-long chain: ClientIP = %q, want peer 127.0.0.1", got)
+	}
+
+	// Repeated header lines are joined in wire order; the proxy appended
+	// the real client to the last line, so the forged first line loses.
+	if got := resolve(trusted, "9.9.9.9", "198.51.100.7"); got != "198.51.100.7" {
+		t.Errorf("two header lines: ClientIP = %q, want 198.51.100.7", got)
+	}
+
+	// IPv4-mapped IPv6 is reported as plain IPv4.
+	if got := resolve(trusted, "::ffff:203.0.113.7"); got != "203.0.113.7" {
+		t.Errorf("mapped v6: ClientIP = %q, want 203.0.113.7", got)
+	}
+
+	// No header at all ⇒ peer.
+	if got := resolve(trusted); got != "127.0.0.1" {
+		t.Errorf("no XFF: ClientIP = %q, want peer 127.0.0.1", got)
 	}
 }
 
