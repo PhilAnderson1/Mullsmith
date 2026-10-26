@@ -333,13 +333,13 @@ func TestCodeRunRegistrationGating(t *testing.T) {
 
 	cfg := base()
 	cfg.Scratchpad.CodeExec.Enabled = false
-	if _, ok := BuildFor(cfg, discardLogger(), nil, nil, fr, nil).Get("code_run"); ok {
+	if _, ok := BuildFor(cfg, discardLogger(), nil, fr, nil).Get("code_run"); ok {
 		t.Error("code_run registered while code execution is disabled (§9.9 layer 1)")
 	}
-	if _, ok := BuildFor(base(), discardLogger(), nil, nil, nil, nil).Get("code_run"); ok {
+	if _, ok := BuildFor(base(), discardLogger(), nil, nil, nil).Get("code_run"); ok {
 		t.Error("code_run registered without a runner")
 	}
-	if _, ok := BuildFor(base(), discardLogger(), nil, nil, fr, nil).Get("code_run"); !ok {
+	if _, ok := BuildFor(base(), discardLogger(), nil, fr, nil).Get("code_run"); !ok {
 		t.Error("code_run missing when enabled with a runner")
 	}
 }

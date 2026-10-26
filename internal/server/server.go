@@ -106,12 +106,9 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		indexHTML:  versionedIndex(appVer),
 	}
 	// Built after s so the tool layer shares commitMu: upload commits,
-	// fs_write and code_run staging make their quota decisions under one
-	// lock (audit2 finding 3).
-	s.tools = tools.BuildFor(cfg, logger, nil, &artifactSink{
-		db:  db,
-		ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),
-	}, code, &s.commitMu)
+	// fs_write, files_share copies and code_run staging make their quota
+	// decisions under one lock (audit2 finding 3).
+	s.tools = tools.BuildFor(cfg, logger, nil, code, &s.commitMu)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -133,11 +130,8 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	mux.Handle("POST /api/v1/generations/{id}/approvals", s.authRequired(s.handleApproval))
 	mux.Handle("POST /api/v1/files", s.authRequired(s.handleFileUpload))
 	mux.Handle("GET /api/v1/files", s.authRequired(s.handleFileList))
-	mux.Handle("GET /api/v1/files/work", s.authRequired(s.handleWorkList))
-	mux.Handle("GET /api/v1/files/work/download", s.authRequired(s.handleWorkDownload))
-	mux.Handle("DELETE /api/v1/files/work", s.authRequired(s.handleWorkDelete))
-	mux.Handle("GET /api/v1/files/{id}/download", s.authRequired(s.handleFileDownload))
-	mux.Handle("DELETE /api/v1/files/{id}", s.authRequired(s.handleFileDelete))
+	mux.Handle("GET /api/v1/files/download", s.authRequired(s.handleFileDownload))
+	mux.Handle("DELETE /api/v1/files", s.authRequired(s.handleFileDelete))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
 	// Bare "/" is the lowest-priority sink: it catches "/" (index), unknown
 	// paths (JSON 404) and wrong verbs on known paths (JSON 405). Go's
@@ -164,6 +158,24 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 }
 
 func (s *Server) Serve(ln net.Listener) error { return s.httpSrv.Serve(ln) }
+
+// artifactTTL / workTTL: the configured expiry ages with a defensive
+// floor — struct-literal configs (tests, embedders) that never ran
+// config.Load must not mean "expire instantly" or "never expires"
+// (fail-closed doctrine: generated output always expires).
+func (s *Server) artifactTTL() time.Duration {
+	if d := time.Duration(s.cfg.Scratchpad.ArtifactTTL); d > 0 {
+		return d
+	}
+	return 168 * time.Hour
+}
+
+func (s *Server) workTTL() time.Duration {
+	if d := time.Duration(s.cfg.Scratchpad.WorkTTL); d > 0 {
+		return d
+	}
+	return 24 * time.Hour
+}
 
 // Handler exposes the assembled handler chain (used by tests).
 func (s *Server) Handler() http.Handler { return s.httpSrv.Handler }

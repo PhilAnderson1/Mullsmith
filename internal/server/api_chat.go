@@ -14,6 +14,7 @@ import (
 	"gabkeep/internal/config"
 	"gabkeep/internal/id"
 	"gabkeep/internal/llm"
+	"gabkeep/internal/scratch"
 	"gabkeep/internal/store"
 	"gabkeep/internal/tools"
 )
@@ -28,8 +29,8 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Content       string   `json:"content"`
-		AttachmentIDs []string `json:"attachment_ids"`
+		Content         string   `json:"content"`
+		AttachmentPaths []string `json:"attachment_paths"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -43,7 +44,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "message_too_long", "message exceeds the size limit")
 		return
 	}
-	attIDs, ok := s.validateAttachments(w, r, user.ID, body.AttachmentIDs)
+	attPaths, ok := s.validateAttachmentPaths(w, r, user.ID, body.AttachmentPaths)
 	if !ok {
 		return
 	}
@@ -58,68 +59,88 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.AddMessage(bg, user.ID, msg); err != nil {
 			return err
 		}
-		if len(attIDs) > 0 {
-			return s.store.AttachFilesToMessage(bg, msg.ID, user.ID, attIDs)
+		if len(attPaths) > 0 {
+			return s.store.AttachFilesToMessage(bg, msg.ID, user.ID, attPaths)
 		}
 		return nil
 	})
 }
 
-// validateAttachments checks count and ownership up front so a bad id fails
-// with 4xx BEFORE the user message is persisted. Files the user does not own
-// are reported as missing, never as forbidden (§9.2).
-func (s *Server) validateAttachments(w http.ResponseWriter, r *http.Request, userID string, ids []string) ([]string, bool) {
-	if len(ids) == 0 {
+// validateAttachmentPaths checks count, shape and existence up front so a
+// bad path fails with 4xx BEFORE the user message is persisted. A path is
+// accepted only when it is canonical (ParseRel rejoined), at least two
+// segments deep, and inside the session user's uploads/ — ownership is
+// STRUCTURAL: scratch.Stat resolves rel only under this user's tree
+// (§9.7), so another user's file cannot even be addressed, and every
+// rejection answers the same attachment_not_found (§9.2).
+func (s *Server) validateAttachmentPaths(w http.ResponseWriter, r *http.Request, userID string, raws []string) ([]string, bool) {
+	if len(raws) == 0 {
 		return nil, true
 	}
 	max := s.cfg.Limits.MaxAttachments
 	if max <= 0 { // defensive: configs built outside config.Load
 		max = 8
 	}
-	if len(ids) > max {
+	if len(raws) > max {
 		writeAPIError(w, r, http.StatusBadRequest, "too_many_attachments",
 			"at most "+strconv.Itoa(max)+" attachments per message")
 		return nil, false
 	}
-	seen := make(map[string]bool, len(ids))
-	out := make([]string, 0, len(ids))
-	for _, raw := range ids {
-		fid := strings.TrimSpace(raw)
-		if seen[fid] {
-			continue
-		}
-		if !id.Valid(fid) {
+	seen := make(map[string]bool, len(raws))
+	out := make([]string, 0, len(raws))
+	for _, raw := range raws {
+		segs, perr := scratch.ParseRel(strings.TrimSpace(raw))
+		// "../x" never survives ParseRel; "uploads" itself (one segment)
+		// is not a file; anything outside uploads/ is not an attachment.
+		if perr != nil || len(segs) < 2 || segs[0] != "uploads" {
 			writeAPIError(w, r, http.StatusBadRequest, "attachment_not_found",
 				"attachment does not exist")
 			return nil, false
 		}
-		seen[fid] = true
-		if _, err := s.store.GetFileForUser(r.Context(), userID, fid); err != nil {
-			if errors.Is(err, store.ErrFileNotFound) {
+		rel := strings.Join(segs, "/") // the canonical spelling enters the DB
+		if seen[rel] {
+			continue
+		}
+		seen[rel] = true
+		fi, serr := scratch.Stat(s.cfg.Scratchpad.Root, userID, rel)
+		if serr != nil {
+			if errors.Is(serr, scratch.ErrNotFound) || errors.Is(serr, scratch.ErrPathUnsafe) {
 				writeAPIError(w, r, http.StatusBadRequest, "attachment_not_found",
-					"attachment does not exist: "+fid)
+					"attachment does not exist: "+rel)
 			} else {
-				s.logger.Error("attachment lookup", "error", err, "rid", RequestIDFrom(r.Context()))
+				s.logger.Error("attachment stat", "error", serr, "rid", RequestIDFrom(r.Context()))
 				writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 			}
 			return nil, false
 		}
-		out = append(out, fid)
+		if !fi.Mode().IsRegular() { // dirs, FIFOs, symlinks: not attachments
+			writeAPIError(w, r, http.StatusBadRequest, "attachment_not_found",
+				"attachment does not exist: "+rel)
+			return nil, false
+		}
+		out = append(out, rel)
 	}
 	return out, true
 }
 
-// attachmentManifest tells the model where this turn's uploads live so it
-// can fs_read them (§7.3). The manifest is generated server-side; upload
-// CONTENT remains untrusted data.
-func attachmentManifest(files []store.File) string {
+// attachmentManifest tells the model where a turn's uploads live so it can
+// fs_read them (§7.3). The manifest is generated server-side; upload
+// CONTENT remains untrusted data. Size and existence come from the disk —
+// the single source of truth: an upload that vanished since the message
+// was sent is skipped in silence (the historical chat chip stays, the
+// model is simply not told about bytes that are not there).
+func attachmentManifest(root, userID string, atts []store.Attachment) string {
 	var b strings.Builder
 	b.WriteString("\n\n[Attached files — stored in your scratchpad; open them with fs_read:]")
-	for _, f := range files {
-		b.WriteString("\n- name=" + jsonQuote(f.Name) +
-			" path=" + jsonQuote(f.RelPath) +
-			" media=" + f.MediaType +
-			" bytes=" + strconv.FormatInt(f.Size, 10))
+	for _, a := range atts {
+		fi, err := scratch.Stat(root, userID, a.Path)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		b.WriteString("\n- name=" + jsonQuote(a.Name()) +
+			" path=" + jsonQuote(a.Path) +
+			" media=" + scratch.MediaTypeForPath(a.Path) +
+			" bytes=" + strconv.FormatInt(fi.Size(), 10))
 	}
 	return b.String()
 }
@@ -287,7 +308,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			sysPrompt += agent.CodeRunGuidance
 		}
 	}
-	msgs := agent.BuildContext(sysPrompt, historyToLLM(hist, s.tools.Enabled()),
+	msgs := agent.BuildContext(sysPrompt, s.historyToLLM(hist, s.tools.Enabled(), user.ID),
 		s.cfg.LLM.MaxContextTokens, s.cfg.LLM.MaxTokensResponse)
 
 	am := &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
@@ -685,8 +706,9 @@ func (s *Server) finishMessage(_ context.Context, msgID, content, status string,
 // between the two writes therefore degrades to plain text instead of
 // poisoning every later request with an orphan protocol row. When tools are
 // disabled the replay strips all protocol furniture — the endpoint is never
-// told about tools in that mode.
-func historyToLLM(hist []store.Message, toolsEnabled bool) []llm.ChatMessage {
+// told about tools in that mode. userID owns the conversation; it is the
+// sandbox root owner for the attachment manifests.
+func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID string) []llm.ChatMessage {
 	answered := map[string]bool{}
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -727,8 +749,8 @@ func historyToLLM(hist []store.Message, toolsEnabled bool) []llm.ChatMessage {
 			out = append(out, llm.ChatMessage{Role: "assistant", Content: m.Content, ToolCalls: replay})
 		default:
 			content := m.Content
-			if m.Role == "user" && len(m.Files) > 0 {
-				content += attachmentManifest(m.Files)
+			if m.Role == "user" && len(m.Attachments) > 0 {
+				content += attachmentManifest(s.cfg.Scratchpad.Root, userID, m.Attachments)
 			}
 			out = append(out, llm.ChatMessage{Role: m.Role, Content: content})
 		}

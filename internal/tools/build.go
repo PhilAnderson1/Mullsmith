@@ -13,14 +13,15 @@ import (
 // BuildFor assembles the registry from config (§7.1: registration is driven
 // by tools.*.enabled). Disabled or misconfigured tools are skipped with a
 // log line — the chat still runs, just without that capability (§14:
-// search stays disabled until the key exists). The fs_* tools ride the
-// scratchpad and are always available; files_share needs an ArtifactSink;
-// code_run needs a Runner and is registered only when code execution is
-// enabled (§9.9 layer 1: opt-in). quotaMu is the storage-quota lock shared
-// with the server's upload commits (audit2 finding 3); nil serializes
-// nothing (unit tests).
+// search stays disabled until the key exists). The fs_* tools and
+// files_share ride the scratchpad and are always available (sharing is a
+// file copy, nothing to configure); code_run needs a Runner and is
+// registered only when code execution is enabled (§9.9 layer 1: opt-in).
+// quotaMu is the storage-quota lock shared with the server's upload
+// commits (audit2 finding 3); nil serializes nothing (unit tests).
 func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client,
-	artifacts ArtifactSink, code runner.Runner, quotaMu *sync.Mutex) *Registry {
+	code runner.Runner, quotaMu *sync.Mutex,
+) *Registry {
 	reg := NewRegistry(func(name string) string {
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {
 			return p
@@ -60,9 +61,7 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	reg.Register(FsRead{})
 	reg.Register(FsWrite{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
 	reg.Register(FsDelete{})
-	if artifacts != nil {
-		reg.Register(FilesShare{Sink: artifacts})
-	}
+	reg.Register(FilesShare{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
 	if cfg.Scratchpad.CodeExec.Enabled && code != nil {
 		reg.Register(CodeRun{
 			Runner:    code,

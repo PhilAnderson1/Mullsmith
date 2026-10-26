@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -10,23 +9,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"gabkeep/internal/auth"
 	"gabkeep/internal/config"
-	"gabkeep/internal/id"
-	"gabkeep/internal/store"
+	"gabkeep/internal/scratch"
 )
 
 // scratchCfg is authCfg plus the scratchpad knobs (test configs bypass
-// config.Load, so defaults must be set by hand).
+// config.Load, so defaults must be set by hand — the server helpers floor
+// zero TTLs to 168h/24h, but the sweep tests want the values explicit).
 func scratchCfg(t *testing.T) *config.Config {
 	t.Helper()
 	cfg := authCfg(t)
 	cfg.Scratchpad.MaxFileSize = 1 << 20
 	cfg.Scratchpad.UserQuota = 4 << 20
 	cfg.Scratchpad.ArtifactTTL = config.Duration(168 * time.Hour)
+	cfg.Scratchpad.WorkTTL = config.Duration(24 * time.Hour)
 	cfg.Scratchpad.BlockExtensions = []string{".html", ".svg", ".sh", ".exe"}
 	return cfg
 }
@@ -97,10 +98,39 @@ func meID(a *authTest) string {
 	return uid
 }
 
+// seedFile writes a file straight into the user's tree (the way a jailed
+// script or files_share copy would: bytes on disk, nothing else).
+func seedFile(t *testing.T, cfg *config.Config, userID, rel string, content []byte) {
+	t.Helper()
+	f, err := scratch.CreateFile(cfg.Scratchpad.Root, userID, rel, 0o600)
+	if err != nil {
+		t.Fatalf("seed %s: %v", rel, err)
+	}
+	f.Write(content)
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func listItems(t *testing.T, a *authTest, query string) []any {
+	t.Helper()
+	resp := a.do(http.MethodGet, "/api/v1/files"+query, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list %q: %d %v", query, resp.StatusCode, decodedBody(t, resp))
+	}
+	j := decodedBody(t, resp)
+	items, _ := j["items"].([]any)
+	if items == nil {
+		items = []any{}
+	}
+	return items
+}
+
 func TestFileUploadDownloadDelete(t *testing.T) {
 	cfg := scratchCfg(t)
 	a := newAuthTest(t, cfg)
 	signupAs(a, "f@test.io", "gk-code-1")
+	uid := meID(a)
 
 	body := []byte("name,qty\nwidget,3\ngadget,7\n")
 	resp := a.upload("sales.csv", body)
@@ -108,20 +138,18 @@ func TestFileUploadDownloadDelete(t *testing.T) {
 		t.Fatalf("upload: %d %v", resp.StatusCode, decodedBody(t, resp))
 	}
 	j := decodedBody(t, resp)
-	fileID, _ := j["id"].(string)
-	if fileID == "" || j["kind"] != "upload" || j["name"] != "sales.csv" ||
+	// The REAL filename lives on disk (§8): no id-mangles-name anymore.
+	if j["name"] != "sales.csv" || j["path"] != "uploads/sales.csv" ||
 		j["media_type"] != "text/csv" || j["size"].(float64) != float64(len(body)) {
 		t.Fatalf("upload JSON = %v", j)
 	}
 	dl, _ := j["download_url"].(string)
-	if dl != "/api/v1/files/"+fileID+"/download" {
+	if dl != "/api/v1/files/download?path=uploads%2Fsales.csv" {
 		t.Errorf("download_url = %v", dl)
 	}
-
-	// Stored name is the file id (+ext); the display name is metadata (§9.4).
-	row, err := a.db.GetFileForUser(context.Background(), meID(a), fileID)
-	if err != nil || !strings.HasPrefix(row.RelPath, "uploads/"+fileID) || row.Name != "sales.csv" {
-		t.Fatalf("stored row = %+v, %v", row, err)
+	onDisk, err := os.ReadFile(filepath.Join(cfg.Scratchpad.Root, uid, "uploads", "sales.csv"))
+	if err != nil || !bytes.Equal(onDisk, body) {
+		t.Fatalf("bytes on disk: %q, %v", onDisk, err)
 	}
 
 	// Download: forced attachment by default, exact bytes.
@@ -138,8 +166,9 @@ func TestFileUploadDownloadDelete(t *testing.T) {
 		t.Errorf("Content-Type = %q", ct)
 	}
 
-	// Safe type + ?inline=1 ⇒ inline allowed (§9.4 allowlist).
-	resp = a.do(http.MethodGet, dl+"?inline=1", nil)
+	// Safe type + ?inline=1 ⇒ inline allowed (§9.4 allowlist). The URL
+	// already carries ?path=…, so the flag rides on with "&".
+	resp = a.do(http.MethodGet, dl+"&inline=1", nil)
 	resp.Body.Close()
 	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
 		t.Errorf("csv inline: Content-Disposition = %q", cd)
@@ -147,16 +176,22 @@ func TestFileUploadDownloadDelete(t *testing.T) {
 
 	// List shows the file + quota.
 	lj := decodedBody(t, a.do(http.MethodGet, "/api/v1/files", nil))
-	if items, _ := lj["items"].([]any); len(items) != 1 {
+	items, _ := lj["items"].([]any)
+	if len(items) != 1 {
 		t.Fatalf("list = %v", lj)
+	}
+	it := items[0].(map[string]any)
+	if it["kind"] != "upload" || it["path"] != "uploads/sales.csv" || it["name"] != "sales.csv" {
+		t.Errorf("list item = %v", it)
 	}
 	quota, _ := lj["quota"].(map[string]any)
 	if quota["total_bytes"].(float64) != 4<<20 {
 		t.Errorf("quota = %v", quota)
 	}
 
-	// Delete: row and bytes both gone.
-	resp = a.do(http.MethodDelete, "/api/v1/files/"+fileID, nil)
+	// Delete: bytes gone; download and list agree immediately — the disk
+	// is the truth, there is no row left behind to disagree with it.
+	resp = a.do(http.MethodDelete, "/api/v1/files?path=uploads%2Fsales.csv", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: %d", resp.StatusCode)
 	}
@@ -169,6 +204,36 @@ func TestFileUploadDownloadDelete(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(cfg.Scratchpad.Root, "*", "uploads", "*"))
 	if len(matches) != 0 {
 		t.Errorf("physical file survived delete: %v", matches)
+	}
+	if items := listItems(t, a, ""); len(items) != 0 {
+		t.Errorf("deleted file still listed: %v", items)
+	}
+}
+
+// The collision contract: re-uploading a name bumps to " (N).ext" — two
+// uploads of the same name are TWO files, never an overwrite.
+func TestUploadCollisionBumps(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "bump@test.io", "gk-code-1")
+	uid := meID(a)
+
+	want := []string{"report.txt", "report (1).txt", "report (2).txt"}
+	for i, name := range want {
+		resp := a.upload("report.txt", []byte("v"+string(rune('0'+i))))
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("upload %d: %d", i, resp.StatusCode)
+		}
+		j := decodedBody(t, resp)
+		if j["name"] != name || j["path"] != "uploads/"+name {
+			t.Errorf("upload %d = %v, want name %q", i, j, name)
+		}
+	}
+	for i, name := range want {
+		b, err := os.ReadFile(filepath.Join(cfg.Scratchpad.Root, uid, "uploads", name))
+		if err != nil || string(b) != "v"+string(rune('0'+i)) {
+			t.Errorf("%s content = %q, %v", name, b, err)
+		}
 	}
 }
 
@@ -190,6 +255,11 @@ func TestUploadBlocklist(t *testing.T) {
 		t.Errorf("notes.html.txt: %d, want 201", resp.StatusCode)
 	} else {
 		resp.Body.Close()
+	}
+	// A rejected upload leaves nothing on disk.
+	matches, _ := filepath.Glob(filepath.Join(cfg.Scratchpad.Root, "*", "uploads", "*"))
+	if len(matches) != 1 {
+		t.Errorf("uploads on disk = %v, want only notes.html.txt", matches)
 	}
 }
 
@@ -229,72 +299,296 @@ func TestFileOwnership(t *testing.T) {
 	signupAs(a, "owner@test.io", "gk-code-1")
 
 	resp := a.upload("mine.txt", []byte("secret data"))
-	fileID := decodedBody(t, resp)["id"].(string)
+	defer resp.Body.Close()
+	upPath := decodedBody(t, resp)["path"].(string)
+	if upPath != "uploads/mine.txt" {
+		t.Fatalf("upload path = %v", upPath)
+	}
 
-	// Second user on the same server: cross-user access is a plain 404 and
-	// the file never shows in their list (§9.2).
+	// Second user on the same server. Paths are per-user BY CONSTRUCTION —
+	// the same string resolves inside THEIR tree — so a cross-user probe is
+	// a plain 404 of a file that "does not exist", and the file never shows
+	// in their list (§9.2).
 	b := newAuthTestOn(t, a.ts, a.db)
 	signupAs(b, "other@test.io", "gk-code-2")
 
-	resp = b.do(http.MethodGet, "/api/v1/files/"+fileID+"/download", nil)
+	resp = b.do(http.MethodGet, "/api/v1/files/download?path=uploads%2Fmine.txt", nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("cross-user download: %d, want 404", resp.StatusCode)
 	}
 	resp.Body.Close()
-	resp = b.do(http.MethodDelete, "/api/v1/files/"+fileID, nil)
+	resp = b.do(http.MethodDelete, "/api/v1/files?path=uploads%2Fmine.txt", nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("cross-user delete: %d, want 404", resp.StatusCode)
 	}
 	resp.Body.Close()
-	lj := decodedBody(t, b.do(http.MethodGet, "/api/v1/files", nil))
-	if items, _ := lj["items"].([]any); len(items) != 0 {
+	if items := listItems(t, b, ""); len(items) != 0 {
 		t.Errorf("other user list = %v", items)
+	}
+	// The owner's bytes survived every probe.
+	resp = a.do(http.MethodGet, "/api/v1/files/download?path=uploads%2Fmine.txt", nil)
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(got) != "secret data" {
+		t.Errorf("owner download after probes: %d %q", resp.StatusCode, got)
 	}
 }
 
-// TestInlineNeverForActiveContent: an artifact row whose media_type claims
-// text/plain but whose path ends in .html must still download as an
-// attachment — the extension veto always wins (§9.4).
+// Every path that is not a file inside one of the three layout dirs gets
+// the uniform 404 — including the layout dirs themselves, so nobody can
+// delete "uploads" wholesale.
+func TestFilePathProtections(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "pp@test.io", "gk-code-1")
+	uid := meID(a)
+	seedFile(t, cfg, uid, "work/real.txt", []byte("x"))
+	if err := os.Mkdir(filepath.Join(cfg.Scratchpad.Root, uid, "uploads", "adir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := []string{
+		"", "uploads", "artifacts", "work", // the dirs themselves
+		"../uploads/x", "work/../../etc/passwd", "/etc/passwd",
+		"notes/x.txt",         // not a layout dir
+		"work%2F..%2Fuploads", // traversal, wire-encoded
+		"uploads%2F..%2Fwork", // traversal that would land inside work/ anyway
+		"work//", "..%2Fsecret",
+	}
+	for _, p := range bad {
+		resp := a.do(http.MethodGet, "/api/v1/files/download?path="+p, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("download %q: %d, want 404", p, resp.StatusCode)
+		}
+		resp = a.do(http.MethodDelete, "/api/v1/files?path="+p, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("delete %q: %d, want 404", p, resp.StatusCode)
+		}
+	}
+	// A missing file inside a layout dir is the same 404.
+	resp := a.do(http.MethodGet, "/api/v1/files/download?path=work%2Fgone.txt", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("missing file: %d, want 404", resp.StatusCode)
+	}
+	// uploads/adir untouched; work/real.txt untouched.
+	if _, err := os.Stat(filepath.Join(cfg.Scratchpad.Root, uid, "uploads", "adir")); err != nil {
+		t.Errorf("refused delete touched uploads/adir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Scratchpad.Root, uid, "work", "real.txt")); err != nil {
+		t.Errorf("refused ops touched work/real.txt: %v", err)
+	}
+}
+
+// The §9.4 inline doctrine now on sniffed bytes: an .html file is NEVER
+// inline no matter what its bytes claim; a plain .py may be.
 func TestInlineNeverForActiveContent(t *testing.T) {
 	cfg := scratchCfg(t)
 	a := newAuthTest(t, cfg)
 	signupAs(a, "xss@test.io", "gk-code-1")
 	uid := meID(a)
 
-	rel := "artifacts/report.html"
-	if err := os.MkdirAll(filepath.Join(cfg.Scratchpad.Root, uid, "artifacts"), 0o700); err != nil {
-		t.Fatal(err)
+	seedFile(t, cfg, uid, "artifacts/report.html", []byte("<script>alert(1)</script>"))
+	seedFile(t, cfg, uid, "artifacts/icon.svg", []byte("<svg onload=alert(1)></svg>"))
+	seedFile(t, cfg, uid, "work/tool.py", []byte("print('hi')\n"))
+
+	for _, rel := range []string{"artifacts%2Freport.html", "artifacts%2Ficon.svg"} {
+		resp := a.do(http.MethodGet, "/api/v1/files/download?path="+rel+"&inline=1", nil)
+		resp.Body.Close()
+		if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+			t.Errorf("%s must never be inline: %q", rel, cd)
+		}
 	}
-	os.WriteFile(filepath.Join(cfg.Scratchpad.Root, uid, rel),
-		[]byte("<script>alert(1)</script>"), 0o600)
-	fake := &store.File{ID: id.New(), UserID: uid, Kind: store.FileKindArtifact,
-		RelPath: rel, MediaType: "text/plain", Name: "report.html", Size: 25,
-		SHA256: []byte("00000000000000000000000000000000"), CreatedAt: time.Now()}
-	if err := a.db.CreateFile(context.Background(), fake); err != nil {
-		t.Fatal(err)
-	}
-	resp := a.do(http.MethodGet, "/api/v1/files/"+fake.ID+"/download?inline=1", nil)
+	resp := a.do(http.MethodGet, "/api/v1/files/download?path=work%2Ftool.py&inline=1", nil)
 	resp.Body.Close()
-	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
-		t.Errorf("html artifact inline attempt: Content-Disposition = %q", cd)
+	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
+		t.Errorf("txt-safe py inline: Content-Disposition = %q", cd)
 	}
 }
 
-func TestSanitizeDisplayName(t *testing.T) {
+// One physical walk per directory: kinds come from the directory, hidden
+// entries and special files never appear, folders are listed (even empty)
+// so they are manageable instead of litter, filters are the plural
+// directory names, and artifacts carry a computed expires_at.
+func TestListKindsFiltersAndFolders(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "lk@test.io", "gk-code-1")
+	uid := meID(a)
+	userRoot := filepath.Join(cfg.Scratchpad.Root, uid)
+
+	seedFile(t, cfg, uid, "work/old.txt", []byte("older"))
+	seedFile(t, cfg, uid, "work/proj/deep.txt", []byte("nested"))
+	time.Sleep(20 * time.Millisecond) // guarantee distinct mtimes
+	seedFile(t, cfg, uid, "work/newer.csv", []byte("a,b\n"))
+	seedFile(t, cfg, uid, "work/.hidden", []byte("secret-ish"))
+	seedFile(t, cfg, uid, "artifacts/deliver.md", []byte("# done\n"))
+	if err := os.Mkdir(filepath.Join(userRoot, "work", "empty-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(userRoot, "work", ".hidden-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("newer.csv", filepath.Join(userRoot, "work", "link.csv")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(userRoot, "work", "pipe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	up := a.upload("sales.csv", []byte("a,b\n"))
+	up.Body.Close()
+
+	all := listItems(t, a, "")
+	// 1 upload + 1 artifact + 3 work files + 2 work dirs = 7
+	if len(all) != 7 {
+		t.Fatalf("all items = %v, want 7", all)
+	}
+	byPath := map[string]map[string]any{}
+	for _, it := range all {
+		m, _ := it.(map[string]any)
+		byPath[m["path"].(string)] = m
+	}
+	for _, banned := range []string{"work/.hidden", "work/link.csv", "work/pipe", "work/.hidden-dir"} {
+		if _, ok := byPath[banned]; ok {
+			t.Errorf("hidden/symlink/fifo leaked into list: %v", banned)
+		}
+	}
+	if got := byPath["work/old.txt"]; got == nil || got["kind"] != "work" {
+		t.Errorf("work item = %v", got)
+	}
+	if got := byPath["artifacts/deliver.md"]; got == nil || got["kind"] != "artifact" ||
+		got["expires_at"] == nil || got["expires_at"] == "" {
+		t.Errorf("artifact item must carry expires_at: %v", got)
+	}
+	if got := byPath["uploads/sales.csv"]; got == nil || got["kind"] != "upload" {
+		t.Errorf("upload item = %v", got)
+	}
+	if _, ok := byPath["uploads/sales.csv"]["expires_at"]; ok {
+		t.Error("uploads must never carry an expiry")
+	}
+	// Folder rows: kind "dir", recursive file count, empty included.
+	proj := byPath["work/proj"]
+	if proj == nil || proj["kind"] != "dir" || proj["dir"] != true {
+		t.Fatalf("folder row missing or wrong: %v", proj)
+	}
+	if n, _ := proj["files"].(float64); n != 1 {
+		t.Errorf("work/proj files = %v, want 1", n)
+	}
+	if empty := byPath["work/empty-dir"]; empty == nil || empty["files"].(float64) != 0 {
+		t.Errorf("empty folder row = %v", empty)
+	}
+	// Newest-modified first: the upload landed last.
+	if first := all[0].(map[string]any); first["path"] != "uploads/sales.csv" {
+		t.Errorf("first item = %v, want the fresh upload", first)
+	}
+
+	// Filters are the plural directory names; bogus kinds 400.
+	for kind, want := range map[string]int{"uploads": 1, "artifacts": 1, "work": 5} {
+		items := listItems(t, a, "?kind="+kind)
+		if len(items) != want {
+			t.Errorf("kind=%s items = %v, want %d", kind, items, want)
+		}
+		for _, it := range items {
+			m := it.(map[string]any)
+			if !strings.HasPrefix(m["path"].(string), kind+"/") {
+				t.Errorf("kind=%s leaked %v", kind, m)
+			}
+		}
+	}
+	resp := a.do(http.MethodGet, "/api/v1/files?kind=upload", nil) // singular is not a dir
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("singular kind filter: %d, want 400", resp.StatusCode)
+	}
+
+	// A FIFO would block an open-for-read forever; download refuses it.
+	resp = a.do(http.MethodGet, "/api/v1/files/download?path=work%2Fpipe", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("fifo download: %d, want 404", resp.StatusCode)
+	}
+}
+
+// Directory deletion takes the whole tree with it; siblings and
+// prefix-colliding names are untouched. No rows to clean anywhere — the
+// bytes are the whole story.
+func TestDeleteTree(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "dt@test.io", "gk-code-1")
+	uid := meID(a)
+	userRoot := filepath.Join(cfg.Scratchpad.Root, uid)
+
+	seedFile(t, cfg, uid, "work/del/report.txt", []byte("r"))
+	seedFile(t, cfg, uid, "work/del/nested/deep.txt", []byte("d"))
+	seedFile(t, cfg, uid, "work/keep.txt", []byte("k"))
+	// Prefix collision: starts with "work/del" but is NOT inside it.
+	seedFile(t, cfg, uid, "work/del-report.txt", []byte("kk"))
+	// A %-in-name used to need LIKE-escaping for the row cascade; with no
+	// rows there is nothing to over-match either — but the bytes still
+	// must not leak across directories.
+	seedFile(t, cfg, uid, "work/100%/f.txt", []byte("in"))
+	seedFile(t, cfg, uid, "work/1005/x.txt", []byte("out"))
+
+	for _, rel := range []string{"work%2Fdel", "work%2F100%25"} {
+		resp := a.do(http.MethodDelete, "/api/v1/files?path="+rel, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("tree delete %q: %d", rel, resp.StatusCode)
+		}
+	}
+	for _, gone := range []string{"work/del", "work/100%"} {
+		if _, err := os.Stat(filepath.Join(userRoot, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s survived tree delete: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{"work/keep.txt", "work/del-report.txt", "work/1005/x.txt"} {
+		if _, err := os.Stat(filepath.Join(userRoot, kept)); err != nil {
+			t.Errorf("%s wrongly deleted: %v", kept, err)
+		}
+	}
+}
+
+func TestFileAPIRequiresAuth(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg) // logged out
+	for _, call := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/files"},
+		{http.MethodGet, "/api/v1/files/download?path=work%2Fx"},
+		{http.MethodDelete, "/api/v1/files?path=work%2Fx"},
+		{http.MethodPost, "/api/v1/files"},
+	} {
+		resp := a.raw(call.method, call.path, nil, "")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s: %d, want 401", call.method, call.path, resp.StatusCode)
+		}
+	}
+}
+
+// The disk-name sanitizer: one safe segment, always visible in listings
+// (leading dots are folded away — a dotfile would be an unmanageable
+// ghost), control characters never survive.
+func TestSanitizeUploadName(t *testing.T) {
 	cases := map[string]string{
-		"":                                "upload",
-		"..":                              "upload",
-		".":                               "upload",
+		"":                                "_", // Base("") is "." → dot rule
+		"..":                              "_",
+		".":                               "_",
+		"...x":                            "_x",
+		".env":                            "_env",
 		"   ":                             "upload",
+		"  padded.txt  ":                  "padded.txt",
 		"evil\x00name.txt":                "evil_name.txt",
-		"a/b/c.txt":                       "c.txt",    // basename only
-		`C:\evil\name.txt`:                "name.txt", // windows path → basename
-		"..%2f..%2fsecret":                "..%2f..%2fsecret",
+		"a/b/c.txt":                       "c.txt", // basename only
+		`C:\evil\name.txt`:                "name.txt",
+		"..%2f..%2fsecret":                "_%2f..%2fsecret",
 		strings.Repeat("x", 300) + ".txt": strings.Repeat("x", 196) + ".txt",
 	}
 	for in, want := range cases {
-		if got := sanitizeDisplayName(in); got != want {
-			t.Errorf("sanitizeDisplayName(%q) = %q, want %q", truncStr(in, 20), got, want)
+		if got := sanitizeUploadName(in); got != want {
+			t.Errorf("sanitizeUploadName(%q) = %q, want %q", truncStr(in, 20), got, want)
 		}
 	}
 }

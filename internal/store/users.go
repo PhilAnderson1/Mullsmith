@@ -72,6 +72,26 @@ func scanUser(row row) (*User, error) {
 	return &u, nil
 }
 
+// UserIDs lists every existing user id — the maintenance sweep's liveness
+// set (spec §8): a scratchpad ULID not in this list belongs to nobody and
+// its aged bytes are sweepable.
+func (d *DB) UserIDs(ctx context.Context) ([]string, error) {
+	rows, err := d.sqlDB.QueryContext(ctx, `SELECT id FROM users`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // SetPassword updates the hash and bumps updated_at.
 func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time) error {
 	res, err := d.sqlDB.ExecContext(ctx,

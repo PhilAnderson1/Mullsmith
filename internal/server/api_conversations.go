@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"gabkeep/internal/id"
+	"gabkeep/internal/scratch"
 	"gabkeep/internal/store"
 )
 
@@ -31,7 +32,9 @@ func conversationJSON(c *store.Conversation) map[string]any {
 
 const timeRFC3339 = "2006-01-02T15:04:05Z07:00"
 
-func messageJSON(m *store.Message) map[string]any {
+// messageJSON projects a stored message for the API. userID owns the
+// conversation and is the sandbox owner for the attachment stats.
+func (s *Server) messageJSON(m *store.Message, userID string) map[string]any {
 	j := map[string]any{
 		"id":         m.ID,
 		"role":       m.Role,
@@ -58,12 +61,25 @@ func messageJSON(m *store.Message) map[string]any {
 		}
 		j["tool_calls"] = calls
 	}
-	if len(m.Files) > 0 {
-		files := make([]map[string]any, 0, len(m.Files))
-		for i := range m.Files {
-			files = append(files, fileJSON(&m.Files[i]))
+	if len(m.Attachments) > 0 {
+		// Attachment chips are path pointers: name = disk basename, size
+		// from a stat. A file deleted since the message was sent still
+		// renders (a historical chip whose download 404s — by design, the
+		// row records what WAS attached); it simply carries no size.
+		atts := make([]map[string]any, 0, len(m.Attachments))
+		for _, a := range m.Attachments {
+			item := map[string]any{
+				"name":         a.Name(),
+				"path":         a.Path,
+				"download_url": fileDownloadURL(a.Path),
+			}
+			if fi, err := scratch.Stat(s.cfg.Scratchpad.Root, userID, a.Path); err == nil &&
+				fi.Mode().IsRegular() {
+				item["size"] = fi.Size()
+			}
+			atts = append(atts, item)
 		}
-		j["files"] = files
+		j["files"] = atts
 	}
 	return j
 }
@@ -255,7 +271,7 @@ func (s *Server) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 	}
 	out := make([]map[string]any, 0, len(items))
 	for i := range items {
-		out = append(out, messageJSON(&items[i]))
+		out = append(out, s.messageJSON(&items[i], user.ID))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out, "next_cursor": next})
 }

@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,53 +251,102 @@ func TestFsDelete(t *testing.T) {
 	}
 }
 
-type fakeSink struct {
-	recs []ArtifactRecord
-	id   string
-	err  error
+// --- files_share: copy-into-artifacts semantics -----------------------------
+
+func shareAudit(t *testing.T, res Result) (path, name, url, note string, bytes int64) {
+	t.Helper()
+	var a struct {
+		Path  string `json:"path"`
+		Name  string `json:"name"`
+		Bytes int64  `json:"bytes"`
+		URL   string `json:"url"`
+		Note  string `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(res.Content), &a); err != nil {
+		t.Fatalf("audit JSON unparsable: %v (%s)", err, res.Content)
+	}
+	return a.Path, a.Name, a.URL, a.Note, a.Bytes
 }
 
-func (f *fakeSink) RegisterArtifact(_ context.Context, rec ArtifactRecord) (string, error) {
-	f.recs = append(f.recs, rec)
-	return f.id, f.err
+func listNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
 }
 
-func TestFilesShare(t *testing.T) {
+func TestFilesShareCopiesIntoArtifacts(t *testing.T) {
 	root := toolRoot(t)
-	sink := &fakeSink{id: "01FILEID000000000000000000"}
-	share := FilesShare{Sink: sink}
-	writeDirect(t, root, "artifacts/report.md", "# report\n42\n")
+	share := FilesShare{UserQuota: 1 << 20}
+	writeDirect(t, root, "work/report.md", "# report\n42\n")
 
-	invoc := inv(root, argsJSON(t, map[string]string{
-		"path": "artifacts/report.md", "note": "your summary"}))
-	invoc.Conversation = "01CONV000000000000000000"
-	res, err := share.Execute(context.Background(), invoc)
+	res, err := run(t, share, root, argsJSON(t, map[string]string{
+		"path": "work/report.md", "note": "your summary"}))
 	if err != nil {
 		t.Fatalf("files_share: %v", err)
 	}
-	if len(sink.recs) != 1 {
-		t.Fatalf("sink records = %d", len(sink.recs))
+	// The audit JSON alone must reproduce the UI card (§10.2): path, name,
+	// bytes, url, note — and the path must live in artifacts/.
+	dst, name, url, note, bytes := shareAudit(t, res)
+	if dst != "artifacts/report.md" || name != "report.md" || bytes != 12 ||
+		note != "your summary" ||
+		url != "/api/v1/files/download?path=artifacts%2Freport.md" {
+		t.Fatalf("audit payload = %s", res.Content)
 	}
-	rec := sink.recs[0]
-	if rec.UserID != toolUser || rec.RelPath != "artifacts/report.md" ||
-		rec.ConversationID != "01CONV000000000000000000" ||
-		rec.Name != "report.md" || rec.MediaType != "text/markdown" && rec.MediaType != "text/plain" {
-		t.Errorf("sink record = %+v", rec)
+	cp, err := os.ReadFile(filepath.Join(root, toolUser, "artifacts/report.md"))
+	if err != nil || string(cp) != "# report\n42\n" {
+		t.Fatalf("copy on disk = %q, %v", cp, err)
 	}
-	if len(rec.SHA256) != 32 || rec.Size != 12 {
-		t.Errorf("hash/size = %x / %d", rec.SHA256, rec.Size)
+	src, _ := os.ReadFile(filepath.Join(root, toolUser, "work/report.md"))
+	if string(src) != "# report\n42\n" {
+		t.Error("the source must survive the share untouched")
 	}
-	// UI card payload (§10.2): Data.file carries id + download URL.
+	// Data.file feeds the live tool_end SSE event.
 	data, _ := res.Data.(map[string]any)
 	file, _ := data["file"].(map[string]any)
-	if file["id"] != sink.id || file["url"] != "/api/v1/files/"+sink.id+"/download" {
+	if file["path"] != "artifacts/report.md" || file["url"] != url {
 		t.Errorf("card data = %v", data)
 	}
-	if !strings.Contains(res.Content, "/api/v1/files/"+sink.id+"/download") {
-		t.Errorf("model content = %s", res.Content)
+
+	// SNAPSHOT semantics: edit the draft, re-share ⇒ "report (1).md". The
+	// first card keeps pointing at the ORIGINAL bytes.
+	if err := os.WriteFile(filepath.Join(root, toolUser, "work/report.md"),
+		[]byte("# report v2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := run(t, share, root, argsJSON(t, map[string]string{"path": "work/report.md"}))
+	if err != nil {
+		t.Fatalf("re-share: %v", err)
+	}
+	dst2, _, _, _, _ := shareAudit(t, res2)
+	if dst2 != "artifacts/report (1).md" {
+		t.Fatalf("re-share landed at %q, want bumped name", dst2)
+	}
+	if cp, _ := os.ReadFile(filepath.Join(root, toolUser, "artifacts/report.md")); string(cp) != "# report\n42\n" {
+		t.Error("earlier snapshot was overwritten")
 	}
 
-	// Directories and missing files refuse; sink failures sanitize.
+	// Sharing a file that already lives in artifacts/ delivers it in
+	// place: no copy, no second entry.
+	res3, err := run(t, share, root, argsJSON(t, map[string]string{"path": dst}))
+	if err != nil {
+		t.Fatalf("share artifacts file: %v", err)
+	}
+	dst3, _, _, _, _ := shareAudit(t, res3)
+	if dst3 != "artifacts/report.md" {
+		t.Errorf("as-is share moved the deliverable to %q", dst3)
+	}
+	if n := listNames(t, filepath.Join(root, toolUser, "artifacts")); len(n) != 2 {
+		t.Errorf("artifacts dir = %v, want exactly report.md + snapshot", n)
+	}
+
+	// Directories and missing files refuse.
 	if _, err := run(t, share, root, argsJSON(t, map[string]string{"path": "artifacts"})); err == nil ||
 		!strings.Contains(err.Error(), "directory") {
 		t.Errorf("share a dir = %v", err)
@@ -307,21 +355,50 @@ func TestFilesShare(t *testing.T) {
 		!strings.Contains(err.Error(), "not found") {
 		t.Errorf("share missing = %v", err)
 	}
-	sink.err = fmt.Errorf("db down")
-	if _, err := run(t, share, root, argsJSON(t, map[string]string{"path": "artifacts/report.md"})); err == nil ||
-		!strings.Contains(err.Error(), "register") {
-		t.Errorf("sink failure = %v", err)
+	// No staging debris left in the scratch root.
+	leftovers, _ := filepath.Glob(filepath.Join(root, ".share-*"))
+	if len(leftovers) != 0 {
+		t.Errorf("share temps left behind: %v", leftovers)
 	}
-	res2, err := FilesShare{}.Execute(context.Background(), invoc)
-	if err == nil || strings.Contains(res2.Content, "file_id") {
-		t.Errorf("nil sink = %v %v, want configured error", res2, err)
+}
+
+// The share copy is a WRITE: same quota doctrine as fs_write — refused up
+// front when the tree is already full, and rolled back when a copy that
+// slipped past the pre-check crosses the line (audit2 finding 3).
+func TestFilesShareQuota(t *testing.T) {
+	root := toolRoot(t)
+	// Tree: work/a.txt 190 + work/b.txt 50 = 240 used, quota 250. The
+	// pre-check passes (240 < 250), but landing the 50-byte copy crosses
+	// the line ⇒ the fail-closed re-check must delete the copy (§9.7).
+	share := FilesShare{UserQuota: 250}
+	writeDirect(t, root, "work/a.txt", strings.Repeat("x", 190))
+	writeDirect(t, root, "work/b.txt", strings.Repeat("y", 50))
+	_, err := run(t, share, root, argsJSON(t, map[string]string{"path": "work/b.txt"}))
+	if err == nil || !strings.Contains(err.Error(), "quota") {
+		t.Fatalf("over-quota share = %v, want quota error", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, toolUser, "artifacts/b.txt")); !os.IsNotExist(err) {
+		t.Error("over-quota copy must be rolled back")
+	}
+	if _, err := os.Stat(filepath.Join(root, toolUser, "work/b.txt")); err != nil {
+		t.Error("the rollback must not touch the source")
+	}
+
+	// A tree already at/over the line is refused up front: no copy lands.
+	shareFull := FilesShare{UserQuota: 200}
+	if _, err := run(t, shareFull, root, argsJSON(t, map[string]string{"path": "work/b.txt"})); err == nil ||
+		!strings.Contains(err.Error(), "quota") {
+		t.Errorf("share over a full tree = %v, want quota error", err)
+	}
+	entries, _ := os.ReadDir(filepath.Join(root, toolUser, "artifacts"))
+	if len(entries) != 0 {
+		t.Errorf("refused shares still wrote: %v", listNames(t, filepath.Join(root, toolUser, "artifacts")))
 	}
 }
 
 func TestToolsNeedScratchpad(t *testing.T) {
 	// A misassembled invocation (no root) must fail cleanly, not panic.
-	for _, tl := range []Tool{FsList{}, FsRead{}, FsWrite{}, FsDelete{},
-		FilesShare{Sink: &fakeSink{id: "x"}}} {
+	for _, tl := range []Tool{FsList{}, FsRead{}, FsWrite{}, FsDelete{}, FilesShare{}} {
 		_, err := tl.Execute(context.Background(), Invocation{UserID: toolUser, Arguments: `{}`})
 		if err == nil || !strings.Contains(err.Error(), "scratchpad") {
 			t.Errorf("%s with no root = %v", tl.Name(), err)
@@ -346,8 +423,8 @@ func TestMediaTypesAndUtf8Helpers(t *testing.T) {
 		"a/b.csv": "text/csv", "x.md": "text/plain", "no_ext": "application/octet-stream",
 		"IMG.PNG": "image/png", "d.html": "text/html",
 	} {
-		if got := mediaTypeForPath(p); got != want {
-			t.Errorf("mediaTypeForPath(%q) = %q, want %q", p, got, want)
+		if got := scratch.MediaTypeForPath(p); got != want {
+			t.Errorf("MediaTypeForPath(%q) = %q, want %q", p, got, want)
 		}
 	}
 	// humanBytes must stay ASCII-safe for summaries.
@@ -408,8 +485,7 @@ func TestUploadsNamespaceCoversDotPrefixedPaths(t *testing.T) {
 func TestFilesShareRejectsUploads(t *testing.T) {
 	root := toolRoot(t)
 	writeDirect(t, root, "uploads/protected.txt", "user data\n")
-	sink := &fakeSink{id: "01FILEID000000000000000000"}
-	share := FilesShare{Sink: sink}
+	share := FilesShare{UserQuota: 1 << 20}
 
 	for _, p := range []string{"uploads/protected.txt", "./uploads/protected.txt"} {
 		_, err := run(t, share, root, argsJSON(t, map[string]string{"path": p}))
@@ -417,8 +493,10 @@ func TestFilesShareRejectsUploads(t *testing.T) {
 			t.Errorf("share %q: err = %v, want 'already downloadable' refusal", p, err)
 		}
 	}
-	if len(sink.recs) != 0 {
-		t.Errorf("sink received %d records; an uploads path must never reach it", len(sink.recs))
+	// Nothing may appear in artifacts/ from an uploads path (audit
+	// finding 8): the TTL sweep must never reach the user's originals.
+	if n := listNames(t, filepath.Join(root, toolUser, "artifacts")); len(n) != 0 {
+		t.Errorf("artifacts dir = %v, want empty", n)
 	}
 	b, err := os.ReadFile(filepath.Join(root, toolUser, "uploads", "protected.txt"))
 	if err != nil || string(b) != "user data\n" {

@@ -24,9 +24,9 @@ type Message struct {
 	// Calls holds the audit rows for assistant messages that proposed tool
 	// calls (context replay + reload rendering). Read-only projection.
 	Calls []ToolCall
-	// Files holds uploads attached to user messages (context manifest +
-	// UI chips). Read-only projection.
-	Files []File
+	// Attachments holds the uploads a user message was sent with (context
+	// manifest + UI chips). Read-only projection; see attachments.go.
+	Attachments []Attachment
 }
 
 // AddMessage inserts a message and bumps the conversation's updated_at in one
@@ -218,7 +218,7 @@ func (d *DB) attachCalls(ctx context.Context, msgs []Message) error {
 	return nil
 }
 
-// attachFiles fills .Files on user messages that carry uploads.
+// attachFiles fills .Attachments on user messages that carry uploads.
 func (d *DB) attachFiles(ctx context.Context, msgs []Message) error {
 	var ids []string
 	for _, m := range msgs {
@@ -229,13 +229,13 @@ func (d *DB) attachFiles(ctx context.Context, msgs []Message) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	byMsg, err := d.filesForMessages(ctx, ids)
+	byMsg, err := d.attachmentsForMessages(ctx, ids)
 	if err != nil {
 		return err
 	}
 	for i := range msgs {
-		if fs, ok := byMsg[msgs[i].ID]; ok {
-			msgs[i].Files = fs
+		if as, ok := byMsg[msgs[i].ID]; ok {
+			msgs[i].Attachments = as
 		}
 	}
 	return nil
