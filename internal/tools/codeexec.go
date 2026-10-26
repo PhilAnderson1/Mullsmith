@@ -40,6 +40,10 @@ type CodeRun struct {
 	// DiskFloor overrides the global free-space probe (test seam;
 	// nil = scratch.DiskFloorOK).
 	DiskFloor func(root string) bool
+	// QuotaMu is the quota lock shared with upload commits and fs_write
+	// (audit2 finding 3); nil leaves staging's quota decision unserialized
+	// (unit tests only).
+	QuotaMu *sync.Mutex
 }
 
 // storageWatchInterval is how often a running script's storage footprint is
@@ -199,22 +203,35 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if !scratch.DiskFloorOK(root) {
 		return Result{}, errors.New("server storage is nearly full")
 	}
+	// Quota pre-flight, the staging size pre-check and the staging copies
+	// are one critical section with upload commits and fs_write: fresh
+	// usage only means something while the lock is held (audit2 finding 3).
+	unlock := lockQuota(c.QuotaMu)
 	if err := checkQuota(root, inv.UserID, c.UserQuota); err != nil {
+		unlock()
 		return Result{}, err
 	}
 
 	userRoot, err := scratch.UserRoot(root, inv.UserID)
 	if err != nil {
+		unlock()
 		return Result{}, fsErr("code_run", err)
 	}
 	workDir := path.Join(userRoot, "work")
 	if err := scratch.EnsureUserDirs(root, inv.UserID); err != nil {
+		unlock()
 		return Result{}, errors.New("code_run: could not prepare work directory")
 	}
 	if len(args.Files) > maxStagedFiles {
+		unlock()
 		return Result{}, fmt.Errorf("code_run: at most %d files may be staged", maxStagedFiles)
 	}
+	if err := precheckStagedSizes(root, inv.UserID, args.Files, c.UserQuota); err != nil {
+		unlock()
+		return Result{}, err
+	}
 	staged, err := stageFiles(root, inv.UserID, workDir, args.Files)
+	unlock()
 	if err != nil {
 		return Result{}, err
 	}
@@ -242,6 +259,16 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		// Runner errors are already operator-sanitized (busy, sandbox
 		// refusal); surface them to the model as a tool failure.
 		return Result{}, fmt.Errorf("code_run: %w", err)
+	}
+	// The poller may never have ticked for a short run — the audit wrote
+	// 2 KiB against a 1 KiB quota and was told "success". Weigh the tree
+	// once at run end so overruns are reported truthfully; partial output
+	// is kept (§9.9) and the ordinary pre-checks hold the user in arrears
+	// until they clean up (audit2 finding 3).
+	if c.UserQuota > 0 {
+		if over, derr := scratch.DirSizeExceeds(root, inv.UserID, c.UserQuota); derr == nil && over {
+			return Result{}, errors.New("code_run: storage quota exceeded during run; partial output kept — free space before the next run")
+		}
 	}
 
 	payload := map[string]any{
@@ -294,6 +321,46 @@ func runtimeIDs(rs []config.Runtime) []string {
 		ids = append(ids, r.ID)
 	}
 	return ids
+}
+
+// precheckStagedSizes sums staged sources BEFORE any copy: each staged file
+// doubles its bytes inside the user tree, so staging alone could overrun the
+// quota before a script ran (audit2 finding 3). Called with the quota lock
+// held, so "fresh usage" means what it says. Overwriting an existing
+// work/<name> is counted conservatively (against the safe direction).
+func precheckStagedSizes(root, userID string, rels []string, quota int64) error {
+	if quota <= 0 {
+		return nil
+	}
+	var add int64
+	for _, rel := range rels {
+		rel = strings.TrimSpace(rel)
+		if rel == "" {
+			continue
+		}
+		f, err := scratch.OpenFile(root, userID, rel) // same sandbox as the copy
+		if err != nil {
+			return fsErr("code_run stage", err)
+		}
+		fi, serr := f.Stat()
+		_ = f.Close()
+		if serr != nil {
+			return fsErr("code_run stage", serr)
+		}
+		add += fi.Size()
+	}
+	if add == 0 {
+		return nil
+	}
+	used, err := scratch.DirSize(root, userID)
+	if err != nil {
+		return errors.New("quota check failed")
+	}
+	if used+add > quota {
+		return fmt.Errorf("code_run: staging %s would exceed the storage quota (%s used)",
+			humanBytes(add), humanBytes(used))
+	}
+	return nil
 }
 
 // stageFiles copies scratchpad-relative source files into work/ so the

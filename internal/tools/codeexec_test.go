@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"gabkeep/internal/config"
 	"gabkeep/internal/runner"
+	"gabkeep/internal/scratch"
 )
 
 // fakeRunner records the last request and replays a canned outcome — the
@@ -24,12 +27,18 @@ type fakeRunner struct {
 	calls   int
 	out     runner.Outcome
 	err     error
+	// side simulates what a script does to the tree: it runs inside the
+	// run window, before the outcome is returned (audit2 finding 3 repro).
+	side func(req runner.Request)
 }
 
 func (f *fakeRunner) Run(ctx context.Context, userID string, req runner.Request) (runner.Outcome, error) {
 	f.calls++
 	f.gotUser = userID
 	f.gotReq = req
+	if f.side != nil {
+		f.side(req)
+	}
 	return f.out, f.err
 }
 
@@ -234,6 +243,85 @@ func TestCodeRunQuotaRefusal(t *testing.T) {
 	}
 }
 
+// --- audit2 finding 3: final weigh-in, staging pre-check, shared lock -------
+
+// The audit's repro: a script finishes INSIDE the first watchdog interval
+// with the tree past quota. The poller can never see it, so the run-end
+// weigh-in must report the overrun truthfully — while keeping the partial
+// output on disk (§9.9 arrears policy).
+func TestCodeRunShortOverrunReported(t *testing.T) {
+	root := toolRoot(t)
+	fr := &fakeRunner{
+		out: runner.Outcome{ExitCode: 0, Stdout: "done\n"},
+		side: func(req runner.Request) {
+			if err := os.WriteFile(filepath.Join(req.WorkDir, "overrun.bin"),
+				[]byte(strings.Repeat("x", 2048)), 0o600); err != nil {
+				t.Error(err)
+			}
+		},
+	}
+	tool := codeTool(fr, 1024) // 2,048 written under a 1,024 quota
+	tool.WatchInterval = time.Hour
+	_, err := run(t, tool, root, `{"runtime":"sh","script":"true"}`)
+	if err == nil || !strings.Contains(err.Error(), "quota exceeded during run") {
+		t.Errorf("err = %v, want a truthful overrun report", err)
+	}
+	if _, serr := os.Stat(filepath.Join(root, toolUser, "work", "overrun.bin")); serr != nil {
+		t.Errorf("partial output must be kept, not deleted: %v", serr)
+	}
+}
+
+// Staging doubles bytes in the user tree; the pre-check must refuse BEFORE
+// any copy lands, so gabkeep's own copies can never be the overrun.
+func TestCodeRunStagingRefusedBeforeCopy(t *testing.T) {
+	root := toolRoot(t)
+	writeDirect(t, root, "uploads/big.bin", strings.Repeat("a", 5000))
+	writeDirect(t, root, "work/filler.bin", strings.Repeat("b", 3000))
+	fr := &fakeRunner{}
+	_, err := run(t, codeTool(fr, 10_000), root,
+		`{"runtime":"sh","script":"true","files":["uploads/big.bin"]}`)
+	if err == nil || !strings.Contains(err.Error(), "staging") ||
+		!strings.Contains(err.Error(), "quota") {
+		t.Errorf("err = %v, want a staging quota refusal", err)
+	}
+	if fr.calls != 0 {
+		t.Error("runner ran despite staging refusal")
+	}
+	if _, serr := os.Stat(filepath.Join(root, toolUser, "work", "big.bin")); serr == nil {
+		t.Error("staged copy landed despite refusal")
+	}
+}
+
+// Uploads, fs_write and staging share one quota lock, so individually-passing
+// writes cannot jointly overrun. Concurrent fs_write under -race is the
+// cheap stand-in for the three-way mix: final usage must never exceed quota.
+func TestSharedQuotaLockHoldsUnderConcurrentWrites(t *testing.T) {
+	root := toolRoot(t)
+	var mu sync.Mutex
+	const quota = 1000
+	content := strings.Repeat("z", 100)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			w := FsWrite{UserQuota: quota, QuotaMu: &mu}
+			args := argsJSON(t, map[string]string{
+				"path": fmt.Sprintf("work/f%02d.txt", i), "content": content,
+			})
+			_, _ = w.Execute(context.Background(), inv(root, args))
+		}(i)
+	}
+	wg.Wait()
+	used, err := scratch.DirSize(root, toolUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used > quota {
+		t.Errorf("joint writers overran: %d used under a %d-byte quota", used, quota)
+	}
+}
+
 func TestCodeRunRegistrationGating(t *testing.T) {
 	fr := &fakeRunner{}
 	base := func() *config.Config {
@@ -245,13 +333,13 @@ func TestCodeRunRegistrationGating(t *testing.T) {
 
 	cfg := base()
 	cfg.Scratchpad.CodeExec.Enabled = false
-	if _, ok := BuildFor(cfg, discardLogger(), nil, nil, fr).Get("code_run"); ok {
+	if _, ok := BuildFor(cfg, discardLogger(), nil, nil, fr, nil).Get("code_run"); ok {
 		t.Error("code_run registered while code execution is disabled (§9.9 layer 1)")
 	}
-	if _, ok := BuildFor(base(), discardLogger(), nil, nil, nil).Get("code_run"); ok {
+	if _, ok := BuildFor(base(), discardLogger(), nil, nil, nil, nil).Get("code_run"); ok {
 		t.Error("code_run registered without a runner")
 	}
-	if _, ok := BuildFor(base(), discardLogger(), nil, nil, fr).Get("code_run"); !ok {
+	if _, ok := BuildFor(base(), discardLogger(), nil, nil, fr, nil).Get("code_run"); !ok {
 		t.Error("code_run missing when enabled with a runner")
 	}
 }

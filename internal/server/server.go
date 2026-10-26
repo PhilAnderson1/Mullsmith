@@ -39,9 +39,10 @@ type Server struct {
 	hashGate *auth.HashGate
 	// uploadSem bounds in-flight uploads across ALL users — temp files and
 	// quota decisions together; nil = unbounded (limits.concurrent_uploads:
-	// 0). commitMu serializes each upload's fresh-usage-check-then-rename so
-	// concurrent requests can never spend the same bytes twice (audit
-	// finding 5).
+	// 0). commitMu serializes every application-managed quota decision —
+	// each upload's fresh-usage-check-then-rename, fs_write's write
+	// section, and code_run staging — so concurrent writers can never spend
+	// the same bytes twice (audit finding 5, extended by audit2 finding 3).
 	uploadSem chan struct{}
 	commitMu  sync.Mutex
 }
@@ -101,11 +102,14 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		remembered: newApprovalMemory(),
 		hashGate:   buildHashGate(cfg),
 		uploadSem:  buildUploadGate(cfg),
-		tools: tools.BuildFor(cfg, logger, nil, &artifactSink{
-			db:  db,
-			ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),
-		}, code),
 	}
+	// Built after s so the tool layer shares commitMu: upload commits,
+	// fs_write and code_run staging make their quota decisions under one
+	// lock (audit2 finding 3).
+	s.tools = tools.BuildFor(cfg, logger, nil, &artifactSink{
+		db:  db,
+		ttl: time.Duration(cfg.Scratchpad.ArtifactTTL),
+	}, code, &s.commitMu)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)

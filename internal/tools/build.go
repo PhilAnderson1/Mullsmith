@@ -3,6 +3,7 @@ package tools
 import (
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"gabkeep/internal/config"
@@ -15,9 +16,11 @@ import (
 // search stays disabled until the key exists). The fs_* tools ride the
 // scratchpad and are always available; files_share needs an ArtifactSink;
 // code_run needs a Runner and is registered only when code execution is
-// enabled (§9.9 layer 1: opt-in).
+// enabled (§9.9 layer 1: opt-in). quotaMu is the storage-quota lock shared
+// with the server's upload commits (audit2 finding 3); nil serializes
+// nothing (unit tests).
 func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client,
-	artifacts ArtifactSink, code runner.Runner) *Registry {
+	artifacts ArtifactSink, code runner.Runner, quotaMu *sync.Mutex) *Registry {
 	reg := NewRegistry(func(name string) string {
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {
 			return p
@@ -55,7 +58,7 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	// construction (config validation + EnsureDirs at startup).
 	reg.Register(FsList{})
 	reg.Register(FsRead{})
-	reg.Register(FsWrite{UserQuota: int64(cfg.Scratchpad.UserQuota)})
+	reg.Register(FsWrite{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
 	reg.Register(FsDelete{})
 	if artifacts != nil {
 		reg.Register(FilesShare{Sink: artifacts})
@@ -67,6 +70,7 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 			Timeout:   cfg.Scratchpad.CodeExec.Timeout.D(),
 			MaxOutput: int(cfg.Scratchpad.CodeExec.MaxOutput),
 			UserQuota: int64(cfg.Scratchpad.UserQuota),
+			QuotaMu:   quotaMu,
 		})
 	}
 

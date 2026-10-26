@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"gabkeep/internal/scratch"
@@ -62,6 +63,19 @@ func checkQuota(root, userID string, quota int64) error {
 		return errors.New("storage quota exceeded")
 	}
 	return nil
+}
+
+// lockQuota serializes check-then-write quota decisions across every
+// application-managed write path — upload commit (server), fs_write, and
+// code_run staging (audit2 finding 3). Individually-atomic checks that do
+// not share a lock each pass while JOINTLY overrunning. Nil-safe so unit
+// tests and non-sharing embedders stay unchanged.
+func lockQuota(mu *sync.Mutex) func() {
+	if mu == nil {
+		return func() {}
+	}
+	mu.Lock()
+	return mu.Unlock
 }
 
 // parseArgs unmarshals tool arguments; unknown fields are ignored (some
@@ -207,6 +221,9 @@ func (FsRead) Execute(ctx context.Context, inv Invocation) (Result, error) {
 
 type FsWrite struct {
 	UserQuota int64
+	// QuotaMu is the shared quota lock (see lockQuota); nil leaves the
+	// check-then-write sequence unserialized (unit tests only).
+	QuotaMu *sync.Mutex
 }
 
 func (FsWrite) Name() string { return "fs_write" }
@@ -250,6 +267,11 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if !scratch.DiskFloorOK(root) {
 		return Result{}, errors.New("server storage is nearly full")
 	}
+	// Fresh-check → write → re-check is ONE quota-critical section, shared
+	// with upload commits and code_run staging: separately-atomic checks let
+	// joint writers each pass while overrunning together (audit2 finding 3).
+	unlock := lockQuota(w.QuotaMu)
+	defer unlock()
 	if err := checkQuota(root, inv.UserID, w.UserQuota); err != nil {
 		return Result{}, err
 	}
