@@ -91,12 +91,14 @@ limits:
   max_body_bytes: 1MiB
   max_message_chars: 32000
   max_attachments: 8
-  concurrent_streams_per_user: 2
-  concurrent_streams_total: 8     # all users combined (global backstop)
+  concurrent_streams_per_user: 2  # 0 = disabled
+  concurrent_streams_total: 8     # all users combined (global backstop); 0 = disabled
 
 rate_limit:
-  requests_per_minute: 120
-  chat_messages_per_hour: 60
+  # Values below are the program defaults, spelled out so the running
+  # policy is visible here. 0 on either knob disables it.
+  requests_per_minute: 120        # per authenticated user, non-chat endpoints
+  chat_messages_per_hour: 60      # per user
 
 logging:
   level: info                     # debug | info | warn | error

@@ -121,15 +121,18 @@ type TLS struct {
 }
 
 type Limits struct {
-	MaxBodyBytes             Size `yaml:"max_body_bytes"`
-	MaxMessageChars          int  `yaml:"max_message_chars"`
-	MaxAttachments           int  `yaml:"max_attachments"`
-	ConcurrentStreamsPerUser int  `yaml:"concurrent_streams_per_user"`
+	MaxBodyBytes    Size `yaml:"max_body_bytes"`
+	MaxMessageChars int  `yaml:"max_message_chars"`
+	MaxAttachments  int  `yaml:"max_attachments"`
+	// The two caps below are optional pointers so an explicit 0 (disable)
+	// is distinguishable from "unset" (take the hardcoded default):
+	// unset → default, 0 → unlimited, negative → config error (§9.11).
+	ConcurrentStreamsPerUser *int `yaml:"concurrent_streams_per_user"`
 	// ConcurrentStreamsTotal caps generations running at once across ALL
-	// users; the global backstop behind the per-user cap (§9.11). 0 selects
-	// the default — one shared LLM endpoint saturates long before a handful
-	// of users each hit their personal cap.
-	ConcurrentStreamsTotal int `yaml:"concurrent_streams_total"`
+	// users; the global backstop behind the per-user cap (§9.11). One
+	// shared LLM endpoint saturates long before a handful of users each
+	// hit their personal cap.
+	ConcurrentStreamsTotal *int `yaml:"concurrent_streams_total"`
 }
 
 type Database struct {
@@ -238,8 +241,34 @@ type Argon2 struct {
 }
 
 type RateLimit struct {
-	RequestsPerMinute   int `yaml:"requests_per_minute"`
-	ChatMessagesPerHour int `yaml:"chat_messages_per_hour"`
+	// Optional limits: unset → default, 0 → disabled, negative → error.
+	RequestsPerMinute   *int `yaml:"requests_per_minute"`
+	ChatMessagesPerHour *int `yaml:"chat_messages_per_hour"`
+}
+
+// Shipped defaults for the optional caps (limits + rate_limit). Sample and
+// production configs spell these same values out; 0 on any of them turns
+// that single control off (operator's explicit choice, §9.11).
+const (
+	DefaultRequestsPerMinute      = 120
+	DefaultChatMessagesPerHour    = 60
+	DefaultConcurrentStreamsUser  = 2
+	DefaultConcurrentStreamsTotal = 8
+)
+
+// Ptr returns &v — for assigning the optional (pointer) knobs in configs
+// built as struct literals, e.g. tests.
+func Ptr(v int) *int { return &v }
+
+// Deref reads an optional limit knob; nil behaves like 0. After config.Load
+// every knob is non-nil; struct-literal configs (tests) may leave them nil,
+// which then reads as "disabled" — matching the zero-value behaviour these
+// tests were written against.
+func Deref(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 type Logging struct {
@@ -342,11 +371,11 @@ func (c *Config) setDefaults() {
 	if c.Limits.MaxAttachments == 0 {
 		c.Limits.MaxAttachments = 8
 	}
-	if c.Limits.ConcurrentStreamsPerUser == 0 {
-		c.Limits.ConcurrentStreamsPerUser = 2
+	if c.Limits.ConcurrentStreamsPerUser == nil {
+		c.Limits.ConcurrentStreamsPerUser = Ptr(DefaultConcurrentStreamsUser)
 	}
-	if c.Limits.ConcurrentStreamsTotal == 0 {
-		c.Limits.ConcurrentStreamsTotal = 8
+	if c.Limits.ConcurrentStreamsTotal == nil {
+		c.Limits.ConcurrentStreamsTotal = Ptr(DefaultConcurrentStreamsTotal)
 	}
 	if c.Scratchpad.MaxFileSize == 0 {
 		c.Scratchpad.MaxFileSize = 25 << 20
@@ -442,11 +471,14 @@ func (c *Config) setDefaults() {
 	if c.Auth.Argon2 == (Argon2{}) {
 		c.Auth.Argon2 = Argon2{Time: 1, Memory: 65536, Threads: 4}
 	}
-	if c.RateLimit.RequestsPerMinute == 0 {
-		c.RateLimit.RequestsPerMinute = 120
+	// Unset keys fall back to defaults; an explicit 0 stays 0 and disables
+	// that limit (validation rejects negatives). Shipped configs spell the
+	// defaults out so the effective policy is visible at a glance.
+	if c.RateLimit.RequestsPerMinute == nil {
+		c.RateLimit.RequestsPerMinute = Ptr(DefaultRequestsPerMinute)
 	}
-	if c.RateLimit.ChatMessagesPerHour == 0 {
-		c.RateLimit.ChatMessagesPerHour = 60
+	if c.RateLimit.ChatMessagesPerHour == nil {
+		c.RateLimit.ChatMessagesPerHour = Ptr(DefaultChatMessagesPerHour)
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
@@ -521,10 +553,22 @@ func (c *Config) Validate() error {
 		c.TrustedNets = append(c.TrustedNets, prefix)
 	}
 
-	if c.Limits.MaxBodyBytes <= 0 || c.Limits.MaxMessageChars <= 0 ||
-		c.Limits.MaxAttachments <= 0 || c.Limits.ConcurrentStreamsPerUser <= 0 ||
-		c.Limits.ConcurrentStreamsTotal < 0 {
-		f.bad("limits: all values must be > 0 (concurrent_streams_total may be 0 for the default)")
+	if c.Limits.MaxBodyBytes <= 0 || c.Limits.MaxMessageChars <= 0 || c.Limits.MaxAttachments <= 0 {
+		f.bad("limits: max_body_bytes, max_message_chars and max_attachments must be > 0")
+	}
+	// Optional caps: 0 disables, anything negative is a typo worth failing on.
+	for _, k := range []struct {
+		name string
+		v    *int
+	}{
+		{"limits.concurrent_streams_per_user", c.Limits.ConcurrentStreamsPerUser},
+		{"limits.concurrent_streams_total", c.Limits.ConcurrentStreamsTotal},
+		{"rate_limit.requests_per_minute", c.RateLimit.RequestsPerMinute},
+		{"rate_limit.chat_messages_per_hour", c.RateLimit.ChatMessagesPerHour},
+	} {
+		if k.v != nil && *k.v < 0 {
+			f.bad("%s: must be >= 0 (0 disables the limit)", k.name)
+		}
 	}
 
 	if c.Database.Dir == "" {

@@ -5,13 +5,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"gabkeep/internal/config"
 )
 
 // --- audit finding 3: the configured limits must actually bite ---------------
 
 func TestUserAPILimitEnforced(t *testing.T) {
 	cfg := scratchCfg(t)
-	cfg.RateLimit.RequestsPerMinute = 3
+	cfg.RateLimit.RequestsPerMinute = config.Ptr(3)
 	a := newAuthTest(t, cfg)
 	signupAs(a, "rl@test.io", "gk-code-1")
 
@@ -35,7 +37,7 @@ func TestUserAPILimitEnforced(t *testing.T) {
 func TestChatStreamExemptFromMinuteBucket(t *testing.T) {
 	fake := newFakeLLM(t, scriptReply("ok"))
 	cfg := chatCfg(t, fake.URL)
-	cfg.RateLimit.RequestsPerMinute = 1 // chat routes must ignore this
+	cfg.RateLimit.RequestsPerMinute = config.Ptr(1) // chat routes must ignore this
 	a := signedInChat(t, cfg)
 
 	// Drain the (non-chat) bucket with an ordinary call, then prove the
@@ -66,7 +68,7 @@ func TestChatHourlyBucket(t *testing.T) {
 		scriptReply("fine")(w, r)
 	})
 	cfg := chatCfg(t, fake.URL)
-	cfg.RateLimit.ChatMessagesPerHour = 2
+	cfg.RateLimit.ChatMessagesPerHour = config.Ptr(2)
 	a := signedInChat(t, cfg)
 
 	for i := 0; i < 2; i++ {
@@ -102,7 +104,7 @@ func TestChatPerUserStreamLimitAtomic(t *testing.T) {
 	defer open()
 
 	cfg := chatCfg(t, fake.URL)
-	cfg.Limits.ConcurrentStreamsPerUser = 1
+	cfg.Limits.ConcurrentStreamsPerUser = config.Ptr(1)
 	a := signedInChat(t, cfg)
 	const shots = 4
 	convs := make([]string, shots)
@@ -166,8 +168,8 @@ func TestChatGlobalStreamCap(t *testing.T) {
 	defer open()
 
 	cfg := chatCfg(t, fake.URL)
-	cfg.Limits.ConcurrentStreamsPerUser = 4 // personal cap must not mask the global one
-	cfg.Limits.ConcurrentStreamsTotal = 1
+	cfg.Limits.ConcurrentStreamsPerUser = config.Ptr(4) // personal cap must not mask the global one
+	cfg.Limits.ConcurrentStreamsTotal = config.Ptr(1)
 	a := signedInChat(t, cfg)
 	c1 := createConv(t, a, map[string]any{"title": "g1"})
 	c2 := createConv(t, a, map[string]any{"title": "g2"})

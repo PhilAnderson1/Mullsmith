@@ -95,6 +95,8 @@ limits:
   max_attachments: 8              # per message
   concurrent_streams_per_user: 2  # parallel SSE generations per user (§9.11)
   concurrent_streams_total: 8     # parallel SSE generations server-wide
+  # limits.* stream caps and rate_limit.* below: values shown are the program
+  # defaults; set a knob to 0 to disable that control, negatives are a config error
 
 database:
   dir: "/var/lib/gabkeep/db"      # gabkeep.db (WAL mode) lives here
@@ -721,6 +723,7 @@ open registration (startup warns).
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
 | Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login/register/password-change |
 | Static/other API | token bucket per authenticated **user** (`rate_limit.requests_per_minute`, 429 + `Retry-After`); user-keyed because the session already proves identity and IP-keying is hostage to NAT/proxy topology. Chat-stream POSTs are exempt — they answer to the hourly chat bucket and the generation caps above |
+| Disabling limits | the four caps (`concurrent_streams_per_user`, `concurrent_streams_total`, `requests_per_minute`, `chat_messages_per_hour`) are three-state: **unset** → program default (2 / 8 / 120 / 60), **0** → disabled by explicit operator choice, **negative** → config error. Shipped config files spell the defaults out so the live policy is readable; login/register throttle buckets are hardcoded and unaffected |
 | Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; `WriteTimeout` disabled only for SSE routes, wrapped per-route otherwise |
 | SSE hygiene | server-side heartbeat comments every 25 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; small reader pool; TTL job deletes bounded per pass (≤ 1 000 rows/files) |

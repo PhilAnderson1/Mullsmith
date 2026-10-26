@@ -125,9 +125,9 @@ func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
 	items, truncated := workEntries(s.cfg.Scratchpad.Root, user.ID, nil)
 	used, _ := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":      items,
-		"truncated":  truncated,
-		"quota":      map[string]any{"used_bytes": used, "total_bytes": int64(s.cfg.Scratchpad.UserQuota)},
+		"items":     items,
+		"truncated": truncated,
+		"quota":     map[string]any{"used_bytes": used, "total_bytes": int64(s.cfg.Scratchpad.UserQuota)},
 	})
 }
 

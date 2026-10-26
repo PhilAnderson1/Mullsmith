@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"gabkeep/internal/agent"
+	"gabkeep/internal/config"
 	"gabkeep/internal/id"
 	"gabkeep/internal/llm"
 	"gabkeep/internal/store"
@@ -223,7 +224,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	// Hourly chat bucket (§9.11 rate_limit.chat_messages_per_hour — was
 	// configured but never enforced, audit finding 3): refused before any
 	// persistence, slot reservation or LLM work.
-	if max := s.cfg.RateLimit.ChatMessagesPerHour; max > 0 &&
+	if max := config.Deref(s.cfg.RateLimit.ChatMessagesPerHour); max > 0 &&
 		!s.limiter.Allow("chat:"+user.ID, max, time.Hour) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(time.Hour.Seconds())))
 		writeAPIError(w, r, http.StatusTooManyRequests, "chat_limited",
@@ -235,7 +236,8 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	// browser goes away.
 	genCtx, cancel := context.WithCancel(context.Background())
 	g, err := s.gens.Start(conv.ID, user.ID,
-		s.cfg.Limits.ConcurrentStreamsPerUser, s.cfg.Limits.ConcurrentStreamsTotal, cancel)
+		config.Deref(s.cfg.Limits.ConcurrentStreamsPerUser),
+		config.Deref(s.cfg.Limits.ConcurrentStreamsTotal), cancel)
 	if err != nil {
 		cancel()
 		switch {

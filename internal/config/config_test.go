@@ -148,6 +148,75 @@ llm:
 	}
 }
 
+// TestOptionalLimitKnobs pins the three-state semantics of the caps:
+// unset → hardcoded default, explicit 0 → disabled, negative → rejected.
+func TestOptionalLimitKnobs(t *testing.T) {
+	load := func(t *testing.T, extra string) *Config {
+		t.Helper()
+		cfg, err := Load(writeCfg(t, minimalYAML+"\n"+extra))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("unset takes defaults", func(t *testing.T) {
+		cfg := load(t, "")
+		if got := Deref(cfg.RateLimit.RequestsPerMinute); got != DefaultRequestsPerMinute {
+			t.Errorf("requests_per_minute = %d, want %d", got, DefaultRequestsPerMinute)
+		}
+		if got := Deref(cfg.RateLimit.ChatMessagesPerHour); got != DefaultChatMessagesPerHour {
+			t.Errorf("chat_messages_per_hour = %d, want %d", got, DefaultChatMessagesPerHour)
+		}
+		if got := Deref(cfg.Limits.ConcurrentStreamsPerUser); got != DefaultConcurrentStreamsUser {
+			t.Errorf("concurrent_streams_per_user = %d, want %d", got, DefaultConcurrentStreamsUser)
+		}
+		if got := Deref(cfg.Limits.ConcurrentStreamsTotal); got != DefaultConcurrentStreamsTotal {
+			t.Errorf("concurrent_streams_total = %d, want %d", got, DefaultConcurrentStreamsTotal)
+		}
+	})
+
+	t.Run("explicit zero disables", func(t *testing.T) {
+		cfg := load(t, `
+limits:
+  concurrent_streams_per_user: 0
+  concurrent_streams_total: 0
+rate_limit:
+  requests_per_minute: 0
+  chat_messages_per_hour: 0
+`)
+		for name, p := range map[string]*int{
+			"concurrent_streams_per_user": cfg.Limits.ConcurrentStreamsPerUser,
+			"concurrent_streams_total":    cfg.Limits.ConcurrentStreamsTotal,
+			"requests_per_minute":         cfg.RateLimit.RequestsPerMinute,
+			"chat_messages_per_hour":      cfg.RateLimit.ChatMessagesPerHour,
+		} {
+			if p == nil || *p != 0 {
+				t.Errorf("%s = %v, want explicit 0 (disabled)", name, p)
+			}
+		}
+	})
+
+	negatives := []struct{ key, wantErr string }{
+		{"limits:\n  concurrent_streams_per_user: -1\n", "limits.concurrent_streams_per_user"},
+		{"limits:\n  concurrent_streams_total: -3\n", "limits.concurrent_streams_total"},
+		{"rate_limit:\n  requests_per_minute: -1\n", "rate_limit.requests_per_minute"},
+		{"rate_limit:\n  chat_messages_per_hour: -1\n", "rate_limit.chat_messages_per_hour"},
+	}
+	for _, tc := range negatives {
+		t.Run("negative rejected: "+tc.key, func(t *testing.T) {
+			_, err := Load(writeCfg(t, minimalYAML+"\n"+tc.key))
+			if err == nil {
+				t.Fatal("negative limit accepted, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) ||
+				!strings.Contains(err.Error(), "0 disables") {
+				t.Errorf("error = %v, want mention of %q and \"0 disables\"", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidationCases(t *testing.T) {
 	cases := []struct {
 		name    string

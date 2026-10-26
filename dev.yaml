@@ -76,10 +76,11 @@ limits:
   max_body_bytes: 1MiB
   max_message_chars: 32000
   max_attachments: 8
-  concurrent_streams_per_user: 2
-  concurrent_streams_total: 8
+  concurrent_streams_per_user: 2  # 0 = disabled
+  concurrent_streams_total: 8     # 0 = disabled
 
 rate_limit:
+  # program defaults spelled out; 0 = disabled
   requests_per_minute: 120
   chat_messages_per_hour: 60
 
