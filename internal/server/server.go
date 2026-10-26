@@ -28,6 +28,7 @@ type Server struct {
 	store      *store.DB
 	logger     *slog.Logger
 	appVer     string
+	indexHTML  []byte // app shell with build-versioned asset URLs, built once
 	limiter    *auth.Limiter
 	locks      *auth.LoginLocks
 	gens       *genRegistry
@@ -102,6 +103,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		remembered: newApprovalMemory(),
 		hashGate:   buildHashGate(cfg),
 		uploadSem:  buildUploadGate(cfg),
+		indexHTML:  versionedIndex(appVer),
 	}
 	// Built after s so the tool layer shares commitMu: upload commits,
 	// fs_write and code_run staging make their quota decisions under one
@@ -230,10 +232,48 @@ func (s *Server) staticAssetsHandler() http.HandlerFunc {
 	})
 }
 
+// versionedIndex is the app shell with a build stamp appended to the
+// /assets/* URLs. Assets cache for an hour (§ middleware cacheControl) and
+// the shell is no-store, so without rotating the URLs a deploy leaves
+// browsers running the PREVIOUS app.js until the cache expires — production
+// proved this: the Files-page ghost-row fix was invisible to a fresh page
+// load for an hour after rollout. Any build (version changes) revives the
+// assets immediately. Returns nil only if the embedded shell is missing,
+// which sinks to the plain file server.
+func versionedIndex(ver string) []byte {
+	b, err := web.FS.ReadFile("index.html")
+	if err != nil {
+		return nil
+	}
+	if ver == "" {
+		return b
+	}
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			return r
+		}
+		return -1
+	}, ver)
+	if safe == "" {
+		return b
+	}
+	h := string(b)
+	h = strings.ReplaceAll(h, `href="/assets/styles.css"`, `href="/assets/styles.css?v=`+safe+`"`)
+	h = strings.ReplaceAll(h, `src="/assets/app/app.js"`, `src="/assets/app/app.js?v=`+safe+`"`)
+	return []byte(h)
+}
+
 // sinkHandler dispatches everything the specific patterns did not match.
 func (s *Server) sinkHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
+			if s.indexHTML != nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = w.Write(s.indexHTML)
+				return
+			}
 			http.ServeFileFS(w, r, web.FS, "index.html")
 			return
 		}

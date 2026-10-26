@@ -156,9 +156,10 @@ func TestIndexServed(t *testing.T) {
 		t.Errorf("index: status %d, body missing brand", resp.StatusCode)
 	}
 	// The SPA loads as an external ES module and carries no inline scripts
-	// or handlers — CSP is script-src 'self' (spec §9.8).
+	// or handlers — CSP is script-src 'self' (spec §9.8). The URL may carry
+	// the ?v= build stamp (TestIndexAssetURLsAreVersioned).
 	html := string(body)
-	if !strings.Contains(html, `type="module" src="/assets/app/app.js"`) {
+	if !strings.Contains(html, `type="module" src="/assets/app/app.js`) {
 		t.Error("index missing module entrypoint")
 	}
 	if strings.Contains(html, "<script>") || strings.Contains(html, " onclick=") {
@@ -351,5 +352,43 @@ func TestBodyLimit(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if !IsBodyTooLarge(readErr) {
 		t.Errorf("expected MaxBytesError, got %v", readErr)
+	}
+}
+
+// The app shell is no-store while assets cache for an hour, so a deploy
+// without URL versioning leaves browsers running the PREVIOUS app.js until
+// expiry — production proved it: a Files-page fix was invisible to a
+// fresh page load for an hour after rollout. Every build (version change)
+// must therefore rotate the asset URLs.
+func TestIndexAssetURLsAreVersioned(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(testCfg(), testStore(t), logger, "abc123", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`/assets/app/app.js?v=abc123"`,
+		`/assets/styles.css?v=abc123"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("served index lacks %q", want)
+		}
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("index Content-Type = %q", ct)
+	}
+	// The stamp rides ldflags (operator input): anything that could break
+	// out of the URL attribute is stripped.
+	v := string(versionedIndex(`1.0 "evil`))
+	if strings.Contains(v, `%22`) || strings.Contains(v, `"evil`) ||
+		!strings.Contains(v, `app.js?v=1.0evil"`) {
+		t.Errorf("version not URL-safe: %q", v)
+	}
+	// No version → shell served unmodified (dev builds, tests).
+	if raw := string(versionedIndex("")); !strings.Contains(raw, `src="/assets/app/app.js"`) {
+		t.Error("empty version altered the shell")
 	}
 }
