@@ -92,6 +92,7 @@ limits:
   max_message_chars: 32000
   max_attachments: 8
   concurrent_streams_per_user: 2
+  concurrent_streams_total: 8     # all users combined (global backstop)
 
 rate_limit:
   requests_per_minute: 120

@@ -109,6 +109,20 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Per-user API token bucket (§9.11 rate_limit.requests_per_minute —
+		// configured but never enforced, audit finding 3). Keyed by user,
+		// not IP: the identity is already proven here, and IP-keying is
+		// hostage to NAT and proxy topology. Chat streaming routes are the
+		// documented exception ("non-chat endpoints") — they answer to the
+		// hourly chat bucket and the generation caps instead.
+		if max := s.cfg.RateLimit.RequestsPerMinute; max > 0 && !isChatStreamRoute(r) &&
+			!s.limiter.Allow("api:"+user.ID, max, time.Minute) {
+			w.Header().Set("Retry-After", "1")
+			writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited",
+				"too many requests, please slow down")
+			return
+		}
+
 		now := time.Now()
 		if lookup.Remembered {
 			half := s.cfg.Auth.RememberTTL.D() / 2
@@ -130,6 +144,18 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), authCtxKey{}, authInfo{user: user, session: lookup})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// isChatStreamRoute matches the two POST routes that start an SSE
+// generation (send / regenerate). They are exempt from the per-minute API
+// bucket by spec design; see the hourly bucket in streamAssistant.
+func isChatStreamRoute(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	p := r.URL.Path
+	return (strings.HasPrefix(p, "/api/v1/conversations/") && strings.HasSuffix(p, "/messages")) ||
+		(strings.HasPrefix(p, "/api/v1/messages/") && strings.HasSuffix(p, "/regenerate"))
 }
 
 // authRequired wraps a handler with session auth.

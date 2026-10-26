@@ -220,20 +220,35 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 ) {
 	user := UserFrom(r.Context())
 
-	if max := s.cfg.Limits.ConcurrentStreamsPerUser; max > 0 && s.gens.CountForUser(user.ID) >= max {
-		writeAPIError(w, r, http.StatusTooManyRequests, "too_many_streams",
-			"you already have the maximum number of generations running")
+	// Hourly chat bucket (§9.11 rate_limit.chat_messages_per_hour — was
+	// configured but never enforced, audit finding 3): refused before any
+	// persistence, slot reservation or LLM work.
+	if max := s.cfg.RateLimit.ChatMessagesPerHour; max > 0 &&
+		!s.limiter.Allow("chat:"+user.ID, max, time.Hour) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(time.Hour.Seconds())))
+		writeAPIError(w, r, http.StatusTooManyRequests, "chat_limited",
+			"hourly message limit reached, please try again later")
 		return
 	}
 
 	// genCtx lives independent of r.Context(); a watcher cancels it when the
 	// browser goes away.
 	genCtx, cancel := context.WithCancel(context.Background())
-	g, err := s.gens.Start(conv.ID, user.ID, cancel)
+	g, err := s.gens.Start(conv.ID, user.ID,
+		s.cfg.Limits.ConcurrentStreamsPerUser, s.cfg.Limits.ConcurrentStreamsTotal, cancel)
 	if err != nil {
 		cancel()
-		writeAPIError(w, r, http.StatusConflict, "generation_in_progress",
-			"a reply is already being generated in this conversation")
+		switch {
+		case errors.Is(err, errUserStreams):
+			writeAPIError(w, r, http.StatusTooManyRequests, "too_many_streams",
+				"you already have the maximum number of generations running")
+		case errors.Is(err, errGlobalStreams):
+			writeAPIError(w, r, http.StatusServiceUnavailable, "server_busy",
+				"the server is at its generation capacity, try again shortly")
+		default:
+			writeAPIError(w, r, http.StatusConflict, "generation_in_progress",
+				"a reply is already being generated in this conversation")
+		}
 		return
 	}
 

@@ -13,6 +13,12 @@ import (
 // (spec §6.2): the second POST returns 409.
 var errGenerating = errors.New("generation already running for this conversation")
 
+// Capacity refusals from the atomic reservation in Start (§9.11).
+var (
+	errUserStreams   = errors.New("per-user concurrent generation limit reached")
+	errGlobalStreams = errors.New("server generation capacity reached")
+)
+
 type generation struct {
 	ID     string
 	ConvID string
@@ -92,11 +98,28 @@ func newGenRegistry() *genRegistry {
 	return &genRegistry{byConv: map[string]*generation{}, byID: map[string]*generation{}}
 }
 
-func (r *genRegistry) Start(convID, userID string, cancel context.CancelFunc) (*generation, error) {
+func (r *genRegistry) Start(convID, userID string, maxUser, maxGlobal int, cancel context.CancelFunc) (*generation, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, busy := r.byConv[convID]; busy {
 		return nil, errGenerating
+	}
+	// The per-user and global caps are evaluated and reserved in THIS lock
+	// acquisition (audit finding 3): the previous check-then-Start split let
+	// parallel requests for different conversations sail past the user cap.
+	if maxGlobal > 0 && len(r.byID) >= maxGlobal {
+		return nil, errGlobalStreams
+	}
+	if maxUser > 0 {
+		running := 0
+		for _, g := range r.byID {
+			if g.UserID == userID {
+				running++
+			}
+		}
+		if running >= maxUser {
+			return nil, errUserStreams
+		}
 	}
 	g := &generation{ID: id.New(), ConvID: convID, UserID: userID, cancel: cancel}
 	r.byConv[convID] = g

@@ -125,6 +125,11 @@ type Limits struct {
 	MaxMessageChars          int  `yaml:"max_message_chars"`
 	MaxAttachments           int  `yaml:"max_attachments"`
 	ConcurrentStreamsPerUser int  `yaml:"concurrent_streams_per_user"`
+	// ConcurrentStreamsTotal caps generations running at once across ALL
+	// users; the global backstop behind the per-user cap (§9.11). 0 selects
+	// the default — one shared LLM endpoint saturates long before a handful
+	// of users each hit their personal cap.
+	ConcurrentStreamsTotal int `yaml:"concurrent_streams_total"`
 }
 
 type Database struct {
@@ -340,6 +345,9 @@ func (c *Config) setDefaults() {
 	if c.Limits.ConcurrentStreamsPerUser == 0 {
 		c.Limits.ConcurrentStreamsPerUser = 2
 	}
+	if c.Limits.ConcurrentStreamsTotal == 0 {
+		c.Limits.ConcurrentStreamsTotal = 8
+	}
 	if c.Scratchpad.MaxFileSize == 0 {
 		c.Scratchpad.MaxFileSize = 25 << 20
 	}
@@ -514,8 +522,9 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Limits.MaxBodyBytes <= 0 || c.Limits.MaxMessageChars <= 0 ||
-		c.Limits.MaxAttachments <= 0 || c.Limits.ConcurrentStreamsPerUser <= 0 {
-		f.bad("limits: all values must be > 0")
+		c.Limits.MaxAttachments <= 0 || c.Limits.ConcurrentStreamsPerUser <= 0 ||
+		c.Limits.ConcurrentStreamsTotal < 0 {
+		f.bad("limits: all values must be > 0 (concurrent_streams_total may be 0 for the default)")
 	}
 
 	if c.Database.Dir == "" {
