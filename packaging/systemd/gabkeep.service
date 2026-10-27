@@ -14,8 +14,8 @@ Type=simple
 User=gabkeep
 Group=gabkeep
 ExecStart=/usr/local/bin/gabkeep -config /etc/gabkeep/config.yaml
-ExecReload=/bin/kill -HUP $MAINPID
-EnvironmentFile=-/etc/gabkeep/env          # GABKEEP_SEARCH_API_KEY=... (mode 0640)
+# Secrets via EnvironmentFile (mode 0640): GABKEEP_SEARCH_API_KEY=...
+EnvironmentFile=-/etc/gabkeep/env
 
 Restart=on-failure
 RestartSec=2s
@@ -31,7 +31,11 @@ TimeoutStopSec=45
 # below, removed on stop); the "+"-prefixed ExecStartPre runs as root and
 # hands over gabkeep-only copies. Point server.tls.cert_file/key_file at
 # /run/gabkeep/{cert,key}.pem in the config. A certbot deploy hook should
-# `systemctl try-restart gabkeep` so renewals take effect.
+# `systemctl try-restart gabkeep` so renewals take effect. Deliberately NO
+# ExecReload= line: gabkeep reads its cert at startup and does not catch
+# SIGHUP, so the conventional `kill -HUP $MAINPID` would KILL the service
+# (default disposition), not reload it. `systemctl reload` therefore
+# reports "unsupported" — the supported renewal path is try-restart.
 RuntimeDirectory=gabkeep
 RuntimeDirectoryMode=0700
 ExecStartPre=+/bin/sh -c 'install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem)" /run/gabkeep/key.pem && install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem)" /run/gabkeep/cert.pem'
@@ -56,7 +60,9 @@ ProtectKernelModules=true
 # protection that still permits the delegated subtree.
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=false      # Go does not need it but JIT-free W^X breaks nothing; keep off for Go runtime compatibility
+# Go never needs writable-executable memory; keeping W^X enforcement off
+# matches the Go runtime's expectations.
+MemoryDenyWriteExecute=false
 ReadWritePaths=/var/lib/gabkeep
 PrivateTmp=true
 # AF_NETLINK is required, not incidental: bubblewrap creates a net namespace
