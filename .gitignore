@@ -20,3 +20,6 @@ cookies.txt
 # production config /etc/gabkeep, data /var/lib/gabkeep, binary
 # /usr/local/bin/gabkeep)
 /backups/
+
+# agent scratch notes — never tracked
+session.txt
