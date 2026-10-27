@@ -66,9 +66,9 @@ func fileDownloadURL(rel string) string {
 func mediaTypeForUpload(sniff []byte, name string) string {
 	mt := http.DetectContentType(sniff)
 	ext := strings.ToLower(path.Ext(name))
-	// CSV bytes sniff as plain text; the extension disambiguates. Safe to
-	// trust for inline display because the media type comes from us and
-	// nosniff prevents browser reinterpretation.
+	// CSV bytes sniff as plain text; the extension disambiguates. The type
+	// rides on the download so the saved file opens in the right app
+	// (everything is an attachment; nosniff pins the type to what we say).
 	if strings.HasPrefix(mt, "text/plain") && ext == ".csv" {
 		return "text/csv"
 	}
@@ -535,26 +535,16 @@ func fileRelFrom(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return strings.Join(segs, "/"), true
 }
 
-// inlineSafeTypes is the ONLY media types ever served inline (§9.4); html,
-// svg, xhtml and xml are never inline regardless of what is stored — a
-// shared "document" must never execute in the app's origin.
-var inlineSafeTypes = map[string]bool{
-	"text/plain": true, "text/csv": true,
-	"image/png": true, "image/jpeg": true, "image/webp": true,
-	"application/pdf": true,
-}
-
-// neverInlineExts: belt-and-braces beside the media-type allowlist — these
-// extensions are NEVER inline no matter what the bytes claim (§9.4).
-var neverInlineExts = map[string]bool{
-	".html": true, ".htm": true, ".svg": true, ".xhtml": true, ".xml": true,
-}
-
 // handleFileDownload serves any regular file in the three layout dirs.
-// The media type is sniffed on the fly (§9.4) — nothing caches it, the
-// bytes are the truth. Regular files only: a script could plant a FIFO at
-// a path, and opening one for read would block serving until a writer
-// appears.
+// ALWAYS as Content-Disposition: attachment (§9.4): a download is a
+// download, never a page rendered in the app's origin. This is the
+// security anchor under the (now optional) upload extension gate —
+// even a deliberately uploaded .html only ever reaches the browser as a
+// file the user chose to save. The media type is sniffed on the fly —
+// nothing caches it, the bytes are the truth — so the saved file opens
+// with the right application. Regular files only: a script could plant
+// a FIFO at a path, and opening one for read would block serving until
+// a writer appears.
 func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
 	rel, ok := fileRelFrom(w, r)
@@ -581,17 +571,9 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	n, _ := io.ReadFull(f, head)
 	name := path.Base(rel)
 	mt := mediaTypeForUpload(head[:n], name)
-	// The sniffed type may carry parameters ("text/plain; charset=utf-8");
-	// the §9.4 allowlist is keyed on the bare type.
-	base := strings.TrimSpace(strings.Split(mt, ";")[0])
-	inline := r.URL.Query().Get("inline") == "1" && inlineSafeTypes[base] &&
-		!neverInlineExts[strings.ToLower(path.Ext(rel))]
-	disp := "attachment"
-	if inline {
-		disp = "inline"
-	}
 	w.Header().Set("Content-Type", mt)
-	w.Header().Set("Content-Disposition", mineDisposition(disp, name))
+	// Attachment always (§9.4): no query parameter can ask for inline.
+	w.Header().Set("Content-Disposition", mineDisposition("attachment", name))
 	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
 	if r.Method == http.MethodHead {
 		return

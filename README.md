@@ -201,11 +201,12 @@ per line, false-positive justifications included, is
   non-functional bwrap stops gabkeep at startup, never a silent downgrade.
   Files a script produces can be shared back into the chat: assume anyone
   who can approve runs can read/write that user's scratchpad.
-* **Uploads are for download, not browsing.** Uploaded HTML/SVG is stored but
-  only ever served as `Content-Disposition: attachment` — yet once the user
-  downloads and opens it locally, it runs with their local privileges.
-  Extension blocklist + MIME sniffing (`http.DetectContentType`) reduce the
-  worst cases; they are not antivirus.
+* **Uploads are for download, not browsing.** Every download is served as
+  `Content-Disposition: attachment` — uploaded bytes never render inside the
+  app's origin. But once the user downloads and opens a file locally, it runs
+  with their local privileges. The optional `scratchpad.block_extensions`
+  gate keeps chosen types off the disk entirely; it is disk hygiene, not
+  antivirus.
 * **Single process, single SQLite.** Rate limits and per-user caps blunt DoS,
   but one heavy user can degrade everyone; there is no horizontal scaling.
 

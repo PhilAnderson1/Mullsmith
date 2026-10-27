@@ -356,7 +356,7 @@ caller's own tree (§9.7), so cross-user probing is structurally impossible
 |---|---|---|
 | POST | `/api/v1/files` | multipart upload into `uploads/`. Enforces `max_file_size`, `user_quota`. The **whole request** carries one byte budget — `max_file_size` + 64 KiB framing allowance — so oversized ignored fields and file-less drains are refused `413 upload_too_large` mid-stream (§9.11); part count capped at 64. The **real filename lives on disk** (sanitized to one safe segment); a name collision bumps to `name (1).ext` and never overwrites. Returns `{name, path, size, created_at, media_type, download_url}`. |
 | GET | `/api/v1/files?kind=` | One physical walk of `uploads/`, `artifacts/` and `work/` (or one directory via the plural filter `kind=uploads|artifacts|work`): regular non-hidden files plus DIRECTORIES (incl. empty ones, `kind:"dir"` with a capped recursive file count), newest-modified first, capped at 500 per directory (`truncated` flag). Item kinds are `upload|artifact|work|dir`, derived from the directory the bytes sit in — nothing to dedupe, nothing to reconcile. No cursor: the disk answers in one page. Carries the quota object. |
-| GET | `/api/v1/files/download?path=` | Streams one file from any of the three dirs; path sandboxed (§9.7), regular files only (a FIFO would block the open), `Content-Disposition: attachment` by default with inline serving only for the safe-type allowlist on sniffed bytes (§9.4). |
+| GET | `/api/v1/files/download?path=` | Streams one file from any of the three dirs; path sandboxed (§9.7), regular files only (a FIFO would block the open), always `Content-Disposition: attachment` — no inline mode (§9.4). |
 | DELETE | `/api/v1/files?path=` | Delete one file — or a whole directory tree (leaves first, every element through the fd-pinned sandbox; a tree with any unreadable part is refused, not half-deleted). The three layout dirs themselves are undeletable. Bytes gone is all it means: nothing else to delete. |
 
 Message attachment pairing: `POST /conversations/{id}/messages` accepts
@@ -621,16 +621,18 @@ files) produce markdown rendered in the victim's browser.
 - UI binds names/titles/filenames via `textContent` (no `innerHTML` at app level).
 - CSP (§9.8) is the defense-in-depth backstop: `script-src 'self'`, no `unsafe-eval`, no
   inline scripts anywhere in the app (enforced by the no-build-step file layout).
-- **Uploaded files never execute or render by the browser's grace:** downloads always carry
-  `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`; the *only*
-  exception is an allowlist of non-active types (`text/plain`, `text/csv`, `image/png`,
-  `image/jpeg`, `image/webp`, `application/pdf`) rendered/served inline. **`.html`, `.htm`,
-  `.svg`, `.xhtml`, and `.xml` are never served inline** — stored XSS via a shared/uploaded
-  "document" is closed regardless of sniffing mistakes. (A separate cookie-less asset
-  domain is the v2 hardening if inline HTML preview is ever demanded.)
-- Upload blocklist (`scratchpad.block_extensions`) covers `.html .htm .svg .xhtml .xml
-  .js .exe .sh .bat .cmd .com .scr .jar .vbs .ps1 .apk .dmg` (config-extendable; the
-  **final** extension decides, so `notes.html.txt` is a text file). Uploads keep their
+- **Uploaded files never execute or render by the browser's grace:** downloads *always*
+  carry `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff` — there is
+  **no inline mode at all**, for any type. Stored bytes only ever reach the browser as a
+  file the user chose to save, so stored XSS via an uploaded "document" is closed by the
+  serve layer alone, regardless of extension or sniffing mistakes. (A separate cookie-less
+  asset domain remains the v2 hardening if inline preview is ever demanded.)
+- Upload blocklist (`scratchpad.block_extensions`) is **config-only, empty by default** —
+  every file type is accepted unless the admin lists extensions to refuse (the **final**
+  extension decides, so `notes.html.txt` is a text file). It is a disk-hygiene preference,
+  not the security boundary: the attachment disposition above is what makes active content
+  inert, and files written by the model's own tools never pass through this gate anyway.
+  Uploads keep their
   **real filename on disk** — sanitized to one path-safe segment (control characters and
   separators dropped, leading dots folded so no dotfile ghosts are born, length capped) —
   and a name collision bumps to `name (1).ext`; an upload never overwrites bytes. The

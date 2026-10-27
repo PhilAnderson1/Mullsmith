@@ -25,9 +25,12 @@ scratchpad:
   max_file_size: 25MiB
   user_quota: 1GiB
   artifact_ttl: 168h              # shared artifacts expire after 7 days
-  # Uploaded extensions that must never land in the store (§9.4). HTML/SVG
-  # are allowed but always served as attachment downloads.
-  block_extensions: [exe, dll, so, bat, cmd, com, scr, msi, js, jar]
+  # Extensions that may not be uploaded. Empty/absent = no blocking: safety
+  # does not depend on this gate — downloads are ALWAYS served as attachment
+  # files (§9.4), so even an uploaded .html cannot run in the app's origin.
+  # Use it only to keep types you never want on disk, e.g.:
+  # block_extensions: [exe, dll, so, bat, cmd, com, scr, msi, js, jar]
+  block_extensions: []
   code_execution:                 # §9.9 — OFF by default; enable deliberately
     enabled: false
     # One sandbox, always: every script runs inside a bubblewrap (bwrap)

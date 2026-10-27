@@ -166,12 +166,12 @@ func TestFileUploadDownloadDelete(t *testing.T) {
 		t.Errorf("Content-Type = %q", ct)
 	}
 
-	// Safe type + ?inline=1 ⇒ inline allowed (§9.4 allowlist). The URL
-	// already carries ?path=…, so the flag rides on with "&".
+	// ?inline=1 changes nothing (§9.4): downloads are always attachments,
+	// so a hostile page can never be opened in the app's origin.
 	resp = a.do(http.MethodGet, dl+"&inline=1", nil)
 	resp.Body.Close()
-	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
-		t.Errorf("csv inline: Content-Disposition = %q", cd)
+	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+		t.Errorf("csv with inline=1: Content-Disposition = %q, want attachment", cd)
 	}
 
 	// List shows the file + quota.
@@ -260,6 +260,24 @@ func TestUploadBlocklist(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(cfg.Scratchpad.Root, "*", "uploads", "*"))
 	if len(matches) != 1 {
 		t.Errorf("uploads on disk = %v, want only notes.html.txt", matches)
+	}
+}
+
+// With no block_extensions configured (the default) every file type may
+// be uploaded: the download layer's attachment disposition is what keeps
+// active content inert, not this gate.
+func TestUploadNoBlocklistIsEmptyByDefault(t *testing.T) {
+	cfg := scratchCfg(t)
+	cfg.Scratchpad.BlockExtensions = nil
+	a := newAuthTest(t, cfg)
+	signupAs(a, "nolimit@test.io", "gk-code-1")
+
+	for _, name := range []string{"page.html", "icon.svg", "run.sh"} {
+		resp := a.upload(name, []byte("harmless bytes"))
+		if resp.StatusCode != http.StatusCreated {
+			t.Errorf("upload %s with empty block list: %d, want 201", name, resp.StatusCode)
+		}
+		resp.Body.Close()
 	}
 }
 
@@ -382,9 +400,10 @@ func TestFilePathProtections(t *testing.T) {
 	}
 }
 
-// The §9.4 inline doctrine now on sniffed bytes: an .html file is NEVER
-// inline no matter what its bytes claim; a plain .py may be.
-func TestInlineNeverForActiveContent(t *testing.T) {
+// §9.4 in its final form: every download is an attachment, no matter the
+// type or any inline=1 plea — including files planted in the store by
+// other tools (bypassing the upload gate entirely).
+func TestDownloadAlwaysAttachment(t *testing.T) {
 	cfg := scratchCfg(t)
 	a := newAuthTest(t, cfg)
 	signupAs(a, "xss@test.io", "gk-code-1")
@@ -394,17 +413,14 @@ func TestInlineNeverForActiveContent(t *testing.T) {
 	seedFile(t, cfg, uid, "artifacts/icon.svg", []byte("<svg onload=alert(1)></svg>"))
 	seedFile(t, cfg, uid, "work/tool.py", []byte("print('hi')\n"))
 
-	for _, rel := range []string{"artifacts%2Freport.html", "artifacts%2Ficon.svg"} {
-		resp := a.do(http.MethodGet, "/api/v1/files/download?path="+rel+"&inline=1", nil)
-		resp.Body.Close()
-		if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
-			t.Errorf("%s must never be inline: %q", rel, cd)
+	for _, rel := range []string{"artifacts%2Freport.html", "artifacts%2Ficon.svg", "work%2Ftool.py"} {
+		for _, q := range []string{"", "&inline=1"} {
+			resp := a.do(http.MethodGet, "/api/v1/files/download?path="+rel+q, nil)
+			resp.Body.Close()
+			if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+				t.Errorf("%s%s: Content-Disposition = %q, want attachment", rel, q, cd)
+			}
 		}
-	}
-	resp := a.do(http.MethodGet, "/api/v1/files/download?path=work%2Ftool.py&inline=1", nil)
-	resp.Body.Close()
-	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
-		t.Errorf("txt-safe py inline: Content-Disposition = %q", cd)
 	}
 }
 

@@ -499,3 +499,31 @@ func TestLoadModelsAlwaysContainsDefault(t *testing.T) {
 		t.Errorf("models = %v, want no duplicate of test-model", cfg.LLM.Models)
 	}
 }
+
+func TestLoadBlockExtensionsHasNoDefaults(t *testing.T) {
+	// Absent key ⇒ block nothing; the configured list is the whole rule
+	// (normalized, deduped, order kept). Safety lives in the download
+	// disposition, not in a built-in upload blocklist.
+	cfg, err := Load(writeCfg(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Scratchpad.BlockExtensions) != 0 {
+		t.Errorf("block_extensions default = %v, want empty", cfg.Scratchpad.BlockExtensions)
+	}
+
+	cfg, err = Load(writeCfg(t, strings.Replace(minimalYAML,
+		"scratchpad:\n", "scratchpad:\n  block_extensions: [exe, .DLL, exe, HTML]\n", 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{".exe", ".dll", ".html"}
+	if len(cfg.Scratchpad.BlockExtensions) != len(want) {
+		t.Fatalf("block_extensions = %v, want %v", cfg.Scratchpad.BlockExtensions, want)
+	}
+	for i := range want {
+		if cfg.Scratchpad.BlockExtensions[i] != want[i] {
+			t.Fatalf("block_extensions = %v, want %v", cfg.Scratchpad.BlockExtensions, want)
+		}
+	}
+}
