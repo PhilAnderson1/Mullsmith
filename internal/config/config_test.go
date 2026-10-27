@@ -50,9 +50,6 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Server.WriteTimeout.D() != 0 {
 		t.Errorf("write_timeout default = %v, want 0 (unlimited, per spec example)", cfg.Server.WriteTimeout.D())
 	}
-	if cfg.Server.PublicURL != "http://127.0.0.1:8090" {
-		t.Errorf("public_url derived = %q", cfg.Server.PublicURL)
-	}
 	if len(cfg.LLM.Models) != 1 || cfg.LLM.Models[0] != "test-model" {
 		t.Errorf("models default = %v", cfg.LLM.Models)
 	}
@@ -441,8 +438,6 @@ server:
 database: {dir: ./db}
 scratchpad: {root: ./sp}
 llm: {endpoint: "http://x/v1", model: m}
-auth:
-  cookie_secure: true
 `
 	cfg, err := Load(writeCfg(t, body))
 	if err != nil {
@@ -451,9 +446,6 @@ auth:
 	joined := strings.Join(cfg.Warnings(), "\n")
 	if !strings.Contains(joined, "without TLS") {
 		t.Errorf("expected no-TLS warning, got: %s", joined)
-	}
-	if !strings.Contains(joined, "Secure cookies") {
-		t.Errorf("expected cookie_secure warning, got: %s", joined)
 	}
 }
 

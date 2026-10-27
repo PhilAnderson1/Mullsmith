@@ -105,7 +105,6 @@ type Config struct {
 
 type Server struct {
 	Listen         string   `yaml:"listen"`
-	PublicURL      string   `yaml:"public_url"`
 	TLS            TLS      `yaml:"tls"`
 	ReadTimeout    Duration `yaml:"read_timeout"`
 	WriteTimeout   Duration `yaml:"write_timeout"`
@@ -250,16 +249,8 @@ type Auth struct {
 	SessionTTL          Duration `yaml:"session_ttl"`
 	RememberTTL         Duration `yaml:"remember_ttl"`
 	RememberAbsoluteTTL Duration `yaml:"remember_absolute_ttl"`
-	CookieSecure        *bool    `yaml:"cookie_secure"`
 	MaxFailedLogins     int      `yaml:"max_failed_logins"`
 	Argon2              Argon2   `yaml:"argon2"`
-}
-
-// SecureCookies reports whether cookies must carry the Secure flag. It
-// defaults to true: sessions are Secure unless a deployment explicitly opts
-// out (plain-http dev box), never because a field was forgotten (§9.1).
-func (a *Auth) SecureCookies() bool {
-	return a.CookieSecure == nil || *a.CookieSecure
 }
 
 type Argon2 struct {
@@ -574,30 +565,6 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	derivedPublic := c.Server.PublicURL == ""
-	if c.Server.PublicURL != "" {
-		u, err := url.Parse(c.Server.PublicURL)
-		switch {
-		case err != nil:
-			f.bad("server.public_url: %v", err)
-		case u.Scheme != "http" && u.Scheme != "https":
-			f.bad("server.public_url: scheme must be http or https")
-		case u.Host == "":
-			f.bad("server.public_url: host required")
-		case u.Path != "" && u.Path != "/":
-			f.bad("server.public_url: base paths are not supported (scheme+host only)")
-		default:
-			c.Server.PublicURL = strings.TrimSuffix(u.String(), "/")
-		}
-	}
-	if derivedPublic {
-		scheme := "http"
-		if c.Server.TLS.Enabled {
-			scheme = "https"
-		}
-		c.Server.PublicURL = scheme + "://" + c.Server.Listen
-	}
-
 	if c.Server.TLS.Enabled {
 		if c.Server.TLS.CertFile == "" || c.Server.TLS.KeyFile == "" {
 			f.bad("server.tls: cert_file and key_file are required when enabled")
@@ -776,12 +743,6 @@ func (c *Config) Warnings() []string {
 	var w []string
 	if !c.Server.TLS.Enabled && !isLoopbackHost(strings.Split(c.Server.Listen, ":")[0]) {
 		w = append(w, "server is bound to a non-loopback address without TLS (spec §9.10) — accept this only on a trusted network")
-	}
-	if c.Server.TLS.Enabled && !strings.HasPrefix(c.Server.PublicURL, "https://") {
-		w = append(w, "TLS is enabled but server.public_url is not https://")
-	}
-	if !strings.HasPrefix(c.Server.PublicURL, "https://") && c.Auth.SecureCookies() {
-		w = append(w, "cookies are Secure but public_url is plain http — Secure cookies cannot be delivered over http; set auth.cookie_secure: false deliberately (spec §9.1)")
 	}
 	if c.Server.HSTSMaxAge > 0 && !c.Server.TLS.Enabled {
 		w = append(w, "server.hsts_max_age > 0 but TLS is disabled — HSTS headers will never be sent")

@@ -179,7 +179,9 @@ them is reproducible from the commands above.
   with mTLS/VPN if that matters to your threat model.
 * **Plain HTTP is opt-in.** If you run without TLS, everything — passwords,
   cookies, history — is readable on the network path. Gabkeep prints a startup
-  warning and refuses to set `Secure` cookies in that mode (`auth.cookie_secure`).
+  warning; session cookies drop their `Secure` flag automatically so login
+  works over plain HTTP (they keep it whenever the request really arrives over
+  HTTPS, including via a trusted reverse proxy).
 * **The LLM sees everything.** Conversations, file excerpts you attach, tool
   output and search queries are sent to `llm.endpoint`; search queries and
   fetched URLs go to the configured search provider (Brave). Treat those

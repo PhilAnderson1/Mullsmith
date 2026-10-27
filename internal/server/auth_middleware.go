@@ -27,7 +27,7 @@ func csrfProtect(cfg *config.Config, logger *slog.Logger) func(http.Handler) htt
 				// Issue a token when absent or malformed.
 				if csrfCookie == nil || len(csrfCookie.Value) < 32 {
 					if tok, err := auth.NewCSRFToken(); err == nil {
-						http.SetCookie(w, auth.CSRFCookie(cfg, tok))
+						http.SetCookie(w, auth.CSRFCookie(tok, secureRequest(cfg, r)))
 					}
 				}
 				next.ServeHTTP(w, r)
@@ -136,7 +136,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 					s.logger.Warn("session renewal failed", "error", err)
 				} else {
 					lookup.ExpiresAt = newExpiry
-					http.SetCookie(w, auth.SessionCookie(s.cfg, cookie.Value, true, newExpiry))
+					http.SetCookie(w, auth.SessionCookie(cookie.Value, true, newExpiry, secureRequest(s.cfg, r)))
 				}
 			}
 		}

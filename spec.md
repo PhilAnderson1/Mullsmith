@@ -82,7 +82,6 @@ Example, which doubles as the documented reference:
 ```yaml
 server:
   listen: ":8080"                 # host:port (":8080" = every interface, IPv4+IPv6)
-  public_url: "https://gabkeep.example.com"   # used in links, cookies
   tls:
     enabled: false                # plain HTTP by default: trusted LAN or behind a proxy
     cert_file: ""
@@ -171,7 +170,6 @@ auth:
   session_ttl: 24h                # login WITHOUT "stay logged in"
   remember_ttl: 720h              # login WITH checkbox: sliding idle window (30 days)
   remember_absolute_ttl: 2160h    # ...but force re-auth after 90 days regardless
-  cookie_secure: true
   argon2: { time: 1, memory: 65536, threads: 4 }   # pass parameters if needed
   max_failed_logins: 10           # per account per 15 min, then lockout 15 min
 
@@ -506,7 +504,8 @@ CLI mints codes), `closed` (admin CLI creates users).
 ### 9.1 Authentication & sessions
 
 - Argon2id (config-tunable params), per-user random salt; constant-time verify.
-- Cookie: `gabkeep_session` — `HttpOnly`, `Secure` (auto-set on TLS, §9.10), `SameSite=Lax`,
+- Cookie: `gabkeep_session` — `HttpOnly`, `Secure` (per request: TLS or trusted-proxy
+  https, §9.10), `SameSite=Lax`,
   path `/`. Value is 256 bits from `crypto/rand`; only its SHA-256 is stored. Logout /
   password-change revokes sessions server-side.
 - **Session fixation prevented:** a brand-new session token is minted at login (and on any
@@ -580,8 +579,8 @@ CLI mints codes), `closed` (admin CLI creates users).
   sender's own `uploads/` — a path naming anyone else's bytes simply does not exist
   in this tree, and the request is refused `attachment_not_found`.
 - No endpoint redirects to a caller-supplied destination (no `?next=`/`?redirect=` exists
-  in v1). Absolute URLs are built from `server.public_url`, never from the `Host` header
-  (host-header injection). If post-login redirects are ever added, they must be validated
+  in v1). The app builds **relative URLs only** — no absolute URL is ever assembled from
+  a request's `Host` header (host-header injection). If post-login redirects are ever added, they must be validated
   as same-origin paths only.
 - Embedded static FS serves files only, never lists directories; unknown asset → 404.
 
@@ -835,8 +834,9 @@ open registration (startup warns).
   localhost. When `server.tls.enabled`, plaintext requests on the same listener get 308
   redirects (a second plain listener is never opened).
 - **Loud startup warnings** (and a README pre-flight checklist) when: binding a non-
-  loopback address with TLS off; `cookie_secure: true` impossible on http; `public_url`
-  scheme mismatching actual listener; HSTS off under TLS.
+  loopback address with TLS off; HSTS off under TLS. (Cookie `Secure` needs no
+  warning: it is derived per request from TLS / trusted-proxy `X-Forwarded-Proto`,
+  so it cannot disagree with anything.)
 - **Trusted proxies:** `X-Forwarded-For` / `X-Forwarded-Proto` are honored **only** when
   the TCP peer is inside a `server.trusted_proxies` CIDR; otherwise ignored. XFF chains
   are evaluated **right-to-left** (the Cloudflare "rightmost untrusted" rule): appending

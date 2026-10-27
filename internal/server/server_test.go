@@ -18,8 +18,7 @@ import (
 func testCfg() *config.Config {
 	return &config.Config{
 		Server: config.Server{
-			Listen:    "127.0.0.1:0",
-			PublicURL: "http://127.0.0.1:0",
+			Listen: "127.0.0.1:0",
 		},
 		LLM:  config.LLM{Models: []string{"m1"}},
 		Auth: config.Auth{Registration: "invite-only"},

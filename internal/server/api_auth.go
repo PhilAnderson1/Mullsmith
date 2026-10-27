@@ -61,7 +61,7 @@ func (s *Server) newSessionAndCookie(w http.ResponseWriter, r *http.Request, use
 	if err := s.store.CreateSession(r.Context(), sess); err != nil {
 		return err
 	}
-	http.SetCookie(w, auth.SessionCookie(s.cfg, raw, remembered, expires))
+	http.SetCookie(w, auth.SessionCookie(raw, remembered, expires, secureRequest(s.cfg, r)))
 	return nil
 }
 
@@ -296,7 +296,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("logout delete failed", "error", err)
 		}
 	}
-	http.SetCookie(w, auth.ClearSessionCookie(s.cfg))
+	http.SetCookie(w, auth.ClearSessionCookie(secureRequest(s.cfg, r)))
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -8,7 +8,6 @@ server:
                                   # network right away over plain HTTP — the
                                   # startup warning about TLS is expected there.
                                   # Loopback only (proxy in front): "127.0.0.1:8080"
-  public_url: "https://chat.example.org"
   tls:
     enabled: false                # true + cert/key here, or terminate at proxy
     # To serve HTTPS directly: un-comment the commented ExecStartPre line in
@@ -106,7 +105,6 @@ auth:
   session_ttl: 24h
   remember_ttl: 720h              # with the checkbox ticked
   remember_absolute_ttl: 2160h
-  cookie_secure: true             # false ONLY for a loopback http dev box
   max_failed_logins: 10
 
 limits:

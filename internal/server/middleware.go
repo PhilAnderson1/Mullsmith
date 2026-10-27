@@ -144,6 +144,23 @@ func ClientIP(r *http.Request) string {
 	return peerString(peer)
 }
 
+// secureRequest reports whether cookies set while answering r must carry the
+// Secure flag (§9.1): the connection itself is TLS, or a trusted proxy
+// declared the browser leg https via X-Forwarded-Proto (honored only when
+// the TCP peer is inside server.trusted_proxies, same rule as ClientIP).
+// Derived per request — there is no cookie_secure knob to misconfigure.
+func secureRequest(cfg *config.Config, r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	peer := peerAddr(r)
+	if peer == nil || !ipTrusted(*peer, cfg.TrustedNets) {
+		return false
+	}
+	proto, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
+}
+
 func peerAddr(r *http.Request) *netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
