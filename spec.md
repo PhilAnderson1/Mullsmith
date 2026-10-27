@@ -207,8 +207,8 @@ Backup = stop process (or `VACUUM INTO`), copy `db/`, copy `scratchpad/`.
 | Language | Go ≥ 1.23 | single static binary, stdlib HTTP, concurrency |
 | SQLite driver | `modernc.org/sqlite` (pure Go) | avoids CGO; `CGO_ENABLED=0` fully static binary; no system libsqlite |
 | Migrations | Embedded `.sql` files, applied at startup with `schema_version` table | no external migration tool |
-| Frontend | Hand-written ES modules + CSS, **no Node/npm build step**, embedded via `go:embed` | keeps `go build` the only build step; vendored JS libs checked into repo |
-| Markdown rendering | `marked` + `DOMPurify` (vendored) client-side; server sanitizes on persist | ChatGPT-like rendering with XSS safety |
+| Frontend | Hand-written ES modules + CSS, **no Node/npm build step**, embedded via `go:embed` | keeps `go build` the only build step; no third-party JS/CSS at all |
+| Markdown rendering | Hand-written renderer (`web/assets/app/markdown.js`): DOM built only via `createElement`/`textContent`, link regex admits http(s) only | XSS-safe by construction — no third-party parser to audit or keep patched |
 | Streaming | Server-Sent Events (SSE) | one-way token stream over plain HTTP, works through proxies with buffering off |
 | Password hashing | Argon2id (`golang.org/x/crypto`) | current best practice |
 | Sessions | Server-side session table + cookie | simple, revocable (logout kills row); no JWT complexity |
@@ -366,8 +366,11 @@ the chip behind as a historical record whose download 404s (by design).
 
 ### 5.4 Misc
 
-`GET /healthz` (no auth: liveness), `GET /api/v1/meta` (models list, enabled tools,
-registration mode — used by the login/register screens), everything else behind auth.
+`GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
+`registration` mode, `remember_login`/`show_reasoning` flags, message char limit, tools
+map — `web_search`/`web_fetch`/`code_run` — and file caps: max size, max attachments,
+`blocked_extensions` — used by the login/register screens, composer and upload UI),
+everything else behind auth.
 
 ---
 
@@ -610,11 +613,13 @@ CLI mints codes), `closed` (admin CLI creates users).
 Attack surface: the model and *other users' data the model fetched* (web pages, uploaded
 files) produce markdown rendered in the victim's browser.
 
-- Markdown pipeline (vendored, version-pinned `marked`): configured with an **anchor URL
-  scheme allowlist** — `http:`, `https:`, `mailto:` only; `javascript:`, `data:`,
-  `vbscript:` and unknown schemes are dropped from links. Raw HTML in markdown is disabled,
-  then every rendered block passes **DOMPurify** (allowlist config: no `<svg>`, no event
-  handler attributes, no `<iframe>`/`<object>`) before DOM insertion.
+- Markdown renderer (**hand-written**, `web/assets/app/markdown.js` — no `marked`,
+  no `DOMPurify`, no third-party code of any kind): output is built exclusively with
+  `createElement`/`textContent` and **never `innerHTML`**, so raw HTML in model markdown
+  cannot introduce markup — by construction, not by stripping. Link syntax and autolinks
+  are regex-locked to `http:`/`https:`; `javascript:`, `data:`, `vbscript:` and unknown
+  schemes can never reach an `href`. Anything outside the supported grammar
+  (headings, emphasis, fenced code +copy, lists, quotes, links) renders as literal text.
 - Streaming tokens are inserted as **text nodes**; markdown is parsed once per completed
   block, never incrementally-as-HTML.
 - External links get `rel="noopener noreferrer"` and `referrerpolicy="no-referrer"`.
@@ -920,8 +925,10 @@ mitigations are structural, not vibes:
 ### 9.15 Supply chain & updates
 
 - Pinned toolchain + `go.mod`/`go.sum` (checksum DB enforced); **`govulncheck` and `gosec`
-  clean are release gates**; Dependabot/Renovate on the repo; vendored JS libs carry
-  version + upstream URL + update procedure (`web/vendor/README.md`).
+  clean are release gates** (`make check`). The supply chain is the Go module graph only:
+  the web UI carries no third-party JS/CSS (§9.4), and every module licence is version-
+  pinned and shipped beside the app in release artifacts (`THIRD_PARTY_NOTICES.md` +
+  `THIRD_PARTY_LICENSES/`).
 - No runtime asset fetching by the app (§9.8); no telemetry; no auto-update mechanism —
   admins replace the binary deliberately.
 
@@ -934,7 +941,7 @@ mitigations are structural, not vibes:
 | A03 Injection | §9.3 (SQL/command/CRLF/log), §9.4 (XSS incl. `javascript:` links, uploads), §9.9 (no shell interpolation) |
 | A04 Insecure Design | §1.1 principles; approval gates §6.1/§9.13; opt-in code exec §9.9; invite-only option §8 |
 | A05 Security Misconfiguration | strict config validation §2.2/§9.3; secure headers by default §9.8; startup warnings §9.10; no debug endpoints §9.2 |
-| A06 Vulnerable & Outdated Components | §9.15 (govulncheck gate, pinned deps, vendored JS policy) |
+| A06 Vulnerable & Outdated Components | §9.15 (govulncheck gate, pinned deps, zero third-party JS, shipped licence set) |
 | A07 Identification & Authentication Failures | §9.1 (lockout, fixation, enumeration, timing), §9.11 (throttles), §8 (invite mode) |
 | A08 Software & Data Integrity Failures | §9.15 (checksums, no auto-update), §9.3 (strict YAML/JSON), §9.9 (allowlisted runtimes only) |
 | A09 Security Logging & Monitoring Failures | §9.14 |
@@ -1007,8 +1014,8 @@ function or content (re-tested as part of the responsive matrix).
 | Observability | `log/slog` structured logs; `/healthz`; per-request ids; no metrics server in v1 (expvar optional) |
 | Compatibility | Evergreen browsers (last 2 yrs); llama.cpp server, Ollama, vLLM (OpenAI-compatible, tools support required for §7) |
 | Responsive | Fully usable from **320 px wide phones to 2560 px+ desktops** (§10.1); tested at 360 / 390 / 768 / 1024 / 1440 / 2560 px; on-screen keyboards, touch, and 200 % zoom don't break send/stop/approval flows |
-| Docs | README (quickstart + systemd unit + reverse proxy), `docs/config.md` generated from §2.2 |
-| Security baseline | §9.8 headers on by default; `govulncheck` + `gosec` clean in CI as release gates; OWASP ZAP baseline scan against a staging instance with no medium+ findings; §9.16 map re-audited each release |
+| Docs | README (quickstart + systemd unit + reverse proxy); the config template `configs/gabkeep.yaml` documents every key (§2.2); hardening/scan evidence is operator machine-local, not shipped |
+| Security baseline | §9.8 headers on by default; `govulncheck` + `gosec` clean as release gates (`make check`, run before packaging); OWASP ZAP baseline scan against a staging instance with no medium+ findings; §9.16 map re-audited each release |
 
 ---
 
@@ -1019,15 +1026,16 @@ gabkeep/
 ├── cmd/gabkeep/            # main: flags, config load, startup wiring
 ├── internal/
 │   ├── config/             # YAML schema, validation, env expansion
-│   ├── store/              # sqlite: migrations, typed queries
+│   ├── store/              # sqlite: typed queries + embedded migrations/
 │   ├── auth/               # argon2, sessions, csrf, rate limits
 │   ├── scratch/            # path-safe fs helpers, quotas, ttl jobs
 │   ├── llm/                # OpenAI-compatible client, SSE parsing, tool schema
 │   ├── agent/              # turn orchestration: context builder, tool loop
-│   ├── tools/              # websearch/, webfetch/, fs.go, coderun/, share.go
+│   ├── tools/              # web search/fetch, scratchpad fs + share, code_run, egress guard
 │   └── server/             # http routing, api handlers, sse plumbing, embed
-├── web/                    # embedded: index.html, app/, vendor/ (marked, dompurify)
-├── migrations/             # *.sql (embedded)
+├── web/                    # embedded: index.html + assets/ (hand-written ES modules, CSS)
+├── configs/                # gabkeep.yaml — documented production config template
+├── packaging/              # build-release.sh (tar/deb/rpm), install.sh, uninstall.sh, systemd/
 └── spec.md                 # this file
 ```
 
@@ -1064,26 +1072,28 @@ calls), and a smoke script per milestone.
   `context_length` 262144, no API key. Probed 2026-10-25: `/v1/models` OK; streamed completions OK;
   non-streamed and streamed **tool-calling** OK (`finish_reason: tool_calls`, indexed
   `delta.tool_calls` chunks); **non-standard `reasoning_content` deltas present → §6.2
-  parsing requirement.** `/v1/models` reports `input_modalities: ["text"]` → **vision
-  inputs are out** for this endpoint; v1 file handling stays text-oriented (former Q4).
-- **Web search provider = Brave Search API** (needs an API key from the Brave Search API;
-  free tier). The provider interface (§7.1) still allows SearXNG/DuckDuckGo later.
+  parsing requirement.** The 2026-10-25 probe reported `input_modalities: ["text"]` →
+  vision out — **superseded 2026-10-27**: `llm.vision` shipped (§6.1 step 1) and the
+  endpoint accepts inline images; it is enabled in this deployment.
+- **Web search provider = Brave Search API** (needs an API key; Brave's free allowance
+  ended for new keys, so this is a paid API — the only per-request cost in the stack).
+  The provider interface (§7.1) still allows SearXNG/DuckDuckGo later.
 - **Registration = invite-only** (the safe public-internet default given no email
   verification, §9.12). Admin mints codes: `gabkeep admin invite`; `open`/`closed` remain
   config choices.
 - **Code execution = bubblewrap jail on this host** — `bubblewrap` 0.11.x is
   installed and unprivileged user namespaces are enabled, so the single §9.9 mode
   runs natively (verified by the startup probe). Docker is not used.
+- **Brave Search API key — provided** (2026-10-26, env `GABKEEP_SEARCH_API_KEY`, kept
+  operator-local); `tools.web_search` live in dev and production.
+- **Password reset without SMTP — resolved as admin CLI:** `gabkeep admin reset-password`
+  is the v1 answer; no SMTP/email sending was added (§1.2).
 
 ### 14.2 Awaiting input
 
-1. **Brave Search API key** — for `tools.web_search` live testing (framework built with it
-   disabled until the key exists; env `GABKEEP_SEARCH_API_KEY`).
-2. **Password reset without SMTP** — admin CLI (`gabkeep admin reset-password`) acceptable
-   for v1, or add SMTP config + email sending now?
-3. **Code-execution runtime allowlist** — python3 is present here; also enable `sh`? node?
+1. **Code-execution runtime allowlist** — python3 is present here; also enable `sh`? node?
    (Each widened runtime increases the §9.13 exfiltration surface.)
-4. **Admin concept in the UI** — list/disable users and set quotas from a web admin page,
+2. **Admin concept in the UI** — list/disable users and set quotas from a web admin page,
    or CLI-only in v1? (Spec assumes CLI-only.)
-5. **Per-user concurrency** — beyond the 1-per-conversation cap, a hard per-user concurrent
+3. **Per-user concurrency** — beyond the 1-per-conversation cap, a hard per-user concurrent
    generation cap? (Currently `limits.concurrent_streams_per_user`, default 2.)
