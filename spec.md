@@ -81,10 +81,10 @@ Example, which doubles as the documented reference:
 
 ```yaml
 server:
-  listen: "127.0.0.1:8080"        # host:port
+  listen: ":8080"                 # host:port (":8080" = every interface, IPv4+IPv6)
   public_url: "https://gabkeep.example.com"   # used in links, cookies
   tls:
-    enabled: false                # built-in TLS optional; reverse proxy assumed by default
+    enabled: false                # plain HTTP by default: trusted LAN or behind a proxy
     cert_file: ""
     key_file: ""
   read_timeout: 30s

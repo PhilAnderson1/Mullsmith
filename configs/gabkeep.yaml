@@ -4,8 +4,10 @@
 # ${ENV_VAR} / ${ENV_VAR:-default} expansion (§9.12) — never commit them.
 
 server:
-  listen: "127.0.0.1:8080"        # keep behind a TLS-terminating reverse proxy,
-                                  # or set tls.enabled below and bind directly
+  listen: ":8080"                 # every interface (IPv4+IPv6): usable on your
+                                  # network right away over plain HTTP — the
+                                  # startup warning about TLS is expected there.
+                                  # Loopback only (proxy in front): "127.0.0.1:8080"
   public_url: "https://chat.example.org"
   tls:
     enabled: false                # true + cert/key here, or terminate at proxy
