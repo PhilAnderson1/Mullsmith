@@ -306,9 +306,14 @@ type Logging struct {
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
 
 // expandEnv substitutes ${VAR} (unset → error) and ${VAR:-fallback}.
+// Whole-line YAML comments (first non-space char '#') pass through
+// verbatim: docs commonly SHOW the syntax (the shipped template's header
+// mentions ${ENV_VAR}), and a comment must never cost an install its
+// startup. Values — including trailing comments after a value — still
+// expand, so a typo'd secret reference fails loudly (§9.12).
 func expandEnv(in string) (string, error) {
 	var missing []string
-	out := envRe.ReplaceAllStringFunc(in, func(m string) string {
+	expand := func(m string) string {
 		g := envRe.FindStringSubmatch(m)
 		if v, ok := os.LookupEnv(g[1]); ok {
 			return v
@@ -318,11 +323,18 @@ func expandEnv(in string) (string, error) {
 		}
 		missing = append(missing, g[1])
 		return m
-	})
+	}
+	lines := strings.Split(in, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		lines[i] = envRe.ReplaceAllStringFunc(line, expand)
+	}
 	if len(missing) > 0 {
 		return "", fmt.Errorf("environment variable(s) not set: %s (use ${VAR:-} to allow unset)", strings.Join(missing, ", "))
 	}
-	return out, nil
+	return strings.Join(lines, "\n"), nil
 }
 
 // Load reads, expands, decodes (strict), defaults and validates the config.
