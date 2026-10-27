@@ -1,0 +1,19 @@
+# §9.15 release gates, run automatically on every push (spec NFR:
+# "govulncheck + gosec clean as release gates"). The bubblewrap jail tests
+# t.Skip on runners without bwrap/user namespaces; full jail coverage
+# remains on the operator box.
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: make check

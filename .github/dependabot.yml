@@ -1,0 +1,8 @@
+# §9.15: automated dependency bumps. One PR per module; merge like any
+# other PR (CI on the PR runs the full make check before it can land).
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
