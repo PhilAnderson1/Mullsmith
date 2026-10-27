@@ -129,8 +129,8 @@ scratchpad:
     allow_network: false
 
 llm:
-  endpoint: "http://192.168.0.2:8080/v1"      # OpenAI-compatible base URL (verified live)
-  api_key: ""                                 # optional; sent as Bearer. This server needs none
+  endpoint: "http://127.0.0.1:8080/v1"        # OpenAI-compatible base URL
+  api_key: ""                                 # optional; sent as Bearer
   model: "Qwen3.8 Flash Next"
   models:                                # picker list in UI; `model` is always part of it
     - Qwen3.8 Flash Next
@@ -1059,8 +1059,9 @@ calls), and a smoke script per milestone.
 ### 14.1 Resolved
 
 - **LLM endpoint — provided and verified live against the spec's assumptions:**
-  `http://192.168.0.2:8080/v1`, model `Qwen3.8 Flash Next`, `context_length` 262144,
-  no API key. Probed 2026-10-25: `/v1/models` OK; streamed completions OK;
+  a LAN OpenAI-compatible inference server (its address stays in the operator's
+  local config, out of the repo), model `Qwen3.8 Flash Next`,
+  `context_length` 262144, no API key. Probed 2026-10-25: `/v1/models` OK; streamed completions OK;
   non-streamed and streamed **tool-calling** OK (`finish_reason: tool_calls`, indexed
   `delta.tool_calls` chunks); **non-standard `reasoning_content` deltas present → §6.2
   parsing requirement.** `/v1/models` reports `input_modalities: ["text"]` → **vision
