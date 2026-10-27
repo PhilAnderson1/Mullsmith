@@ -81,7 +81,7 @@ Example, which doubles as the documented reference:
 
 ```yaml
 server:
-  listen: ":8080"                 # host:port (":8080" = every interface, IPv4+IPv6)
+  listen: ":3210"                 # host:port (":3210" = every interface, IPv4+IPv6)
   tls:
     enabled: false                # plain HTTP by default: trusted LAN or behind a proxy
     cert_file: ""

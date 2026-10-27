@@ -86,7 +86,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now gabkeep
 /usr/local/bin/gabkeep -config /etc/gabkeep/config.yaml -check-config
 sudo -u gabkeep gabkeep -config /etc/gabkeep/config.yaml admin create-user \
   -email you@example.org -name You -password 'a long passphrase'
-curl -sk https://127.0.0.1:8080/healthz || curl -s http://127.0.0.1:8080/healthz
+curl -sk https://127.0.0.1:3210/healthz || curl -s http://127.0.0.1:3210/healthz
 ```
 
 Then either enable `server.tls` in the config (with a real cert — Let's

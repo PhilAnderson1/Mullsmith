@@ -4,10 +4,10 @@
 # ${ENV_VAR} / ${ENV_VAR:-default} expansion (§9.12) — never commit them.
 
 server:
-  listen: ":8080"                 # every interface (IPv4+IPv6): usable on your
+  listen: ":3210"                 # every interface (IPv4+IPv6): usable on your
                                   # network right away over plain HTTP — the
                                   # startup warning about TLS is expected there.
-                                  # Loopback only (proxy in front): "127.0.0.1:8080"
+                                  # Loopback only (proxy in front): "127.0.0.1:3210"
   tls:
     enabled: false                # true + cert/key here, or terminate at proxy
     # To serve HTTPS directly: un-comment the commented ExecStartPre line in
