@@ -925,7 +925,9 @@ mitigations are structural, not vibes:
 ### 9.15 Supply chain & updates
 
 - Pinned toolchain + `go.mod`/`go.sum` (checksum DB enforced); **`govulncheck` and `gosec`
-  clean are release gates** (`make check`). The supply chain is the Go module graph only:
+  clean are release gates** (`make check`, also run by CI on every push/PR via GitHub
+  Actions); Dependabot opens weekly gomod bump PRs, each gated by that same CI.
+  The supply chain is the Go module graph only:
   the web UI carries no third-party JS/CSS (§9.4), and every module licence is version-
   pinned and shipped beside the app in release artifacts (`THIRD_PARTY_NOTICES.md` +
   `THIRD_PARTY_LICENSES/`).
