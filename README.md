@@ -35,7 +35,7 @@ artifacts under [`docs/`](docs/). See [Security](#security) for residual risks.
   `code_execution`; gabkeep refuses to start with code execution on when a
   working bwrap is missing (spec §9.9).
 * For `code_execution` under systemd: `Delegate=yes` on the unit (the shipped
-  `deploy/gabkeep.service` has it, with `DelegateSubgroup=payload`) so each run
+  `packaging/systemd/gabkeep.service` has it, with `DelegateSubgroup=payload`) so each run
   can get a per-run cgroup resource meter — kernel ≥ 5.7 with cgroup v2. No
   meterable subtree ⇒ code execution refuses to start, never runs un-metered.
 * An OpenAI-compatible endpoint for the model. Text is the baseline; if the
@@ -65,8 +65,8 @@ sudo useradd --system --home-dir /var/lib/gabkeep --shell /usr/sbin/nologin gabk
 sudo mkdir -p /etc/gabkeep /var/lib/gabkeep
 sudo chown gabkeep:gabkeep /var/lib/gabkeep && sudo chmod 700 /var/lib/gabkeep
 
-# 3. Config (template with explanations: config.example.yaml)
-sudo cp config.example.yaml /etc/gabkeep/config.yaml
+# 3. Config (template with explanations: configs/gabkeep.yaml)
+sudo cp configs/gabkeep.yaml /etc/gabkeep/config.yaml
 sudo nano /etc/gabkeep/config.yaml         # set llm.endpoint + model at minimum
 sudo chmod 640 /etc/gabkeep/config.yaml && sudo chown root:gabkeep /etc/gabkeep/config.yaml
 
@@ -75,7 +75,7 @@ printf 'GABKEEP_SEARCH_API_KEY=...\n' | sudo tee /etc/gabkeep/env
 sudo chmod 640 /etc/gabkeep/env && sudo chown root:gabkeep /etc/gabkeep/env
 
 # 5. systemd
-sudo cp deploy/gabkeep.service /etc/systemd/system/
+sudo cp packaging/systemd/gabkeep.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now gabkeep
 
 # 6. Verify

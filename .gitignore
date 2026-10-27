@@ -1,5 +1,7 @@
 # Build output
 /gabkeep
+/bin/
+/dist/
 
 # Runtime data (database, scratchpad, logs)
 /data/

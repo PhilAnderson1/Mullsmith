@@ -10,7 +10,7 @@ server:
   tls:
     enabled: false                # true + cert/key here, or terminate at proxy
     # With the shipped systemd unit, certbot's key is staged into RAM-only
-    # /run/gabkeep at service start (see deploy/gabkeep.service) — the key
+    # /run/gabkeep at service start (see packaging/systemd/gabkeep.service) — the key
     # never persists to disk and no group grants are needed:
     cert_file: "/run/gabkeep/cert.pem"
     key_file: "/run/gabkeep/key.pem"
@@ -40,7 +40,7 @@ scratchpad:
     # missing or unprivileged user namespaces are disabled.
     # max_memory is a PER-RUN aggregate: the whole process tree (children
     # included) shares it via a per-run cgroup, which needs a delegated
-    # cgroup v2 subtree — for systemd use deploy/gabkeep.service as shipped
+    # cgroup v2 subtree — for systemd use packaging/systemd/gabkeep.service as shipped
     # (Delegate=yes + DelegateSubgroup=payload). Metering unavailable ⇒
     # refuses to start, same fail-closed contract (§9.9).
     # (Old keys mode/container_image/run_as_user are retired — remove them.)
