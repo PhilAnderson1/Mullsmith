@@ -28,20 +28,21 @@ TimeoutStopSec=45
 # TLS via tmpfs-staged certificates (§9.12) — OFF by default. gabkeep starts
 # with server.tls.enabled: false (plain HTTP on loopback; acceptable on a
 # private network — read the README Security section before exposing it).
-# To serve HTTPS directly with certbot certificates: un-comment the
-# ExecStartPre line below, replace YOUR.HOSTNAME with your certbot domain,
-# and set server.tls.enabled: true in the config. Certbot keeps privkeys
-# 0600 root:root, so only root can read them — the "+"-prefixed line runs as
-# root and hands gabkeep-only copies to the RAM-only RuntimeDirectory
-# /run/gabkeep, wiped on stop, so the key never persists to disk. Certbot
-# renewals are picked up by a deploy hook doing
-# `systemctl try-restart gabkeep`. Deliberately NO ExecReload= line: gabkeep
-# reads its cert at startup and does not catch SIGHUP, so the conventional
-# `kill -HUP $MAINPID` would KILL the service (default disposition), not
-# reload it.
+# Enabling SSL takes two steps: un-comment the line at the end of this
+# block, and set server.tls.enabled: true in the config. Deliberately NO
+# ExecReload= line: gabkeep reads its cert at startup and does not catch
+# SIGHUP, so the conventional `kill -HUP $MAINPID` would KILL the service
+# (default disposition), not reload it.
 RuntimeDirectory=gabkeep
 RuntimeDirectoryMode=0700
-# ExecStartPre=+/bin/sh -c 'install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem)" /run/gabkeep/key.pem && install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem)" /run/gabkeep/cert.pem'
+
+  # To use SSL, un-comment this line and edit the 'YOUR.HOSTNAME' references.
+  # The "+" makes the command run as root: certbot keeps privkeys 0600
+  # root:root, and only root can hand gabkeep-readable copies to the RAM-only
+  # /run/gabkeep (wiped on stop; the key never persists to disk). Certbot
+  # renewals are picked up by a deploy hook doing
+  # `systemctl try-restart gabkeep`.
+  # ExecStartPre=+/bin/sh -c 'install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem)" /run/gabkeep/key.pem && install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem)" /run/gabkeep/cert.pem'
 
 # Sandboxing (§9). ProtectHome is NOT used: the scratchpad may live under
 # /home on small installs — ProtectSystem=strict + explicit ReadWritePaths
