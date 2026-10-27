@@ -69,8 +69,8 @@ sudo useradd --system --home-dir /var/lib/gabkeep --shell /usr/sbin/nologin gabk
 sudo mkdir -p /etc/gabkeep /var/lib/gabkeep
 sudo chown gabkeep:gabkeep /var/lib/gabkeep && sudo chmod 700 /var/lib/gabkeep
 
-# 3. Config (template with explanations: configs/gabkeep.yaml)
-sudo cp configs/gabkeep.yaml /etc/gabkeep/config.yaml
+# 3. Config (template with explanations: configs/config.yaml)
+sudo cp configs/config.yaml /etc/gabkeep/config.yaml
 sudo nano /etc/gabkeep/config.yaml         # set llm.endpoint + model at minimum
 sudo chmod 640 /etc/gabkeep/config.yaml && sudo chown root:gabkeep /etc/gabkeep/config.yaml
 
@@ -232,7 +232,7 @@ make dist          # stamped release binary + sha256 under dist/
 `local-only/dev.yaml` (kept out of the repo, like my other machine-specific
 files under `local-only/`) is my local dev config: loopback `:8081`, its own
 `local-only/data/`; run `gabkeep -config local-only/dev.yaml` from the repo
-root. Copy `configs/gabkeep.yaml` and point it at your endpoint. The UI lives
+root. Copy `configs/config.yaml` and point it at your endpoint. The UI lives
 in `web/` and is embedded into the binary at build time — rebuild and
 hard-refresh after editing assets.
 

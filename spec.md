@@ -1016,7 +1016,7 @@ function or content (re-tested as part of the responsive matrix).
 | Observability | `log/slog` structured logs; `/healthz`; per-request ids; no metrics server in v1 (expvar optional) |
 | Compatibility | Evergreen browsers (last 2 yrs); llama.cpp server, Ollama, vLLM (OpenAI-compatible, tools support required for §7) |
 | Responsive | Fully usable from **320 px wide phones to 2560 px+ desktops** (§10.1); tested at 360 / 390 / 768 / 1024 / 1440 / 2560 px; on-screen keyboards, touch, and 200 % zoom don't break send/stop/approval flows |
-| Docs | README (quickstart + systemd unit + reverse proxy); the config template `configs/gabkeep.yaml` documents every key (§2.2); hardening/scan evidence is operator machine-local, not shipped |
+| Docs | README (quickstart + systemd unit + reverse proxy); the config template `configs/config.yaml` documents every key (§2.2); hardening/scan evidence is operator machine-local, not shipped |
 | Security baseline | §9.8 headers on by default; `govulncheck` + `gosec` clean as release gates (`make check`, run before packaging); OWASP ZAP baseline scan against a staging instance with no medium+ findings; §9.16 map re-audited each release |
 
 ---
@@ -1036,7 +1036,7 @@ gabkeep/
 │   ├── tools/              # web search/fetch, scratchpad fs + share, code_run, egress guard
 │   └── server/             # http routing, api handlers, sse plumbing, embed
 ├── web/                    # embedded: index.html + assets/ (hand-written ES modules, CSS)
-├── configs/                # gabkeep.yaml — documented production config template
+├── configs/                # config.yaml — documented production config template
 ├── packaging/              # build-release.sh (tar/deb/rpm), install.sh, uninstall.sh, systemd/
 └── spec.md                 # this file
 ```

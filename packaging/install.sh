@@ -21,7 +21,7 @@ if [ ! -f "$binary" ] && [ -f "$script_dir/../go.mod" ]; then
     fi
 fi
 
-config_source="$content_root/configs/gabkeep.yaml"
+config_source="$content_root/configs/config.yaml"
 service_source="$content_root/packaging/systemd/gabkeep.service"
 readme_source="$content_root/README.md"
 spec_source="$content_root/spec.md"

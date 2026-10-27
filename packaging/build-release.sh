@@ -115,7 +115,7 @@ stage_native_payload() {
     install -m 0755 "$work_dir/gabkeep" "$payload/usr/bin/gabkeep"
     sed 's@ExecStart=/usr/local/bin/gabkeep@ExecStart=/usr/bin/gabkeep@' \
         packaging/systemd/gabkeep.service > "$payload/usr/lib/systemd/system/gabkeep.service"
-    install -m 0640 configs/gabkeep.yaml "$payload/etc/gabkeep/config.yaml"
+    install -m 0640 configs/config.yaml "$payload/etc/gabkeep/config.yaml"
     install -m 0644 README.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$payload/usr/share/doc/gabkeep/"
     cp -R THIRD_PARTY_LICENSES "$payload/usr/share/doc/gabkeep/THIRD_PARTY_LICENSES"
     cat > "$payload/usr/share/doc/gabkeep/PACKAGED_INSTALL.md" <<'EOF'
