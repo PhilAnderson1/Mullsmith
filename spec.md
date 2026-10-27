@@ -1028,7 +1028,6 @@ gabkeep/
 │   └── server/             # http routing, api handlers, sse plumbing, embed
 ├── web/                    # embedded: index.html, app/, vendor/ (marked, dompurify)
 ├── migrations/             # *.sql (embedded)
-├── docs/
 └── spec.md                 # this file
 ```
 

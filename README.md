@@ -25,8 +25,9 @@ of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
   scratchpad directories. Only what you ask the model to search/fetch ever
   leaves the box, and only to the providers you configure.
 
-Status: **M0–M7(a) complete** (see [`spec.md`](spec.md) §13) — hardening
-artifacts under [`docs/`](docs/). See [Security](#security) for residual risks.
+Status: **M0–M7(a) complete** (see [`spec.md`](spec.md) §13). Hardening and
+audit artifacts stay with the operator as machine-local files (untracked
+`local-only/docs/`). See [Security](#security) for residual risks.
 
 ## Requirements
 
@@ -160,10 +161,11 @@ make check            # go vet + go test -race + gosec + govulncheck
 make fuzz-short       # 60 s of coverage-guided fuzzing on the path sandbox
 ```
 
-Artifacts for the current release live in [`docs/reports/`](docs/reports)
-(gosec, govulncheck, OWASP ZAP baseline) and the §9.16 re-audit with evidence
-per line, false-positive justifications included, is
-[`docs/security-audit-2026-10.md`](docs/security-audit-2026-10.md).
+Artifacts for the current release (gosec, govulncheck, OWASP ZAP baseline)
+and the §9.16 re-audit with evidence per line — false-positive justifications
+included — are operator machine-local files under `local-only/docs/`, kept
+out of the repository like the dev and scan configs they belong to. Any of
+them is reproducible from the commands above.
 
 ### Residual risks (read this)
 
