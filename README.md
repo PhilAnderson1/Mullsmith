@@ -1,5 +1,7 @@
 # Gabkeep
 
+[![CI](https://github.com/PhilAnderson1/Gabkeep/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilAnderson1/Gabkeep/actions/workflows/ci.yml)
+
 Self-hosted, single-binary chat assistant with a ChatGPT-style web UI in front
 of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
 
