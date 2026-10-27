@@ -100,8 +100,8 @@ stage_archive() {
     install -m 0755 "$work_dir/gabkeep" "$archive_dir/gabkeep"
     install -m 0755 packaging/install.sh packaging/uninstall.sh "$archive_dir/"
     install -m 0644 packaging/systemd/gabkeep.service "$archive_dir/packaging/systemd/"
-    cp -R configs "$archive_dir/"
-    install -m 0644 README.md spec.md "$archive_dir/"
+    cp -R configs THIRD_PARTY_LICENSES "$archive_dir/"
+    install -m 0644 README.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$archive_dir/"
     tar -C "$work_dir" -czf "$artifacts/$archive_root.tar.gz" "$archive_root"
 }
 
@@ -116,7 +116,8 @@ stage_native_payload() {
     sed 's@ExecStart=/usr/local/bin/gabkeep@ExecStart=/usr/bin/gabkeep@' \
         packaging/systemd/gabkeep.service > "$payload/usr/lib/systemd/system/gabkeep.service"
     install -m 0640 configs/gabkeep.yaml "$payload/etc/gabkeep/config.yaml"
-    install -m 0644 README.md spec.md "$payload/usr/share/doc/gabkeep/"
+    install -m 0644 README.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$payload/usr/share/doc/gabkeep/"
+    cp -R THIRD_PARTY_LICENSES "$payload/usr/share/doc/gabkeep/THIRD_PARTY_LICENSES"
     cat > "$payload/usr/share/doc/gabkeep/PACKAGED_INSTALL.md" <<'EOF'
 # Package installation
 
@@ -317,6 +318,9 @@ fi
 %doc /usr/share/doc/gabkeep/README.md
 %doc /usr/share/doc/gabkeep/spec.md
 %doc /usr/share/doc/gabkeep/PACKAGED_INSTALL.md
+%doc /usr/share/doc/gabkeep/THIRD_PARTY_NOTICES.md
+%doc /usr/share/doc/gabkeep/THIRD_PARTY_LICENSES
+%license /usr/share/doc/gabkeep/LICENSE
 EOF
     rpmbuild --define "_topdir $rpm_top" --define "_tmppath $rpm_top/tmp" \
         --define "_staging $payload" \

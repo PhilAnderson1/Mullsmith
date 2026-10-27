@@ -26,13 +26,21 @@ config_source="$content_root/configs/gabkeep.yaml"
 service_source="$content_root/packaging/systemd/gabkeep.service"
 readme_source="$content_root/README.md"
 spec_source="$content_root/spec.md"
+license_source="$content_root/LICENSE"
+third_party_notices_source="$content_root/THIRD_PARTY_NOTICES.md"
+third_party_licenses_source="$content_root/THIRD_PARTY_LICENSES"
 
-for required_file in "$binary" "$config_source" "$readme_source" "$spec_source"; do
+for required_file in "$binary" "$config_source" "$readme_source" "$spec_source" "$license_source" "$third_party_notices_source"; do
     if [ ! -f "$required_file" ]; then
         echo "Required installation file is missing: $required_file" >&2
         exit 1
     fi
 done
+
+if [ ! -d "$third_party_licenses_source" ]; then
+    echo "Required installation directory is missing: $third_party_licenses_source" >&2
+    exit 1
+fi
 
 if ! getent group gabkeep >/dev/null 2>&1; then
     if command -v groupadd >/dev/null 2>&1; then
@@ -62,6 +70,12 @@ install -d -o gabkeep -g gabkeep -m 0700 /var/lib/gabkeep
 install -d -o root -g root -m 0755 /usr/local/share/gabkeep
 install -o root -g root -m 0644 "$readme_source" /usr/local/share/gabkeep/README.md
 install -o root -g root -m 0644 "$spec_source" /usr/local/share/gabkeep/spec.md
+install -o root -g root -m 0644 "$license_source" /usr/local/share/gabkeep/LICENSE
+install -o root -g root -m 0644 "$third_party_notices_source" /usr/local/share/gabkeep/THIRD_PARTY_NOTICES.md
+install -d -o root -g root -m 0755 /usr/local/share/gabkeep/THIRD_PARTY_LICENSES
+cp -R "$third_party_licenses_source/." /usr/local/share/gabkeep/THIRD_PARTY_LICENSES/
+find /usr/local/share/gabkeep/THIRD_PARTY_LICENSES -type d -exec chmod 0755 {} +
+find /usr/local/share/gabkeep/THIRD_PARTY_LICENSES -type f -exec chmod 0644 {} +
 
 install_config_if_missing() {
     source_file=$1
