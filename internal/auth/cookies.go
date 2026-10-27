@@ -23,7 +23,7 @@ const (
 // (Expires/Max-Age matching the DB row — surviving browser close, spec §9.1);
 // otherwise it is a browser-session cookie with no expiry attribute.
 func SessionCookie(rawToken string, remembered bool, expiresAt time.Time, secure bool) *http.Cookie {
-	c := &http.Cookie{
+	c := &http.Cookie{ // #nosec G124 -- Secure per request (server.secureRequest, §9.1); HttpOnly, SameSite=Lax fixed
 		Name:     SessionCookieName,
 		Value:    rawToken,
 		Path:     "/",
@@ -40,7 +40,7 @@ func SessionCookie(rawToken string, remembered bool, expiresAt time.Time, secure
 
 // ClearSessionCookie expires the cookie immediately.
 func ClearSessionCookie(secure bool) *http.Cookie {
-	return &http.Cookie{
+	return &http.Cookie{ // #nosec G124 -- see SessionCookie: Secure per request (§9.1)
 		Name:     SessionCookieName,
 		Value:    "",
 		Path:     "/",
@@ -55,6 +55,7 @@ func ClearSessionCookie(secure bool) *http.Cookie {
 // CSRFCookie is readable by same-origin JS on purpose — it carries no
 // authority; its value must be mirrored into the CSRF header (double-submit).
 func CSRFCookie(token string, secure bool) *http.Cookie {
+	// #nosec G124 -- HttpOnly false is deliberate (double-submit needs JS); Secure per request (§9.1, §9.5)
 	return &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    token,
@@ -67,7 +68,7 @@ func CSRFCookie(token string, secure bool) *http.Cookie {
 
 // ClearCSRFCookie expires the CSRF cookie.
 func ClearCSRFCookie(secure bool) *http.Cookie {
-	c := CSRFCookie("", secure)
+	c := CSRFCookie("", secure) // #nosec G124 -- see CSRFCookie
 	c.Expires = time.Unix(0, 0)
 	c.MaxAge = -1
 	return c
