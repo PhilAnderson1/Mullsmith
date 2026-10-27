@@ -48,18 +48,19 @@ audit artifacts stay with the operator as machine-local files (untracked
 ## Build
 
 ```sh
-make build            # ./gabkeep, statically linked, version/commit/date stamped
+make build            # bin/gabkeep, statically linked, version/commit/date stamped
 # or without make:
+mkdir -p bin
 CGO_ENABLED=0 go build -trimpath \
   -ldflags "-s -w -X main.version=$(git describe --tags --always) -X main.commit=$(git rev-parse --short HEAD) -X main.buildDate=$(date -u +%FT%TZ)" \
-  -o gabkeep ./cmd/gabkeep
+  -o bin/gabkeep ./cmd/gabkeep
 ```
 
 ## Quick install on a fresh Ubuntu box
 
 ```sh
 # 1. Binary
-sudo install -m 0755 gabkeep /usr/local/bin/gabkeep
+sudo install -m 0755 bin/gabkeep /usr/local/bin/gabkeep
 
 # 2. Service user + state dirs
 sudo useradd --system --home-dir /var/lib/gabkeep --shell /usr/sbin/nologin gabkeep

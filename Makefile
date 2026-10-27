@@ -12,7 +12,8 @@ LDFLAGS := -s -w \
 .PHONY: build test race vet lint vuln fuzz-short check dist
 
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o gabkeep ./cmd/gabkeep
+	mkdir -p bin
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/gabkeep ./cmd/gabkeep
 
 test:
 	go test ./...
@@ -41,6 +42,6 @@ check: vet race lint vuln
 # Release artifact: single static binary stamped with version/commit/date.
 dist: build
 	@mkdir -p dist
-	@cp gabkeep dist/gabkeep-$(VERSION)-linux-amd64
+	@cp bin/gabkeep dist/gabkeep-$(VERSION)-linux-amd64
 	@sha256sum dist/gabkeep-$(VERSION)-linux-amd64 | tee dist/gabkeep-$(VERSION)-linux-amd64.sha256
 	@echo "dist/gabkeep-$(VERSION)-linux-amd64 (+ .sha256)"

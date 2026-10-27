@@ -10,8 +10,7 @@ fi
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # Release archives place install.sh and gabkeep at their root. In a source
-# checkout this script remains under packaging/; accept either the make
-# output (./gabkeep) or bin/gabkeep.
+# checkout this script remains under packaging/ and make writes bin/gabkeep.
 content_root="$script_dir"
 binary="$content_root/gabkeep"
 if [ ! -f "$binary" ] && [ -f "$script_dir/../go.mod" ]; then
