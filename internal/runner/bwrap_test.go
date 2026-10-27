@@ -349,7 +349,7 @@ func TestJailNetworkBlockedByDefault(t *testing.T) {
 	r := scratchDirs(t).req(`
 import socket
 try:
-    socket.create_connection(("192.168.0.2", 80), timeout=3)
+    socket.create_connection(("192.0.2.1", 80), timeout=3)
     print("NETWORK(!)")
 except OSError as e:
     print("blocked:", e.strerror or e)

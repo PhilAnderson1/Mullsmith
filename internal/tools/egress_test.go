@@ -25,7 +25,7 @@ func fakeLookup(answers ...string) func(ctx context.Context, host string) ([]str
 func TestSSRFBlocklistMatrix(t *testing.T) {
 	blocked := []string{
 		"127.0.0.1", "127.8.8.8", // loopback
-		"10.0.0.1", "172.16.5.5", "192.168.0.2", // RFC1918 (incl. this deployment's LLM host)
+		"10.0.0.1", "172.16.5.5", "192.168.0.2", // RFC1918
 		"100.64.0.1", "100.127.255.255", // CGNAT
 		"169.254.169.254",                // cloud metadata
 		"0.0.0.0",                        // unspecified
