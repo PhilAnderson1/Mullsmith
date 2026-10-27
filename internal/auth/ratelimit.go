@@ -127,6 +127,12 @@ func (l *Limiter) gcLocked(now time.Time) {
 // LoginLocks tracks failed logins per account and locks after a threshold
 // (spec §9.1: max_failed_logins per 15 minutes → 15-minute lockout).
 //
+// Counting uses a FIXED window that opens with the first failure and ends
+// at firstAt+window: a failure past the boundary opens a fresh window at
+// count 1, so stale failures can neither arm a lockout nor survive one.
+// The window is evaluated inside Fail on every attempt — correctness never
+// waits for the garbage sweep to have run.
+//
 // Keys are stored as SHA-256 digests: the raw input may be an
 // attacker-sized string (login never echoed a length check before
 // audit2), and a digest pins every record to a fixed ~64-byte key. The map
@@ -137,16 +143,28 @@ type LoginLocks struct {
 	m           map[string]*failRecord
 	gcAt        time.Time
 	noRoomUntil time.Time // negative cache: nothing evictable until then
+	// now is a clock seam (nil = time.Now) so window/lockout tests step
+	// time explicitly instead of sleeping.
+	now func() time.Time
 }
 
 type failRecord struct {
 	count       int
-	firstAt     time.Time
-	lockedUntil time.Time
+	firstAt     time.Time // first failure of the current counting window
+	lockedUntil time.Time // zero until a threshold crossing arms a lockout
 }
 
 func NewLoginLocks() *LoginLocks {
-	return &LoginLocks{m: map[string]*failRecord{}}
+	return &LoginLocks{m: map[string]*failRecord{}, now: time.Now}
+}
+
+// clockNow keeps Fail and Locked on one notion of "now"; a zero-value
+// LoginLocks keeps working even without the seam installed.
+func (l *LoginLocks) clockNow() time.Time {
+	if l.now == nil {
+		return time.Now()
+	}
+	return l.now()
 }
 
 func hashLockKey(key string) string {
@@ -161,26 +179,36 @@ func (l *LoginLocks) Len() int {
 	return len(l.m)
 }
 
-// Locked reports whether the account is currently locked.
+// Locked reports whether the account is currently locked. The lockout is an
+// absolute deadline: it stays effective regardless of what the counting
+// window or the garbage sweep has done.
 func (l *LoginLocks) Locked(key string) bool {
+	now := l.clockNow()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	r, ok := l.m[hashLockKey(key)]
 	if !ok {
 		return false
 	}
-	return time.Now().Before(r.lockedUntil)
+	return now.Before(r.lockedUntil)
 }
 
-// Fail records one failed attempt; when count reaches max within the window
-// the account is locked for the same window length. Saturation policy
+// Fail records one failed attempt against a fixed counting window that
+// opened with the account's first failure (firstAt … firstAt+window). A
+// failure at or past the window's end opens a fresh one at count 1 instead
+// of inheriting stale counts. Crossing the threshold locks the account for
+// a full window measured from the locking failure. An active lockout
+// absorbs attempts: they are neither counted nor do they extend its
+// deadline; once it lapses, the next failure starts a fresh count of 1
+// (a lockout always ends at or after firstAt+window, so its expiry implies
+// the counting window expired too). Saturation policy
 // (audit2): existing records always update, and ACTIVE LOCKOUTS ARE NEVER
 // EVICTED — when the map holds nothing but locked records, a brand-new
 // key's failure is dropped instead of evicting someone's lockout. The
 // leftover exposure (a newcomer momentarily untracked) stays bounded by
 // the per-IP login bucket and the hash gate.
 func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
-	now := time.Now()
+	now := l.clockNow()
 	hk := hashLockKey(key)
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -205,6 +233,19 @@ func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 		}
 		r = &failRecord{count: 0, firstAt: now}
 		l.m[hk] = r
+	}
+
+	// Active lockout: this attempt counts for nothing and moves nothing —
+	// the deadline set when the threshold was crossed is the whole story.
+	if now.Before(r.lockedUntil) {
+		return
+	}
+	// Fixed window expired: open a fresh one at count 1. This is evaluated
+	// here rather than relying on deletion, so correctness holds even when
+	// the sweep has not run.
+	if !now.Before(r.firstAt.Add(window)) {
+		r.count = 0
+		r.firstAt = now
 	}
 	r.count++
 	if r.count >= max {
