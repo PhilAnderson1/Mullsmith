@@ -1,7 +1,7 @@
 # gabkeep.service — systemd unit for a production install (spec §2.1, §9).
 # Install path assumes: binary /usr/local/bin/gabkeep, config
 # /etc/gabkeep/config.yaml, state /var/lib/gabkeep (mode 0700, owned by the
-# gabkeep user created below). See README "Installing on Ubuntu" for setup.
+# gabkeep user created below). See README "Quick install on a fresh Ubuntu box".
 
 [Unit]
 Description=Gabkeep self-hosted chat assistant
