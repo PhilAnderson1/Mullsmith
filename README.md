@@ -99,8 +99,10 @@ Let's Encrypt keys stay `0600 root:root` by certbot policy, and gabkeep runs
 unprivileged. The shipped unit solves this without a second on-disk copy:
 `ExecStartPre` (root) stages cert+key into the RAM-only `RuntimeDirectory`
 `/run/gabkeep`, and a certbot *deploy hook* (`systemctl try-restart gabkeep`)
-picks up renewals. If you terminate TLS at a proxy instead, bind gabkeep to
-loopback and skip all of it.
+picks up renewals. That line ships **commented out** — the default install is
+plain HTTP on loopback (private networks only); un-comment it, set
+`YOUR.HOSTNAME`, and enable `server.tls` to serve HTTPS directly. If you
+terminate TLS at a proxy instead, bind gabkeep to loopback and skip all of it.
 
 ### CLI
 

@@ -114,10 +114,11 @@ if [ -f "$service_source" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
     echo "Installed the systemd service (not enabled or started)."
     echo ""
-    echo "The unit stages TLS certificates from certbot into /run/gabkeep:"
-    echo "replace YOUR.HOSTNAME in /etc/systemd/system/gabkeep.service with"
-    echo "your certbot domain, or delete that ExecStartPre line when a reverse"
-    echo "proxy terminates TLS (keep server.tls.enabled: false in the config)."
+    echo "TLS is OFF by default: gabkeep serves plain HTTP on loopback, which"
+    echo "is fine on a private network only. To serve HTTPS with certbot"
+    echo "certificates, un-comment the ExecStartPre line in"
+    echo "/etc/systemd/system/gabkeep.service, replace YOUR.HOSTNAME with"
+    echo "your certbot domain, and set server.tls.enabled: true in the config."
 fi
 
 echo "Installed Gabkeep to /usr/local/bin/gabkeep"

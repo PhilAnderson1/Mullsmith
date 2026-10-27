@@ -131,11 +131,15 @@ and installs a systemd unit. It does not enable or start the service. Edit
 expansion, for example `GABKEEP_SEARCH_API_KEY=...` (mode 0640,
 root:gabkeep).
 
-TLS: the shipped unit stages certbot certificates into RAM-only `/run/gabkeep`
-at service start. Replace `YOUR.HOSTNAME` in the unit with your certbot domain
-(`sudo systemctl edit --full gabkeep`), or, if a reverse proxy terminates TLS,
-remove that `ExecStartPre` line and keep `server.tls.enabled: false` in the
-config.
+TLS: OFF by default — gabkeep starts on plain HTTP bound to loopback, which
+is acceptable on a private network only. To serve HTTPS with certbot
+certificates, un-comment the `ExecStartPre` staging line in the unit
+(`sudo systemctl edit --full gabkeep`), replace `YOUR.HOSTNAME` with your
+certbot domain, and set `server.tls.enabled: true` in the config; the unit
+then stages cert+key into RAM-only `/run/gabkeep` at every service start.
+Certbot renewals are picked up by a deploy hook doing
+`systemctl try-restart gabkeep`. If a reverse proxy terminates TLS instead,
+keep `server.tls.enabled: false` and bind gabkeep to loopback.
 
 Check the configuration and endpoint before starting:
 
