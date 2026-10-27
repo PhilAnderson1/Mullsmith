@@ -171,10 +171,14 @@ function applyMetaFlags() {
   }
   const sel = $("#model-picker");
   sel.replaceChildren();
-  for (const [value, label] of [["", "Default model"], ...m.models.map((x) => [x, x])]) {
+  // Concrete model names only — no placeholder entry: every
+  // conversation's selection resolves to a real one (default_model covers
+  // those that never chose explicitly). The Set dedupes the common case
+  // where models already contains the default.
+  for (const value of new Set([m.default_model, ...m.models].filter(Boolean))) {
     const opt = document.createElement("option");
     opt.value = value;
-    opt.textContent = label;
+    opt.textContent = value;
     sel.appendChild(opt);
   }
 }
@@ -1411,7 +1415,20 @@ function renderConversation() {
   $("#topbar-title").textContent = c ? c.title : "Gabkeep";
   const sel = $("#model-picker");
   sel.disabled = !state.currentId;
-  if (c) sel.value = c.model;
+  if (c) {
+    // Show the model ACTUALLY in use: an unset conversation runs on the
+    // server default, so name that one.
+    const active = c.model || state.meta.default_model || "";
+    sel.querySelectorAll("option[data-fellout]").forEach((o) => o.remove());
+    if (active && ![...sel.options].some((o) => o.value === active)) {
+      // A model since removed from the allow-list still runs this
+      // conversation — show the truth rather than a blank selection.
+      const opt = new Option(active, active);
+      opt.dataset.fellout = "1";
+      sel.appendChild(opt);
+    }
+    sel.value = active;
+  }
 
   const input = $("#composer-input");
   input.disabled = !state.currentId;
@@ -1601,7 +1618,7 @@ async function boot() {
   try {
     state.meta = await api.meta();
   } catch {
-    state.meta = { registration: "open", remember_login: true, models: [] };
+    state.meta = { registration: "open", remember_login: true, models: [], default_model: "" };
   }
   applyMetaFlags();
 

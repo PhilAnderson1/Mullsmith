@@ -132,7 +132,7 @@ llm:
   endpoint: "http://192.168.0.2:8080/v1"      # OpenAI-compatible base URL (verified live)
   api_key: ""                                 # optional; sent as Bearer. This server needs none
   model: "Qwen3.8 Flash Next"
-  models:                                # optional picker list in UI; defaults to [model]
+  models:                                # picker list in UI; `model` is always part of it
     - Qwen3.8 Flash Next
   max_context_tokens: 262144             # per server /v1/models (context_length)
   default_temperature: 0.7

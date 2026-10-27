@@ -478,6 +478,22 @@ func (c *Config) setDefaults() {
 	if len(c.LLM.Models) == 0 && c.LLM.Model != "" {
 		c.LLM.Models = []string{c.LLM.Model}
 	}
+	// The default model is always pickable: a conversation with no explicit
+	// choice RUNS on it, and the picker shows the model actually in use —
+	// it must be able to name (and re-select) it. Validation reads the same
+	// list, so allowing it here keeps picker and API honest with each other.
+	if c.LLM.Model != "" {
+		found := false
+		for _, m := range c.LLM.Models {
+			if m == c.LLM.Model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.LLM.Models = append(c.LLM.Models, c.LLM.Model)
+		}
+	}
 	if c.LLM.RequestTimeout == 0 {
 		c.LLM.RequestTimeout = Duration(5 * time.Minute)
 	}

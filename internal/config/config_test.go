@@ -471,3 +471,31 @@ func TestCheckIOWritable(t *testing.T) {
 		t.Errorf("read_timeout default = %v", cfg.Server.ReadTimeout.D())
 	}
 }
+
+func TestLoadModelsAlwaysContainsDefault(t *testing.T) {
+	// The picker shows the model a conversation actually runs on, and the
+	// same list validates per-conversation choices — so the default model
+	// must be in it even when the admin curated an explicit list.
+	cfg, err := Load(writeCfg(t, minimalYAML+"  models: [\"alpha\", \"beta\"]\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"alpha", "beta", "test-model"}
+	if len(cfg.LLM.Models) != len(want) {
+		t.Fatalf("models = %v, want %v", cfg.LLM.Models, want)
+	}
+	for i := range want {
+		if cfg.LLM.Models[i] != want[i] {
+			t.Fatalf("models = %v, want %v", cfg.LLM.Models, want)
+		}
+	}
+
+	// Already present ⇒ not duplicated.
+	cfg, err = Load(writeCfg(t, minimalYAML+"  models: [\"test-model\", \"alpha\"]\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.LLM.Models) != 2 || cfg.LLM.Models[1] != "alpha" {
+		t.Errorf("models = %v, want no duplicate of test-model", cfg.LLM.Models)
+	}
+}

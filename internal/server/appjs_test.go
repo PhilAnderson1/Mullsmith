@@ -159,3 +159,25 @@ func TestJSSettingsSaveReturnsToChat(t *testing.T) {
 		}
 	}
 }
+
+func TestJSModelPickerShowsModelInUse(t *testing.T) {
+	// No "Default model" placeholder: the dropdown lists concrete model
+	// names, and an unset conversation displays the server default it
+	// actually runs on (meta.default_model). A conversation whose model was
+	// since removed from the allow-list still shows it (the transient
+	// data-fellout option), because that is the model in use.
+	b, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if strings.Contains(src, "Default model") {
+		t.Error(`app.js still renders a "Default model" placeholder option`)
+	}
+	rc := jsFuncBody(t, src, "function renderConversation(")
+	for _, want := range []string{"state.meta.default_model", "data-fellout", "sel.value = active"} {
+		if !strings.Contains(rc, want) {
+			t.Errorf("renderConversation must contain %q", want)
+		}
+	}
+}

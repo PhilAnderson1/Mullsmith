@@ -55,7 +55,7 @@ llm:
   endpoint: "http://127.0.0.1:8081/v1"   # your OpenAI-compatible server
   api_key: "${GABKEEP_LLM_API_KEY:-}"
   model: "your-model-name"
-  models: []                             # allowlist users may pick; empty = model only
+  models: []                             # picker list; the model above is always in it
   max_context_tokens: 32768
   default_temperature: 0.7
   request_timeout: 5m

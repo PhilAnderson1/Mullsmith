@@ -210,9 +210,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleMeta exposes only what the login/register screens need.
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"app":            "gabkeep",
-		"version":        s.appVer,
-		"models":         s.cfg.LLM.Models,
+		"app":     "gabkeep",
+		"version": s.appVer,
+		"models":  s.cfg.LLM.Models,
+		// default_model lets the picker name the model a conversation with
+		// no explicit choice actually runs on.
+		"default_model":  s.cfg.LLM.Model,
 		"registration":   s.cfg.Auth.Registration,
 		"remember_login": s.cfg.Auth.RememberLogin,
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
