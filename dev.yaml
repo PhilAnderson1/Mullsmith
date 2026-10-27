@@ -43,6 +43,11 @@ llm:
   request_timeout: 5m
   max_tokens_response: 16384               # reasoning tokens come back too (§6.2)
   show_reasoning: false
+  vision: true                             # endpoint serves a vision model
+                                           # (2026-10-27): uploaded images ride
+                                           # inline as OpenAI image_url parts
+  vision_max_image_bytes: 4MiB             # per-picture embed cap
+  vision_max_images: 4                     # inline pictures per message
 
 tools:
   web_search:

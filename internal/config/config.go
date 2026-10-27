@@ -214,6 +214,13 @@ type LLM struct {
 	RequestTimeout     Duration `yaml:"request_timeout"`
 	MaxTokensResponse  int      `yaml:"max_tokens_response"`
 	ShowReasoning      bool     `yaml:"show_reasoning"`
+	// Vision sends image attachments to the endpoint inline (OpenAI
+	// image_url content parts) instead of only naming them in the
+	// manifest. OFF by default: a text-only endpoint must never receive a
+	// content-part array it cannot parse.
+	Vision              bool `yaml:"vision"`
+	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"` // per-picture cap (default 4 MiB)
+	VisionMaxImages     int  `yaml:"vision_max_images"`      // inline pictures per message (default 4)
 }
 
 type Tools struct {
@@ -474,6 +481,12 @@ func (c *Config) setDefaults() {
 	if c.LLM.RequestTimeout == 0 {
 		c.LLM.RequestTimeout = Duration(5 * time.Minute)
 	}
+	if c.LLM.VisionMaxImageBytes == 0 {
+		c.LLM.VisionMaxImageBytes = 4 << 20
+	}
+	if c.LLM.VisionMaxImages == 0 {
+		c.LLM.VisionMaxImages = 4
+	}
 	if c.Tools.WebSearch.Provider == "" {
 		c.Tools.WebSearch.Provider = "brave"
 	}
@@ -678,6 +691,12 @@ func (c *Config) Validate() error {
 	}
 	if c.LLM.DefaultTemperature < 0 || c.LLM.DefaultTemperature > 2 {
 		f.bad("llm.default_temperature: must be within 0..2")
+	}
+	if c.LLM.VisionMaxImageBytes < 0 {
+		f.bad("llm.vision_max_image_bytes: must be >= 0")
+	}
+	if c.LLM.VisionMaxImages < 0 {
+		f.bad("llm.vision_max_images: must be >= 0")
 	}
 
 	switch c.Tools.WebSearch.Provider {

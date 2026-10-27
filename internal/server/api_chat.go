@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -129,20 +131,87 @@ func (s *Server) validateAttachmentPaths(w http.ResponseWriter, r *http.Request,
 // the single source of truth: an upload that vanished since the message
 // was sent is skipped in silence (the historical chat chip stays, the
 // model is simply not told about bytes that are not there).
-func attachmentManifest(root, userID string, atts []store.Attachment) string {
+//
+// With llm.vision on, raster uploads that fit the configured caps are also
+// embedded as data: URLs (returned in order, to ride the message as
+// image_url content parts); their manifest lines are annotated so the
+// model knows the picture below is that file. Anything the embed refuses —
+// missing bytes, oversized, non-raster content, past the per-message cap —
+// degrades to the manifest-only line, exactly the pre-vision pipeline:
+// the fs_read pointer still works.
+func attachmentManifest(root, userID string, atts []store.Attachment, vis visionLimits) (string, []string) {
 	var b strings.Builder
+	var urls []string
 	b.WriteString("\n\n[Attached files — stored in your scratchpad; open them with fs_read:]")
 	for _, a := range atts {
 		fi, err := scratch.Stat(root, userID, a.Path)
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
+		note := ""
+		if vis.enabled && len(urls) < vis.maxImages && fi.Size() <= vis.maxBytes {
+			if url, ok := imageDataURL(root, userID, a.Path, vis.maxBytes); ok {
+				urls = append(urls, url)
+				note = " inline=yes"
+			}
+		}
 		b.WriteString("\n- name=" + jsonQuote(a.Name()) +
 			" path=" + jsonQuote(a.Path) +
 			" media=" + scratch.MediaTypeForPath(a.Path) +
-			" bytes=" + strconv.FormatInt(fi.Size(), 10))
+			" bytes=" + strconv.FormatInt(fi.Size(), 10) + note)
 	}
-	return b.String()
+	return b.String(), urls
+}
+
+// visionLimits snapshots the llm.vision knobs for one request-build.
+// Non-positive values fall back to the program defaults, mirroring
+// validateAttachmentPaths: struct-literal configs built outside
+// config.Load (tests) still get sane caps.
+func (s *Server) visionLimits() visionLimits {
+	vis := visionLimits{
+		enabled:   s.cfg.LLM.Vision,
+		maxBytes:  int64(s.cfg.LLM.VisionMaxImageBytes),
+		maxImages: s.cfg.LLM.VisionMaxImages,
+	}
+	if vis.maxBytes <= 0 {
+		vis.maxBytes = 4 << 20
+	}
+	if vis.maxImages <= 0 {
+		vis.maxImages = 4
+	}
+	return vis
+}
+
+type visionLimits struct {
+	enabled   bool
+	maxBytes  int64
+	maxImages int
+}
+
+// imageDataURL reads a sandboxed upload (§9.7 open chain) and encodes it as
+// a data: URL when its SNIFFED content type is a raster image endpoints
+// consume. The type comes from the bytes (http.DetectContentType, spec
+// §9.4), never the extension: an SVG or HTML file wearing a .png name is
+// not a picture, and active content must never reach the model's context
+// as one. Reads are capped: a file that keeps reading past maxBytes is
+// refused whole, not truncated into a corrupt image.
+func imageDataURL(root, userID, rel string, maxBytes int64) (string, bool) {
+	f, err := scratch.OpenFile(root, userID, rel)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil || int64(len(data)) > maxBytes || len(data) == 0 {
+		return "", false
+	}
+	mime := http.DetectContentType(data)
+	switch mime {
+	case "image/png", "image/jpeg", "image/webp":
+	default:
+		return "", false
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), true
 }
 
 // --- POST /api/v1/messages/{id}/regenerate (spec §5.2) ------------------------------
@@ -709,6 +778,7 @@ func (s *Server) finishMessage(_ context.Context, msgID, content, status string,
 // told about tools in that mode. userID owns the conversation; it is the
 // sandbox root owner for the attachment manifests.
 func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID string) []llm.ChatMessage {
+	vis := s.visionLimits()
 	answered := map[string]bool{}
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -749,10 +819,13 @@ func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID st
 			out = append(out, llm.ChatMessage{Role: "assistant", Content: m.Content, ToolCalls: replay})
 		default:
 			content := m.Content
+			var imgs []string
 			if m.Role == "user" && len(m.Attachments) > 0 {
-				content += attachmentManifest(s.cfg.Scratchpad.Root, userID, m.Attachments)
+				var manifest string
+				manifest, imgs = attachmentManifest(s.cfg.Scratchpad.Root, userID, m.Attachments, vis)
+				content += manifest
 			}
-			out = append(out, llm.ChatMessage{Role: m.Role, Content: content})
+			out = append(out, llm.ChatMessage{Role: m.Role, Content: content, Images: imgs})
 		}
 	}
 	if !toolsEnabled {

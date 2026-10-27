@@ -20,11 +20,37 @@ import (
 // ChatMessage is one message in a chat/completions request. The tool fields
 // carry the OpenAI tool protocol (spec §6.1 step 5): assistant rows replay
 // their ToolCalls, and role "tool" rows answer one call via ToolCallID.
+// Images carries inline pictures as data: URLs (llm.vision): when non-empty,
+// MarshalJSON sends Content plus Images as OpenAI content parts. Only user
+// messages ever carry images — a message never mixes parts with the tool
+// protocol.
 type ChatMessage struct {
 	Role       string         `json:"role"`
 	Content    string         `json:"content"`
 	ToolCalls  []ChatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+	Images     []string       `json:"-"`
+}
+
+// MarshalJSON speaks both content shapes: the plain string content every
+// protocol row uses, and — when Images is set — the OpenAI multimodal parts
+// array [{type:"text"},{type:"image_url"}…]. Text-only endpoints are never
+// shown the array shape: ChatMessages only get Images when llm.vision is on.
+func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	if len(m.Images) == 0 {
+		type plain ChatMessage
+		return json.Marshal(plain(m))
+	}
+	parts := make([]any, 0, len(m.Images)+1)
+	if m.Content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	}
+	for _, url := range m.Images {
+		parts = append(parts, map[string]any{
+			"type": "image_url", "image_url": map[string]any{"url": url},
+		})
+	}
+	return json.Marshal(map[string]any{"role": m.Role, "content": parts})
 }
 
 // ChatToolCall is a function call as replayed inside an assistant message.

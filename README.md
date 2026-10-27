@@ -9,6 +9,10 @@ of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
   "Stay logged in" cookie, invite-only or closed registration, login lockout.
 * **Streaming chat** — SSE token streaming, stop/regenerate, markdown answers,
   dark/light theme, responsive from 320 px phones to ultrawide.
+* **Vision** — with `llm.vision: true`, images you attach to a message
+  (png/jpeg/webp) travel to the endpoint inline, so a vision-capable model
+  actually sees the picture; text-only endpoints keep the old manifest-only
+  behaviour untouched.
 * **Tools with an approval layer** — `web_search` (Brave) and SSRF-guarded
   `web_fetch`, per-conversation **scratchpad files** (`fs_list/fs_read/
   fs_write/fs_delete`, uploads from the browser, artifact download cards, a
@@ -34,8 +38,9 @@ artifacts under [`docs/`](docs/). See [Security](#security) for residual risks.
   `deploy/gabkeep.service` has it, with `DelegateSubgroup=payload`) so each run
   can get a per-run cgroup resource meter — kernel ≥ 5.7 with cgroup v2. No
   meterable subtree ⇒ code execution refuses to start, never runs un-metered.
-* An OpenAI-compatible endpoint for the model. v1 is text-only (current
-  deployments use text chat models; image input support may come later).
+* An OpenAI-compatible endpoint for the model. Text is the baseline; if the
+  endpoint serves a vision model, set `llm.vision: true` and attached images
+  (png/jpeg/webp) are sent inline as `image_url` content parts.
 * To build: Go ≥ 1.24 (Ubuntu's `apt install golang-go` is fine if recent
   enough; otherwise grab the latest from https://go.dev/dl/).
 

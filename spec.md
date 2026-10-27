@@ -138,6 +138,10 @@ llm:
   default_temperature: 0.7
   request_timeout: 5m
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
+  vision: false                          # send attached images inline to a
+                                         # vision-capable endpoint (§6.1 step 1)
+  vision_max_image_bytes: 4MiB           # per-picture inline cap
+  vision_max_images: 4                   # inline pictures per message
 
 tools:
   web_search:
@@ -371,7 +375,14 @@ registration mode — used by the login/register screens), everything else behin
 
 ### 6.1 Flow per user turn
 
-1. Persist user message (+ attachments as `attachments` rows).
+1. Persist user message (+ attachments as `attachments` rows). When the turn is replayed
+   to the model, attachments appear in a server-generated manifest (`name/path/media/bytes`)
+   the `fs_*` tools can open. With `llm.vision` on, raster uploads (png/jpeg/webp sniffed
+   from the bytes, per-file and per-message caps) additionally travel inline as OpenAI
+   `image_url` content parts so a vision-capable endpoint sees the picture itself;
+   refused files (oversized, non-raster content, past the cap) degrade to the manifest
+   line alone, and with the flag off the wire content stays a plain string — a text-only
+   endpoint never sees a parts array.
 2. **Context assembly:** system prompt (global + conversation) → prior history trimmed to
    fit the context budget — `llm.max_context_tokens` minus `max_tokens_response` headroom
    (keep most recent turns; whole-turn granularity; oldest dropped first; tool results

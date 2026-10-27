@@ -13,6 +13,14 @@ func EstimateTokens(s string) int {
 	return (utf8.RuneCountInString(s) + 3) / 4
 }
 
+// VisionImageTokens budgets one inline image (llm.vision) against the
+// context window. Real vision encoders spend a few hundred to ~2k tokens
+// per picture depending on resolution; a flat, slightly generous number is
+// what budgeting needs — it only shifts how much history survives, and
+// under-counting images would let a few picture turns crowd the request
+// past the endpoint's window.
+const VisionImageTokens = 1024
+
 // ToolGuidance extends the system prompt while tools are advertised
 // (§7.1 prompt-injection hygiene: tool output is declared data, never
 // instructions). The scratchpad layout is spelled out exhaustively: a
@@ -42,10 +50,11 @@ const CodeRunGuidance = " You may also run short-lived scripts with code_run (li
 	"download card in the chat. The user must approve each run unless " +
 	"they chose to allow this conversation."
 
-// msgCost budgets one message, including replayed tool-call arguments and
-// tool results (spec §6.1: tool results count toward the budget).
+// msgCost budgets one message, including replayed tool-call arguments,
+// tool results and inline images (spec §6.1: everything replayed counts
+// toward the budget).
 func msgCost(m llm.ChatMessage) int {
-	c := EstimateTokens(m.Content) + EstimateTokens(m.ToolCallID)
+	c := EstimateTokens(m.Content) + EstimateTokens(m.ToolCallID) + len(m.Images)*VisionImageTokens
 	for _, tc := range m.ToolCalls {
 		c += EstimateTokens(tc.Function.Name) + EstimateTokens(tc.Function.Arguments)
 	}

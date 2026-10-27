@@ -391,3 +391,59 @@ func TestStreamWithoutToolsOmitsFields(t *testing.T) {
 		t.Error("tool_choice present with no tool specs")
 	}
 }
+
+func TestChatMessageMarshalsImagesAsContentParts(t *testing.T) {
+	// No images → the wire shape is untouched: content stays a plain string.
+	// Text-only endpoints must never see the parts array.
+	plain, err := json.Marshal(ChatMessage{Role: "user", Content: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plain), `"content":"hi"`) {
+		t.Errorf("plain content = %s, want a string", plain)
+	}
+
+	// Images → OpenAI parts array, text block first, then one per picture.
+	b, err := json.Marshal(ChatMessage{
+		Role:    "user",
+		Content: "look",
+		Images:  []string{"data:image/png;base64,AAA=", "data:image/webp;base64,BBB="},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("parts body not decodable: %v — %s", err, b)
+	}
+	if got.Role != "user" || len(got.Content) != 3 {
+		t.Fatalf("parts = %+v", got.Content)
+	}
+	if got.Content[0].Type != "text" || got.Content[0].Text != "look" {
+		t.Errorf("part 0 = %+v, want the text block first", got.Content[0])
+	}
+	if got.Content[1].Type != "image_url" || got.Content[1].ImageURL.URL != "data:image/png;base64,AAA=" {
+		t.Errorf("part 1 = %+v", got.Content[1])
+	}
+	if got.Content[2].Type != "image_url" || got.Content[2].ImageURL.URL != "data:image/webp;base64,BBB=" {
+		t.Errorf("part 2 = %+v", got.Content[2])
+	}
+
+	// Image-only content (no text) still yields a valid parts array.
+	b2, err := json.Marshal(ChatMessage{Role: "user", Images: []string{"data:image/jpeg;base64,C=="}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b2), `"type":"image_url"`) {
+		t.Errorf("image-only body = %s", b2)
+	}
+}

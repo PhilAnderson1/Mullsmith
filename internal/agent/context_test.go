@@ -110,3 +110,41 @@ func TestBuildContextWholeTurnGranularity(t *testing.T) {
 		t.Fatalf("out = %+v, want the whole trailing turn (user + assistant)", out)
 	}
 }
+
+func TestBuildContextPricesInlineImages(t *testing.T) {
+	// Three plain user turns of 200 runes (50 tokens) each, and a newest
+	// turn with 80 runes (20 tokens) plus one inline image. Budget 1100:
+	// the image turn costs 1024+20 — an older 50-token turn still fits,
+	// the one before it does not. If images were free, everything would
+	// fit and nothing would drop, so the eviction below pins the pricing.
+	pad := strings.Repeat("y", 200)
+	pic := llm.ChatMessage{Role: "user", Content: strings.Repeat("x", 80),
+		Images: []string{"data:image/png;base64,AAAA"}}
+	history := []llm.ChatMessage{
+		{Role: "user", Content: "A" + pad[1:]},
+		{Role: "user", Content: "B" + pad[1:]},
+		{Role: "user", Content: "C" + pad[1:]},
+		pic,
+	}
+	out := BuildContext("", history, 1150, 50) // budget 1100
+	if len(out) != 2 {
+		t.Fatalf("kept %d messages, want 2 (A and B dropped): %+v", len(out), out)
+	}
+	if out[0].Content[0] != 'C' {
+		t.Errorf("first kept = %q, want the turn starting 'C'", out[0].Content[:1])
+	}
+	if len(out[1].Images) != 1 {
+		t.Errorf("image turn must survive with its picture, got %+v", out[1])
+	}
+
+	// The newest user message is never dropped even when its images alone
+	// blow the budget — it rides through with its pictures intact.
+	four := llm.ChatMessage{Role: "user", Content: "all",
+		Images: []string{"1", "2", "3", "4"}} // 4×1024 > 200 budget
+	out = BuildContext("", []llm.ChatMessage{
+		{Role: "user", Content: "older"}, four,
+	}, 250, 50)
+	if len(out) != 1 || len(out[0].Images) != 4 {
+		t.Fatalf("rescue = %+v, want only the image-heavy newest user turn", out)
+	}
+}
