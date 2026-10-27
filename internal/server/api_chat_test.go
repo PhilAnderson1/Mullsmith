@@ -479,11 +479,23 @@ func TestChatAbortEndpoint(t *testing.T) {
 	}
 
 	// Aborting again (or an unknown id) is a 404 — and ids cannot be
-	// probed across users (ownership checked in Abort).
-	again := a.do(http.MethodPost, "/api/v1/generations/"+genID+"/abort", nil)
-	again.Body.Close()
-	if again.StatusCode != 404 {
-		t.Errorf("re-abort = %d, want 404", again.StatusCode)
+	// probed across users (ownership checked in Abort). Polled rather than
+	// asserted once: the registry entry is dropped by the generation's
+	// deferred Finish (api_chat.go), which runs *after* the status write
+	// this test already waited on, so under full-suite load the re-abort
+	// can otherwise arrive in the unregister window and see 204.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		again := a.do(http.MethodPost, "/api/v1/generations/"+genID+"/abort", nil)
+		again.Body.Close()
+		if again.StatusCode == 404 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("re-abort = %d, want 404", again.StatusCode)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
