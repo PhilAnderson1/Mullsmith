@@ -159,10 +159,7 @@ func TestUploadsNamespaceProtected(t *testing.T) {
 		!strings.Contains(err.Error(), "read-only") {
 		t.Errorf("upload write = %v, want read-only refusal", err)
 	}
-	if _, err := run(t, FsDelete{}, root, argsJSON(t, map[string]string{"path": "uploads/data.csv"})); err == nil ||
-		!strings.Contains(err.Error(), "read-only") {
-		t.Errorf("upload delete = %v, want read-only refusal", err)
-	}
+	// (fs_delete CAN delete uploads files — see TestFsDeleteUploadsFiles.)
 	// Even a fresh file inside uploads/ is refused.
 	if _, err := run(t, FsWrite{}, root,
 		argsJSON(t, map[string]string{"path": "uploads/new.txt", "content": "x"})); err == nil ||
@@ -446,10 +443,11 @@ func TestUploadsNamespaceCoversDotPrefixedPaths(t *testing.T) {
 			t.Errorf("fs_write %q: err = %v, want uploads read-only refusal", bypass, err)
 		}
 	}
-	for _, target := range []string{"./uploads/protected.txt", "./uploads"} {
-		_, err := run(t, FsDelete{}, root, argsJSON(t, map[string]string{"path": target}))
-		if err == nil || !strings.Contains(err.Error(), "read-only") {
-			t.Errorf("fs_delete %q: err = %v, want uploads read-only refusal", target, err)
+	// fs_delete may remove uploads FILES, but the normalized checks still
+	// refuse the uploads DIRECTORY itself through every "./" spelling.
+	for _, target := range []string{"./uploads", "././uploads"} {
+		if _, err := run(t, FsDelete{}, root, argsJSON(t, map[string]string{"path": target})); err == nil {
+			t.Errorf("fs_delete %q: accepted, want the uploads-directory refusal", target)
 		}
 	}
 
@@ -530,5 +528,49 @@ func TestWriteTargetRootIsReserved(t *testing.T) {
 		if _, err := run(t, w, toolRoot(t), argsJSON(t, map[string]string{"path": p, "content": "x"})); err != nil {
 			t.Errorf("fs_write(%q) refused: %v", p, err)
 		}
+	}
+}
+
+// --- fs_delete on uploads/ (the one tool allowed there) ---------------------
+
+func TestFsDeleteUploadsFiles(t *testing.T) {
+	// The premise of letting fs_delete touch uploads/ at all: it is
+	// approval-gated (default confirm — unknown tools fail closed), so
+	// deleting user data is always a decision made in the UI.
+	if got := NewRegistry(func(string) string { return ApprovalConfirm }).Policy("fs_delete"); got != ApprovalConfirm {
+		t.Errorf("fs_delete default policy = %q, want confirm", got)
+	}
+
+	root := toolRoot(t)
+	writeDirect(t, root, "uploads/a.png", "\x89PNG\r\n\x1a\nfake")
+	writeDirect(t, root, "uploads/report.csv", "a,b\n")
+	writeDirect(t, root, "uploads/keep/inner.txt", "x")
+	os.MkdirAll(filepath.Join(root, toolUser, "uploads", "dir.png"), 0o755)
+
+	// Files go, any extension, nested too.
+	for _, target := range []string{"uploads/a.png", "uploads/report.csv", "uploads/keep/inner.txt"} {
+		if _, err := run(t, FsDelete{}, root, argsJSON(t, map[string]string{"path": target})); err != nil {
+			t.Errorf("deleting %s: %v", target, err)
+		}
+	}
+	// Directories never go — neither the uploads/ dir itself nor a
+	// directory wearing a file extension.
+	for _, target := range []string{"uploads", "uploads/dir.png", "uploads/keep"} {
+		if _, err := run(t, FsDelete{}, root, argsJSON(t, map[string]string{"path": target})); err == nil {
+			t.Errorf("%s: deleted, want refusal", target)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, toolUser, "uploads", "dir.png")); err != nil {
+		t.Error("directory named dir.png must survive")
+	}
+	// The exception is DELETIONS only: fs_write keeps its uploads wall.
+	if _, err := run(t, FsWrite{UserQuota: 1 << 20}, root,
+		argsJSON(t, map[string]string{"path": "uploads/x.png", "content": "c"})); err == nil {
+		t.Error("fs_write into uploads must stay refused")
+	}
+	// work/ semantics unchanged: files and empty directories.
+	writeDirect(t, root, "work/w.txt", "w")
+	if _, err := run(t, FsDelete{}, root, argsJSON(t, map[string]string{"path": "work/w.txt"})); err != nil {
+		t.Errorf("work delete: %v", err)
 	}
 }

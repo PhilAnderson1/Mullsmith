@@ -35,7 +35,9 @@ const ToolGuidance = "\n\nYou may call the provided tools to help answer. " +
 	"is downloadable by the user until it expires). Every path you write " +
 	"must be under one of them, e.g. work/report.md; the scratchpad root, " +
 	"uploads/ (the user's attachments — paths appear in message manifests) " +
-	"and all other locations are rejected. To put a file in the chat, " +
+	"and all other locations are rejected for writes. fs_delete can also " +
+	"delete files under uploads/, but every such call asks the user for " +
+	"confirmation first. To put a file in the chat, " +
 	"deliver it with files_share: it snapshots the file into artifacts/ " +
 	"and the user sees a download card; re-sharing an edited file produces " +
 	"a new snapshot, so each card keeps the bytes it was made from."

@@ -718,9 +718,14 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   filesystem-level quotas (ext4 project quotas / XFS) are a true hard ceiling;
   deployment defers them by
   operator choice.
-- `uploads/` is the model's one forbidden namespace (`fs_write`/`fs_delete`, and
+- `uploads/` is the model's forbidden WRITE namespace (`fs_write` and
   `files_share` — copying an upload into `artifacts/` would hand the TTL sweep a
   pointer at a user original, so shares refuse uploads outright; audit finding 8).
+  `fs_delete` is the one exception — files only, never the directory, checks on
+  `ParseRel`-normalized segments — and its real guard is the approval gate:
+  `fs_delete` defaults to `confirm`, so deleting a user's attachment is always a
+  click the user made. Scripts never delete there: the jail's read-only
+  `uploads/` mount stands unconditionally.
   With no registry there is no row/byte split to defend either: an artifact is the
   bytes under `artifacts/`, one file one fact, and deleting the bytes is the whole
   delete. `files_share` copies via a `.share-*` temp in the scratch ROOT placed

@@ -148,3 +148,11 @@ func TestBuildContextPricesInlineImages(t *testing.T) {
 		t.Fatalf("rescue = %+v, want only the image-heavy newest user turn", out)
 	}
 }
+
+func TestToolGuidanceUploadsPngs(t *testing.T) {
+	// The model must know fs_delete reaches uploads/ files (so it can offer
+	// to clean up attachments) — and that those calls ask the user first.
+	if !strings.Contains(ToolGuidance, "uploads/") || !strings.Contains(ToolGuidance, "confirmation") {
+		t.Errorf("ToolGuidance must state the fs_delete uploads right and its confirmation gate:\n%s", ToolGuidance)
+	}
+}

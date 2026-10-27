@@ -312,7 +312,8 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 // delete it and the jail now refuses writes anyway. Layout directories
 // themselves (a lone "work"/"artifacts"/"uploads" as a delete target)
 // are likewise out of reach: the workflow needs their CONTENTS, not the
-// mount points.
+// mount points. fs_delete applies the same rule through checkDeleteTarget
+// below, the one uploads/ exception described there.
 func checkWriteTarget(rel string) error {
 	segs, err := scratch.ParseRel(rel)
 	if err != nil {
@@ -334,22 +335,57 @@ func checkWriteTarget(rel string) error {
 	}
 }
 
+// checkDeleteTarget is fs_delete's scoping rule: checkWriteTarget's law
+// for work/ and artifacts/, plus FILES under uploads/. fs_delete is the
+// only tool that removes upload bytes, and its guard is not the path rule
+// but the approval gate: fs_delete defaults to confirm (§7.1 — unknown
+// tools fail closed), so every deletion of the user's own data is a
+// decision made in the UI. uploads/ deletions are also permanent — the
+// sweep never touches uploads/ — which is exactly why each one is worth
+// asking for. Everything else stays out of reach: fs_write refuses
+// uploads (they are written only via HTTP), the code_run jail mounts them
+// read-only (a script gone wrong must never eat the user's originals
+// unseen), files_share refuses to copy them (audit finding 8). Like the
+// write rule this runs on segments NORMALIZED by scratch.ParseRel (the
+// audit finding 7 lesson holds for deletions too), and Execute adds the
+// regular-file requirement: never the uploads/ directory itself, never a
+// directory wearing a file extension.
+func checkDeleteTarget(rel string) error {
+	segs, err := scratch.ParseRel(rel)
+	if err != nil {
+		return err
+	}
+	if len(segs) > 0 && segs[0] == "uploads" {
+		if len(segs) == 1 {
+			return errors.New("the uploads directory itself is never deleted")
+		}
+		return nil
+	}
+	return checkWriteTarget(rel)
+}
+
 // --- fs_delete ---------------------------------------------------------------
 
+// FsDelete removes one file from the user's own tree — under uploads/
+// too, the one tool allowed there (its confirmation gate is the guard;
+// see checkDeleteTarget). Directories: only empty ones, and only under
+// work/ or artifacts/.
 type FsDelete struct{}
 
 func (FsDelete) Name() string { return "fs_delete" }
 
 func (FsDelete) Description() string {
-	return "Delete one file or empty directory under work/ or artifacts/ (uploads/ is " +
-		"protected and the scratchpad root is reserved). Directories must be empty."
+	return "Delete one file under work/, artifacts/ or uploads/ (an empty " +
+		"directory too, under work/ and artifacts/ only). Deleting one of the " +
+		"user's own uploads asks them for confirmation first, so keep the " +
+		"reason obvious and state in your answer what you deleted."
 }
 
 func (FsDelete) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "Relative path to delete."},
+			"path": map[string]any{"type": "string", "description": "File to delete under work/, artifacts/ or uploads/."},
 		},
 		"required": []string{"path"},
 	}
@@ -370,8 +406,20 @@ func (FsDelete) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if rel == "" || rel == "." {
 		return Result{}, errors.New("path is required")
 	}
-	if err := checkWriteTarget(rel); err != nil {
+	if err := checkDeleteTarget(rel); err != nil {
 		return Result{}, err
+	}
+	// uploads/ deletions are file-only: a regular byte on disk or the call
+	// stops here — a directory never goes, whatever it is named.
+	segs, err := scratch.ParseRel(rel)
+	if err != nil {
+		return Result{}, err
+	}
+	if segs[0] == "uploads" {
+		fi, err := scratch.Stat(root, inv.UserID, rel)
+		if err != nil || !fi.Mode().IsRegular() {
+			return Result{}, errors.New("uploads deletions take regular files only")
+		}
 	}
 	if err := scratch.Remove(root, inv.UserID, rel); err != nil {
 		return Result{}, fsErr("fs_delete", err)

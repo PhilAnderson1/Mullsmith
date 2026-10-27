@@ -122,7 +122,9 @@ All state lives in two directories named by the config:
   disk under their real names and the path is their only identity — there is no
   file registry to keep in sync. `uploads/` is durable user data; `artifacts/`
   and `work/` expire on the mtime sweep (`artifact_ttl`, `work_ttl`), so losing
-  them costs generated output, not originals.
+  them costs generated output, not originals. The assistant never writes into
+  `uploads/`; it can delete files there only through `fs_delete`, which asks
+  your confirmation every time — scripts in the `code_run` jail never can.
 
 Plus `/etc/gabkeep/config.yaml` and `/etc/gabkeep/env`.
 
