@@ -220,9 +220,12 @@ make fuzz-short    # path-sandbox containment fuzzer
 make dist          # stamped release binary + sha256 under dist/
 ```
 
-`dev.yaml` is my local config (LAN bind + invite-only); copy it and point it
-at your endpoint. The UI lives in `web/` and is embedded into the binary at
-build time — rebuild and hard-refresh after editing assets.
+`local-only/dev.yaml` (kept out of the repo, like my other machine-specific
+files under `local-only/`) is my local dev config: loopback `:8081`, its own
+`local-only/data/`; run `gabkeep -config local-only/dev.yaml` from the repo
+root. Copy `configs/gabkeep.yaml` and point it at your endpoint. The UI lives
+in `web/` and is embedded into the binary at build time — rebuild and
+hard-refresh after editing assets.
 
 ### Layout
 

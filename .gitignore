@@ -5,6 +5,8 @@
 
 # Runtime data (database, scratchpad, logs)
 /data/
+# Personal local files (dev + scan configs, dev runtime data) — never tracked
+/local-only/
 *.log
 
 # Editor/OS noise

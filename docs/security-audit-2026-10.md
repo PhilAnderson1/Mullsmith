@@ -11,7 +11,7 @@ scan artifacts in [`reports/`](reports). Everything below was executed on
 |---|---|---|---|
 | SCA | `govulncheck ./...` (Go vuln DB, call-graph aware) | **clean, exit 0** | [`govulncheck-2026-10-25.txt`](reports/govulncheck-2026-10-25.txt) |
 | Static analysis | `gosec ./...` | **0 issues**; 29 suppressions, each an inline `#nosec RULE -- justification` at the call site | [`gosec-2026-10-25.txt`](reports/gosec-2026-10-25.txt) |
-| DAST | OWASP ZAP 2.17.0 baseline (`-quickurl`) against an isolated TLS staging instance (config [`scan-zap.yaml`](../scan-zap.yaml): loopback bind, own DB/scratchpad, tools disabled) | **0 High, 1 Medium (false positive, analysed below), 1 Low (by design), 6 Informational** | [`zap-baseline-2026-10-25.html`](reports/zap-baseline-2026-10-25.html) |
+| DAST | OWASP ZAP 2.17.0 baseline (`-quickurl`) against an isolated TLS staging instance (config `local-only/scan-zap.yaml`, kept out of the repo: loopback bind, own DB/scratchpad, tools disabled) | **0 High, 1 Medium (false positive, analysed below), 1 Low (by design), 6 Informational** | [`zap-baseline-2026-10-25.html`](reports/zap-baseline-2026-10-25.html) |
 | Fuzzing | `go test ./internal/scratch -fuzz FuzzPathContainment -fuzztime 60s` | **11,075,526 execs, no failures** (plus the seed corpus incl. traversal/symlink cases) | run log 2026-10-25 |
 | Race | `go test -race ./...` | all packages pass | — |
 

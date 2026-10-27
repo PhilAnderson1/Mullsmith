@@ -1040,7 +1040,7 @@ Each milestone ships something runnable and testable.
 
 | # | Milestone | Scope | Exit criteria |
 |---|---|---|---|
-| M0 | Skeleton | Flags, config load/validate, `-check-config`, HTTP server, `/healthz`, embed wiring | `gabkeep -config dev.yaml` boots and serves |
+| M0 | Skeleton | Flags, config load/validate, `-check-config`, HTTP server, `/healthz`, embed wiring | a dev config boots and serves (e.g. `gabkeep -config local-only/dev.yaml`) |
 | M1 | Accounts | Register/login/logout, argon2id, sessions+CSRF, "stay logged in" checkbox w/ persistent cookie + sliding renewal, rate limits, scratchpad provisioning, admin CLI | Two users can register/login; dirs exist; lockout works; **checkbox ticked → close & reopen browser → still logged in; unticked → logged out**; expired/revoked session → logged out; login mints a fresh session id (fixation); unknown-email vs wrong-password responses indistinguishable |
 | M2 | History | Store layer + migrations, conversation CRUD, message pagination | UI can create/rename/delete conversations against SQLite |
 | M3 | Streaming chat | LLM client, SSE pipeline, context budget, stop/abort, regenerate, markdown UI, responsive shell (§10.1) | Multi-turn streamed chat against llama.cpp/Ollama; usable and layout-correct at 360/768/1440 px incl. on-screen keyboard |
