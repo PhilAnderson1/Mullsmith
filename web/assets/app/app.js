@@ -233,6 +233,11 @@ function convRow(c) {
   if (c.id === state.currentId) li.classList.add("active");
 
   li.querySelector(".conv-open").addEventListener("click", () => {
+    // Typing right away is the point of opening a chat: the one-shot makes
+    // selectConversation focus the composer once it has loaded (skipped on
+    // phones, and on re-clicks of the open chat, which fire no hashchange —
+    // an unconsumed flag would focus unexpectedly on the next navigation).
+    if (c.id !== state.currentId) state.focusOnOpen = true;
     location.hash = `#/c/${c.id}`;
     if (isPhone()) closeDrawer();
   });
