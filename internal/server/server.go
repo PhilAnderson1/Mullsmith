@@ -293,6 +293,11 @@ func (s *Server) staticAssetsHandler() http.HandlerFunc {
 			_, _ = w.Write(body)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, ".webmanifest") {
+			// Go's mime table predates the extension; without this the
+			// manifest is sniffed as text/plain and browsers may ignore it.
+			w.Header().Set("Content-Type", "application/manifest+json")
+		}
 		files.ServeHTTP(w, r)
 	})
 }

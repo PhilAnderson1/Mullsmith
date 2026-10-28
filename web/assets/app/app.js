@@ -88,6 +88,19 @@ function applyTheme() {
   } else {
     document.documentElement.setAttribute("data-theme", pref);
   }
+  syncThemeColor(pref);
+}
+
+// syncThemeColor keeps the OS status/nav bar (theme-color meta, index.html)
+// matched to the theme actually painted. The static metas already cover the
+// "system" preference; this matters when the user pins light or dark. The
+// two hexes mirror --bg in styles.css.
+function syncThemeColor(pref) {
+  const dark = pref === "dark" ||
+    (pref !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  for (const m of document.querySelectorAll('meta[name="theme-color"]')) {
+    m.content = dark ? "#14161b" : "#f7f8fa";
+  }
 }
 
 function cycleTheme() {

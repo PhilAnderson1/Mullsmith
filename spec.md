@@ -1157,6 +1157,12 @@ Cross-cutting touch/responsive behavior:
   thumb-reachable while streaming; stop button stays in the composer region at all sizes.
 - Icons are inline SVG (no icon fonts); fonts are system-stack only — consistent with
   no-runtime-asset-fetch (§9.8) and keeps mobile data usage minimal.
+- **Installable as a standalone app (PWA):** `assets/manifest.webmanifest` (served as
+  `application/manifest+json`) declares `display: standalone`, scope `/`, and PNG icons
+  (192/512, maskable) rendered from the favicon glyph; `index.html` links it plus iOS
+  `apple-touch-icon`/`apple-mobile-web-app` tags and `theme-color` metas that follow the
+  theme in force (app.js keeps them matched). Home-screen launches get no browser UI;
+  no service worker (nothing to cache offline; auth sessions stay cookie-only).
 
 ### 10.2 Views
 
