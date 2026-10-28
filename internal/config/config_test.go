@@ -397,6 +397,32 @@ llm: {endpoint: "http://x/v1", model: m}
 			"server.listen",
 		},
 		{
+			// Durations take no off-sentinel (§2.2): -1 must be a
+			// startup error, never a deadline that already passed.
+			"negative write_timeout",
+			`
+server:
+  listen: "127.0.0.1:8090"
+  write_timeout: -1s
+database: {dir: ./db}
+scratchpad: {root: ./sp}
+llm: {endpoint: "http://x/v1", model: m}
+`,
+			"server.write_timeout",
+		},
+		{
+			"negative shutdown_grace",
+			`
+server:
+  listen: "127.0.0.1:8090"
+  shutdown_grace: -15s
+database: {dir: ./db}
+scratchpad: {root: ./sp}
+llm: {endpoint: "http://x/v1", model: m}
+`,
+			"server.shutdown_grace",
+		},
+		{
 			"no model",
 			`
 database: {dir: ./db}

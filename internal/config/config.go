@@ -679,6 +679,28 @@ func (c *Config) Validate() error {
 	if c.Server.HSTSMaxAge < 0 {
 		f.bad("server.hsts_max_age: must be >= 0")
 	}
+	// Durations take no sentinel (§2.2): a negative is always a typo, and
+	// its runtime effect would be a deadline that has already passed —
+	// every request or run dying instantly. 0 stays each knob's documented
+	// meaning ("no deadline" for the socket timeouts; elsewhere setDefaults
+	// has already replaced 0 with the default).
+	for _, k := range []struct {
+		name string
+		v    Duration
+	}{
+		{"server.read_timeout", c.Server.ReadTimeout},
+		{"server.write_timeout", c.Server.WriteTimeout},
+		{"server.shutdown_grace", c.Server.ShutdownGrace},
+		{"scratchpad.artifact_ttl", c.Scratchpad.ArtifactTTL},
+		{"scratchpad.work_ttl", c.Scratchpad.WorkTTL},
+		{"scratchpad.code_execution.timeout", c.Scratchpad.CodeExec.Timeout},
+		{"llm.request_timeout", c.LLM.RequestTimeout},
+		{"tools.web_fetch.timeout", c.Tools.WebFetch.Timeout},
+	} {
+		if k.v < 0 {
+			f.bad("%s: must be >= 0 (durations take no off-sentinel)", k.name)
+		}
+	}
 	c.TrustedNets = nil
 	for _, p := range c.Server.TrustedProxies {
 		prefix, err := parseProxy(p)
