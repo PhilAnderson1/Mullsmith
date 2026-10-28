@@ -266,6 +266,11 @@ func securityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 // hash-in-filename upgrade is no longer needed.
 func cacheControl(path string) string {
 	switch {
+	case strings.HasSuffix(path, ".webmanifest"):
+		// The manifest names its own icon files; caching it for an hour
+		// meant icon fixes kept being served stale through reinstalls.
+		// Revalidate always — a 304 costs nothing on a LAN.
+		return "no-cache"
 	case strings.HasPrefix(path, "/assets/"):
 		return "public, max-age=3600"
 	default:

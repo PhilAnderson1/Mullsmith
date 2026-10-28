@@ -24,7 +24,7 @@ func TestManifestServedAsJSONWithUsableIcons(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/assets/manifest.webmanifest")
+	resp, err := http.Get(ts.URL + "/assets/manifest-v3.webmanifest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +34,9 @@ func TestManifestServedAsJSONWithUsableIcons(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
 		t.Errorf("Content-Type = %q, want application/manifest+json", ct)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache (stale manifests keep serving old icons)", cc)
 	}
 
 	var m struct {
@@ -88,7 +91,7 @@ func TestIndexLinksManifestAndAppleTags(t *testing.T) {
 	}
 	h := string(b)
 	for _, want := range []string{
-		`rel="manifest" href="/assets/manifest.webmanifest"`,
+		`rel="manifest" href="/assets/manifest-v3.webmanifest"`,
 		`rel="apple-touch-icon" href="/assets/gk-apple-touch.png"`,
 		`name="theme-color"`,
 		`media="(prefers-color-scheme: dark)"`,
