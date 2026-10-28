@@ -81,16 +81,19 @@ migrations → provisions scratchpad root → starts HTTP(S) server → serves.
 YAML. Unknown keys are an error (typos caught early). Any string value supports environment
 variable expansion `${GABKEEP_SECRET}` so secrets need not live in the file.
 
-Optional cap knobs (`limits.*` except the sizing trio, and
-`auth.max_signups_per_hour`) share one syntax: **positive** → that value,
-**-1** → disables the control, **absent** → the code default, **0 or any
-other negative** → startup error naming the syntax. (0 is deliberately not
-"off": on knobs phrased as maxima — max requests per minute, max sign-ups —
-0 reads as "allow nothing", so the sentinel is -1.) Security-directional
-settings take no sentinel: expiry durations keep `0 → default, negative →
-error`, and required settings (`database.dir`, `llm.endpoint`, …) refuse
-empty. The shipped `configs/config.yaml` spells every default out so the
-effective policy is visible at a glance, and a test pins each template
+"Off" has exactly one spelling in this file: **-1**. Optional cap knobs
+(`limits.*` except the sizing trio, and `auth.max_signups_per_hour`) share
+the syntax: **positive** → that value, **-1** → disables the control,
+**absent** → the code default, **0 or any other negative** → startup error
+naming the syntax. (0 is deliberately not "off": knobs phrased as maxima
+would read 0 as "allow nothing" — the opposite of unlimited.) The two
+knobs outside `limits` with a real off-switch follow it:
+`server.write_timeout` spelled `-1s` (durations carry their unit) and
+`server.hsts_max_age` spelled `-1`. Other durations take no sentinel
+(absent → default, negative → startup error — a negative deadline has
+already passed), and required settings (`database.dir`, `llm.endpoint`, …)
+refuse empty. The shipped `configs/config.yaml` spells every default out so
+the effective policy is visible at a glance, and a test pins each template
 value to the code default it represents (reasoned exceptions only:
 per-deployment paths and the rare opt-in a bool zero-value cannot encode).
 
@@ -104,10 +107,10 @@ server:
     cert_file: ""
     key_file: ""
   read_timeout: 30s
-  write_timeout: 0s               # 0 = unlimited, needed for streaming
+  write_timeout: -1s              # -1s = no write cap — responses stream (SSE)
   shutdown_grace: 15s
   trusted_proxies: []             # CIDRs whose X-Forwarded-* headers we honor (§9.10)
-  hsts_max_age: 31536000          # HSTS sent when serving TLS; 0 disables (§9.8)
+  hsts_max_age: 31536000          # HSTS sent when serving TLS; -1 disables (§9.8)
 
 limits:
   max_body_bytes: 1MiB            # cap on every non-upload request body (§9.11)

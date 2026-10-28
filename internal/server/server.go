@@ -169,7 +169,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second, // slowloris floor (spec §9.11)
 		ReadTimeout:       cfg.Server.ReadTimeout.D(),
-		WriteTimeout:      cfg.Server.WriteTimeout.D(), // SSE routes will disable per-route later
+		WriteTimeout:      cfg.Server.WriteTimeout.HTTPDeadline(), // -1s = no cap; streams must survive
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}

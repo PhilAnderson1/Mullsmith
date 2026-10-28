@@ -18,9 +18,9 @@ server:
     cert_file: "/run/gabkeep/cert.pem"
     key_file: "/run/gabkeep/key.pem"
   trusted_proxies: []             # CIDRs of your proxies ONLY (§9.11 spoofing)
-  hsts_max_age: 31536000          # effective only when TLS is enabled
+  hsts_max_age: 31536000          # HSTS when serving TLS; -1 disables
   read_timeout: 30s               # slow-body guard on the listening socket
-  write_timeout: 0                # 0 = no write cap — responses stream (SSE)
+  write_timeout: -1s              # -1s = no write cap — responses stream (SSE)
   shutdown_grace: 15s             # in-flight grace on SIGTERM
 
 database:

@@ -41,6 +41,16 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 // D returns the wrapped time.Duration.
 func (d Duration) D() time.Duration { return time.Duration(d) }
 
+// HTTPDeadline reads a duration the way http.Server does: the house
+// off-sentinel (negative, only -1s survives validation) means Go's 0,
+// "no deadline".
+func (d Duration) HTTPDeadline() time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d.D()
+}
+
 // Size is a YAML string such as "25MiB", "512KiB" or a bare byte count.
 // Only 1024-based units are accepted (KiB, MiB, GiB, TiB).
 type Size int64
@@ -112,13 +122,18 @@ type Config struct {
 }
 
 type Server struct {
-	Listen         string   `yaml:"listen"`
-	TLS            TLS      `yaml:"tls"`
+	Listen string `yaml:"listen"`
+	TLS    TLS    `yaml:"tls"`
+	// Durations take no off-sentinel (§2.2): absent → code default,
+	// negative → startup error — EXCEPT the two knobs below, the only
+	// off-switches outside limits. They follow the house syntax so the
+	// file has exactly one spelling of "off": -1 on limits, -1s here
+	// (durations carry their unit), -1 for hsts_max_age (plain seconds).
 	ReadTimeout    Duration `yaml:"read_timeout"`
-	WriteTimeout   Duration `yaml:"write_timeout"`
+	WriteTimeout   Duration `yaml:"write_timeout"` // -1s = no write cap (the default; streams)
 	ShutdownGrace  Duration `yaml:"shutdown_grace"`
 	TrustedProxies []string `yaml:"trusted_proxies"`
-	HSTSMaxAge     int64    `yaml:"hsts_max_age"`
+	HSTSMaxAge     int64    `yaml:"hsts_max_age"` // seconds; -1 = header off (the default)
 }
 
 type TLS struct {
@@ -372,6 +387,39 @@ func capNumber(v any) (int, bool) {
 	return 0, false
 }
 
+// spelledZero reports whether the config file spells section.key out as
+// the number 0 — invisible to typed reads once setDefaults has folded an
+// absent key into its default (§2.2: 0 is never a legal spelling on an
+// off-switch knob).
+func (c *Config) spelledZero(section, key string) bool {
+	sec, ok := c.rawDoc[section].(map[string]any)
+	if !ok {
+		return false
+	}
+	raw, ok := sec[key]
+	if !ok {
+		return false
+	}
+	n, isNum := capNumber(raw)
+	return isNum && n == 0
+}
+
+// spelledZeroDur is spelledZero for Duration knobs, whose raw spelling is
+// a string ("0s", "0h"): any zero-valued duration string collapses into
+// the default typed read, the same trap the caps rawDoc walk exists for.
+func (c *Config) spelledZeroDur(section, key string) bool {
+	sec, ok := c.rawDoc[section].(map[string]any)
+	if !ok {
+		return false
+	}
+	s, ok := sec[key].(string)
+	if !ok {
+		return false
+	}
+	d, err := time.ParseDuration(s)
+	return err == nil && d == 0
+}
+
 type Logging struct {
 	Level  string `yaml:"level"`  // debug | info | warn | error
 	Format string `yaml:"format"` // text | json
@@ -477,6 +525,17 @@ func (c *Config) setDefaults() {
 	}
 	if c.Server.ReadTimeout == 0 {
 		c.Server.ReadTimeout = Duration(30 * time.Second)
+	}
+	// write_timeout's default is OFF — a global write deadline would cut
+	// SSE streams. Off carries the house sentinel (§2.2) so the typed
+	// value names "off" the same way the caps do; the http.Server read
+	// maps any negative to Go's 0 (no deadline).
+	if c.Server.WriteTimeout == 0 {
+		c.Server.WriteTimeout = Duration(-time.Second)
+	}
+	// HSTS absent means off, likewise spelled with the house -1 (§2.2).
+	if c.Server.HSTSMaxAge == 0 {
+		c.Server.HSTSMaxAge = -1
 	}
 	if c.Server.ShutdownGrace == 0 {
 		c.Server.ShutdownGrace = Duration(15 * time.Second)
@@ -676,20 +735,27 @@ func (c *Config) Validate() error {
 			f.bad("server.tls: cert_file and key_file are required when enabled")
 		}
 	}
-	if c.Server.HSTSMaxAge < 0 {
-		f.bad("server.hsts_max_age: must be >= 0")
+	// hsts_max_age is one of the file's two real off-switches outside
+	// limits, so it follows the house syntax (§2.2): positive seconds,
+	// -1 off, 0 or any other negative a startup error. (0 would be the
+	// old spelling; setDefaults has already folded an absent key to -1,
+	// hence the rawDoc check.)
+	if h := c.Server.HSTSMaxAge; h < 0 && h != -1 {
+		f.bad("server.hsts_max_age: must be a positive number of seconds, or -1 to disable")
 	}
-	// Durations take no sentinel (§2.2): a negative is always a typo, and
-	// its runtime effect would be a deadline that has already passed —
-	// every request or run dying instantly. 0 stays each knob's documented
-	// meaning ("no deadline" for the socket timeouts; elsewhere setDefaults
-	// has already replaced 0 with the default).
+	if c.spelledZero("server", "hsts_max_age") {
+		f.bad("server.hsts_max_age: 0 is not the off spelling — write -1 to disable")
+	}
+	// Plain durations take no sentinel (§2.2): a negative is always a
+	// typo whose runtime effect is a deadline that has already passed —
+	// every request or run dying instantly. (write_timeout and
+	// hsts_max_age, the file's real off-switches, are handled beside this
+	// table with the house -1 syntax.)
 	for _, k := range []struct {
 		name string
 		v    Duration
 	}{
 		{"server.read_timeout", c.Server.ReadTimeout},
-		{"server.write_timeout", c.Server.WriteTimeout},
 		{"server.shutdown_grace", c.Server.ShutdownGrace},
 		{"scratchpad.artifact_ttl", c.Scratchpad.ArtifactTTL},
 		{"scratchpad.work_ttl", c.Scratchpad.WorkTTL},
@@ -700,6 +766,15 @@ func (c *Config) Validate() error {
 		if k.v < 0 {
 			f.bad("%s: must be >= 0 (durations take no off-sentinel)", k.name)
 		}
+	}
+	// write_timeout: the streaming exception that carries a real
+	// off-switch, so it follows the house syntax too (§2.2) — the
+	// sentinel is written -1s because every duration carries its unit.
+	if wt := c.Server.WriteTimeout; wt < 0 && wt != Duration(-time.Second) {
+		f.bad("server.write_timeout: must be a positive duration like 30s, or -1s for no write cap")
+	}
+	if c.spelledZeroDur("server", "write_timeout") {
+		f.bad("server.write_timeout: 0 is not the off spelling — write -1s for no write cap")
 	}
 	c.TrustedNets = nil
 	for _, p := range c.Server.TrustedProxies {
@@ -725,12 +800,8 @@ func (c *Config) Validate() error {
 			continue
 		}
 		section, key, _ := strings.Cut(k.name, ".")
-		if sec, ok := c.rawDoc[section].(map[string]any); ok {
-			if raw, ok := sec[key]; ok {
-				if n, isNum := capNumber(raw); isNum && n == 0 {
-					f.bad("%s: must be a positive limit, or -1 to disable the control", k.name)
-				}
-			}
+		if c.spelledZero(section, key) {
+			f.bad("%s: must be a positive limit, or -1 to disable the control", k.name)
 		}
 	}
 	// rate_limit: retired — the two knobs moved into limits:. Name the

@@ -53,8 +53,16 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.Approval["code_run"] != "confirm" {
 		t.Errorf("code_run approval default = %q, want confirm", cfg.Tools.Agent.Approval["code_run"])
 	}
-	if cfg.Server.WriteTimeout.D() != 0 {
-		t.Errorf("write_timeout default = %v, want 0 (unlimited, per spec example)", cfg.Server.WriteTimeout.D())
+	// The file's two off-switches outside limits default to off IN the
+	// house spelling (§2.2): -1s and -1.
+	if cfg.Server.WriteTimeout != Duration(-time.Second) {
+		t.Errorf("write_timeout default = %v, want -1s off-sentinel", cfg.Server.WriteTimeout.D())
+	}
+	if cfg.Server.WriteTimeout.HTTPDeadline() != 0 {
+		t.Errorf("write_timeout HTTPDeadline = %v, want 0 (Go's no-deadline)", cfg.Server.WriteTimeout.HTTPDeadline())
+	}
+	if cfg.Server.HSTSMaxAge != -1 {
+		t.Errorf("hsts_max_age default = %d, want -1 off-sentinel", cfg.Server.HSTSMaxAge)
 	}
 	if len(cfg.LLM.Models) != 1 || cfg.LLM.Models[0] != "test-model" {
 		t.Errorf("models default = %v", cfg.LLM.Models)
@@ -131,6 +139,54 @@ func TestCapSyntax(t *testing.T) {
 	}
 	if got := cfg.Auth.SignupsPerHour(); got != 0 {
 		t.Errorf("SignupsPerHour() with -1 = %d, want 0 (no budget)", got)
+	}
+}
+
+// The two off-switches outside limits follow the house syntax too (§2.2),
+// so "off" has exactly one spelling everywhere: -1s on write_timeout
+// (durations carry their unit) and -1 on hsts_max_age (plain seconds).
+// Absent means the default — which for both knobs IS off, in the same
+// sentinel spelling.
+func TestOffSwitchesOutsideCaps(t *testing.T) {
+	at := func(extra string) error {
+		body := strings.Replace(minimalYAML, `  listen: "127.0.0.1:8090"`,
+			"  listen: \"127.0.0.1:8090\"\n"+extra, 1)
+		_, err := Load(writeCfg(t, body))
+		return err
+	}
+	for _, tc := range []struct {
+		key  string
+		body string
+		want string // "" = must load; else the error must name this key
+	}{
+		{"write_timeout", "  write_timeout: -1s\n", ""},
+		{"write_timeout", "  write_timeout: 30s\n", ""},
+		{"write_timeout", "  write_timeout: 0s\n", "server.write_timeout"},
+		{"write_timeout", "  write_timeout: -2s\n", "server.write_timeout"},
+		{"hsts_max_age", "  hsts_max_age: -1\n", ""},
+		{"hsts_max_age", "  hsts_max_age: 600\n", ""},
+		{"hsts_max_age", "  hsts_max_age: 0\n", "server.hsts_max_age"},
+		{"hsts_max_age", "  hsts_max_age: -2\n", "server.hsts_max_age"},
+	} {
+		err := at(tc.body)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %s rejected: %v", tc.key, tc.body, err)
+		case tc.want != "" && err == nil:
+			t.Errorf("%s: %s accepted, want startup error naming the syntax", tc.key, tc.body)
+		case tc.want != "" && !strings.Contains(err.Error(), tc.want):
+			t.Errorf("%s: %s err = %v, want mention of %q", tc.key, tc.body, err, tc.want)
+		}
+	}
+	// And the sentinel's meaning at the one Go boundary that cares:
+	// http.Server must receive 0 (no deadline), never a negative.
+	cfg, err := Load(writeCfg(t, strings.Replace(minimalYAML, `  listen: "127.0.0.1:8090"`,
+		"  listen: \"127.0.0.1:8090\"\n  write_timeout: -1s", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := cfg.Server.WriteTimeout.HTTPDeadline(); d != 0 {
+		t.Errorf("HTTPDeadline with -1s = %v, want 0", d)
 	}
 }
 
@@ -262,7 +318,7 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 		"server.listen":                              "deployment choice — template ships the production port",
 		"server.tls.cert_file":                       "deployment paths — template stages certbot's cert",
 		"server.tls.key_file":                        "deployment paths — template stages certbot's cert",
-		"server.hsts_max_age":                        "0 (code default) means no HSTS header; the template ships one year as the TLS-era default",
+		"server.hsts_max_age":                        "-1 (code default) means no HSTS header; the template ships one year as the TLS-era default",
 		"database.dir":                               "required; per-machine path",
 		"scratchpad.root":                            "required; per-machine path",
 		"scratchpad.code_execution.allowed_runtimes": "host-specific interpreter paths — code default is the empty list",
@@ -397,13 +453,13 @@ llm: {endpoint: "http://x/v1", model: m}
 			"server.listen",
 		},
 		{
-			// Durations take no off-sentinel (§2.2): -1 must be a
-			// startup error, never a deadline that already passed.
+			// write_timeout has the house off-switch (-1s); any
+			// OTHER negative is still a passed deadline — reject.
 			"negative write_timeout",
 			`
 server:
   listen: "127.0.0.1:8090"
-  write_timeout: -1s
+  write_timeout: -2s
 database: {dir: ./db}
 scratchpad: {root: ./sp}
 llm: {endpoint: "http://x/v1", model: m}
