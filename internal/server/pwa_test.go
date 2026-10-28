@@ -55,7 +55,8 @@ func TestManifestServedAsJSONWithUsableIcons(t *testing.T) {
 	}
 	biggest := 0
 	for _, ic := range m.Icons {
-		b, err := web.FS.ReadFile(strings.TrimPrefix(ic.Src, "/"))
+		src, _, _ := strings.Cut(ic.Src, "?") // icons are cache-busted by query
+		b, err := web.FS.ReadFile(strings.TrimPrefix(src, "/"))
 		if err != nil {
 			t.Errorf("manifest icon %q not embedded: %v", ic.Src, err)
 			continue
@@ -88,7 +89,7 @@ func TestIndexLinksManifestAndAppleTags(t *testing.T) {
 	h := string(b)
 	for _, want := range []string{
 		`rel="manifest" href="/assets/manifest.webmanifest"`,
-		`rel="apple-touch-icon" href="/assets/apple-touch-icon.png"`,
+		`rel="apple-touch-icon" href="/assets/apple-touch-icon.png?v=2"`,
 		`name="theme-color"`,
 		`media="(prefers-color-scheme: dark)"`,
 	} {
