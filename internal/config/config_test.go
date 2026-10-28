@@ -745,6 +745,27 @@ llm: {endpoint: "http://x/v1", model: m}
 	if !strings.Contains(joined, "without TLS") {
 		t.Errorf("expected no-TLS warning, got: %s", joined)
 	}
+
+	// I-4: a default-route proxy list makes every client trusted.
+	warns := func(proxies string) string {
+		t.Helper()
+		c, err := Load(writeCfg(t, strings.Replace(body,
+			`  listen: "0.0.0.0:8090"`,
+			`  listen: "0.0.0.0:8090"`+"\n"+`  trusted_proxies: ["`+proxies+`"]`, 1)))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return strings.Join(c.Warnings(), "\n")
+	}
+	if j := warns("0.0.0.0/0"); !strings.Contains(j, "X-Forwarded-For is honored") {
+		t.Errorf("0.0.0.0/0 in trusted_proxies: want spoofing warning, got: %s", j)
+	}
+	if j := warns("::/0"); !strings.Contains(j, "X-Forwarded-For is honored") {
+		t.Errorf("::/0 in trusted_proxies: want spoofing warning, got: %s", j)
+	}
+	if j := warns("192.168.0.0/24"); strings.Contains(j, "X-Forwarded-For is honored") {
+		t.Errorf("honest proxy list must not warn, got: %s", j)
+	}
 }
 
 func TestCheckIOWritable(t *testing.T) {

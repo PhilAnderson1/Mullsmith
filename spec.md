@@ -918,7 +918,9 @@ open registration (startup warns).
   localhost. When `server.tls.enabled`, plaintext requests on the same listener get 308
   redirects (a second plain listener is never opened).
 - **Loud startup warnings** (and a README pre-flight checklist) when: binding a non-
-  loopback address with TLS off; HSTS off under TLS. (Cookie `Secure` needs no
+  loopback address with TLS off; HSTS off under TLS; `server.trusted_proxies` contains
+  a default route (`0.0.0.0/0` / `::/0`), which honors every client's `X-Forwarded-For`
+  and lets source-IP buckets be spoofed (audit1 I-4). (Cookie `Secure` needs no
   warning: it is derived per request from TLS / trusted-proxy `X-Forwarded-Proto`,
   so it cannot disagree with anything.)
 - **Trusted proxies:** `X-Forwarded-For` / `X-Forwarded-Proto` are honored **only** when

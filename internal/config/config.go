@@ -993,6 +993,15 @@ func (c *Config) Warnings() []string {
 	if c.Server.HSTSMaxAge > 0 && !c.Server.TLS.Enabled {
 		w = append(w, "server.hsts_max_age > 0 but TLS is disabled — HSTS headers will never be sent")
 	}
+	// I-4: a default-route entry makes every client a "trusted proxy", so
+	// X-Forwarded-For decides which per-IP bucket (login/register floods,
+	// the whole anonymous story) gets throttled — attacker-controlled.
+	// Warning, not refusal: someone may genuinely sit behind all-zeros.
+	for _, p := range c.TrustedNets {
+		if p.Bits() == 0 {
+			w = append(w, fmt.Sprintf("server.trusted_proxies contains %s — ANY client's X-Forwarded-For is honored, so source-IP buckets can be spoofed at will; list only your real proxies' addresses (spec §9.10)", p))
+		}
+	}
 	if c.Scratchpad.CodeExec.Enabled {
 		if c.Scratchpad.CodeExec.AllowNetwork {
 			w = append(w, "code_execution.allow_network=true: sandboxed scripts may reach the network from inside the jail — keep off unless required (spec §9.6/§9.9)")
