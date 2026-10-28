@@ -107,6 +107,27 @@ auth:
   remember_absolute_ttl: 2160h
   max_failed_logins: 10
 
+email:                            # password reset + email confirmation
+  enabled: false                  # master switch; enabling later never touches
+                                  # existing accounts (no retroactive confirming)
+  # Absolute origin the links in mails are built from — REQUIRED when enabled.
+  # Never derived from request headers on purpose: a spoofed Host must not be
+  # able to inject an attacker domain into password-reset links.
+  base_url: ""                    # e.g. https://gabkeep.example:3210
+  smtp:
+    host: ""                      # submission server hostname or address
+    port: 587                     # 587 (STARTTLS) or 465 (implicit TLS)
+    authenticated_smtp: true      # true → AUTH LOGIN (never before TLS);
+                                  # false → unauthenticated send (LAN relay)
+    username: ""
+    password: "${GABKEEP_SMTP_PASSWORD:-}"   # keep the secret in the service
+                                  # EnvironmentFile (§9.12), not in this file
+    from: "gabkeep@localhost"     # envelope sender + From header
+  # With enabled: true, new sign-ups must click a confirmation link within
+  # 24 hours (or the pending account is deleted); "Forgot password?" appears
+  # on the login page for accounts with a confirmed address. Authenticated
+  # SMTP on port 25 is a config error — credentials never go in the clear.
+
 limits:
   max_body_bytes: 1MiB
   max_message_chars: 32000

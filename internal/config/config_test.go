@@ -380,6 +380,78 @@ llm: {endpoint: "http://x/v1", model: m}
 	}
 }
 
+func TestEmailValidation(t *testing.T) {
+	// A disabled (or absent) email section needs nothing else — the
+	// minimalYAML in this file has no email: block and must keep loading.
+	const base = minimalYAML + `email:
+  enabled: true
+  base_url: "https://gabkeep.example:3210"
+  smtp:
+    host: "mail.example"
+    authenticated_smtp: true
+    username: "gabkeep"
+    from: "gabkeep@example"
+`
+	if _, err := Load(writeCfg(t, base)); err != nil {
+		t.Fatalf("valid enabled config rejected: %v", err)
+	}
+	cases := []struct {
+		name    string
+		old     string // replaced inside the fixture (count 1)
+		nw      string
+		wantErr string
+	}{
+		{"needs host", `host: "mail.example"`, `host: ""`, "email.smtp.host"},
+		{"needs from", `from: "gabkeep@example"`, `from: "gabkeep"`, "email.smtp.from"},
+		{"needs base_url", `  base_url: "https://gabkeep.example:3210"`, "", "email.base_url"},
+		{"base_url path", `https://gabkeep.example:3210"`, `https://x.example/app"`, "email.base_url"},
+		{"base_url scheme", `https://gabkeep.example:3210"`, `ftp://x.example"`, "email.base_url"},
+		{"auth needs username", `username: "gabkeep"`, `username: ""`, "email.smtp.username"},
+		{"auth on port 25", `host: "mail.example"`, "host: \"mail.example\"\n    port: 25", "port 25"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(base, tc.old, tc.nw, 1)
+			if body == base && tc.old != "" {
+				t.Fatalf("fixture lacks %q", tc.old)
+			}
+			_, err := Load(writeCfg(t, body))
+			if err == nil {
+				t.Fatalf("expected error mentioning %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	// Defaults + normalization: port fills to 587, trailing slash in
+	// base_url is stripped (link building appends "/#reset?t=…").
+	cfg, err := Load(writeCfg(t, base))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Email.SMTP.Port != 587 {
+		t.Errorf("smtp port default = %d, want 587", cfg.Email.SMTP.Port)
+	}
+	cfg, err = Load(writeCfg(t, strings.Replace(base,
+		"base_url: \"https://gabkeep.example:3210\"",
+		"base_url: \"https://gabkeep.example:3210/\"", 1)))
+	if err != nil {
+		t.Fatalf("trailing-slash base_url: %v", err)
+	}
+	if cfg.Email.BaseURL != "https://gabkeep.example:3210" {
+		t.Errorf("base_url = %q, want trailing slash stripped", cfg.Email.BaseURL)
+	}
+
+	// Unauthenticated port 25 (LAN relay) stays legal.
+	body := strings.Replace(base, "authenticated_smtp: true", "authenticated_smtp: false", 1)
+	body = strings.Replace(body, `host: "mail.example"`, "host: \"mail.example\"\n    port: 25", 1)
+	if _, err := Load(writeCfg(t, body)); err != nil {
+		t.Errorf("unauthenticated port 25 rejected: %v", err)
+	}
+}
+
 func TestParseSize(t *testing.T) {
 	cases := map[string]Size{
 		"25MiB":  25 << 20,

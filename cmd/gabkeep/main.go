@@ -475,6 +475,19 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 			fmt.Printf("[ok]   code_execution       bubblewrap jail verified\n")
 		}
 	}
+	// email.smtp: warn-only by design — a transient mail-server blip must
+	// not block a deploy, and a dial cannot prove SMTP credentials anyway.
+	if cfg.Email.Enabled {
+		pctx, pcancel := context.WithTimeout(context.Background(), 12*time.Second)
+		err := cfg.ProbeSMTP(pctx)
+		pcancel()
+		if err != nil {
+			fmt.Printf("[warn] email.smtp             %s unreachable: %v\n", cfg.Email.SMTP.Addr(), err)
+		} else {
+			fmt.Printf("[ok]   email.smtp             %s auth=%t\n",
+				cfg.Email.SMTP.Addr(), cfg.Email.SMTP.AuthenticatedSMTP)
+		}
+	}
 	for _, w := range cfg.Warnings() {
 		fmt.Printf("[warn]                        %s\n", w)
 	}

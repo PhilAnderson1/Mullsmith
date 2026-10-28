@@ -4,6 +4,8 @@
 package config
 
 import (
+	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -94,6 +96,7 @@ type Config struct {
 	LLM        LLM        `yaml:"llm"`
 	Tools      Tools      `yaml:"tools"`
 	Auth       Auth       `yaml:"auth"`
+	Email      Email      `yaml:"email"`
 	RateLimit  RateLimit  `yaml:"rate_limit"` // retired; see Validate
 	Logging    Logging    `yaml:"logging"`
 
@@ -258,6 +261,35 @@ type Argon2 struct {
 	Memory  int `yaml:"memory"` // KiB
 	Threads int `yaml:"threads"`
 }
+
+// Email is the master switch ("email_features") for password reset links and
+// email confirmation of sign-ups/addresses. Disabled by default: no mail is
+// sent and no flow asks anyone to confirm anything. Flipping it on later
+// never touches existing accounts — only sign-ups registered *while* it is
+// enabled enter the confirm-before-login flow.
+type Email struct {
+	Enabled bool `yaml:"enabled"`
+	// BaseURL is the absolute origin reset/confirm links are built from,
+	// e.g. https://host.example:3210. Required when enabled: links must
+	// come from operator config, never from a (spoofable) Host header.
+	BaseURL string `yaml:"base_url"`
+	SMTP    SMTP   `yaml:"smtp"`
+}
+
+type SMTP struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"` // default 587; 465 means implicit TLS
+	// AuthenticatedSMTP: true → AUTH LOGIN after the connection is TLS
+	// (STARTTLS is required before sending credentials, fail-closed);
+	// false → unauthenticated send, the LAN-relay case.
+	AuthenticatedSMTP bool   `yaml:"authenticated_smtp"`
+	Username          string `yaml:"username"`
+	Password          string `yaml:"password"` // ${ENV} expansion recommended
+	From              string `yaml:"from"`     // envelope sender + From header
+}
+
+// Addr is host:port for dialing.
+func (s SMTP) Addr() string { return net.JoinHostPort(s.Host, strconv.Itoa(s.Port)) }
 
 // RateLimit is retired: its two knobs moved into limits (§9.11). The type
 // exists only so Validate can name the move to operators of old configs
@@ -546,6 +578,12 @@ func (c *Config) setDefaults() {
 	if c.Auth.Argon2 == (Argon2{}) {
 		c.Auth.Argon2 = Argon2{Time: 1, Memory: 65536, Threads: 4}
 	}
+	if c.Email.SMTP.Port == 0 {
+		c.Email.SMTP.Port = 587
+	}
+	// Links are BaseURL + "/#reset?t=…": a trailing slash here would
+	// produce "//#" in every mail, so normalize once at load time.
+	c.Email.BaseURL = strings.TrimRight(c.Email.BaseURL, "/")
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
@@ -736,6 +774,33 @@ func (c *Config) Validate() error {
 		f.bad("auth.argon2: parameters out of sane range (max time 4096, memory 1048576 KiB, threads 64)")
 	}
 
+	// email: only coherent-when-enabled — a disabled section needs nothing
+	// (the default), so upgrading an old config costs zero keys.
+	if c.Email.Enabled {
+		if c.Email.SMTP.Host == "" {
+			f.bad("email.smtp.host: required when email.enabled is true")
+		}
+		if c.Email.SMTP.Port < 1 || c.Email.SMTP.Port > 65535 {
+			f.bad("email.smtp.port: must be 1..65535")
+		}
+		if !strings.Contains(c.Email.SMTP.From, "@") {
+			f.bad("email.smtp.from: must be an email address when email.enabled is true")
+		}
+		if c.Email.SMTP.AuthenticatedSMTP {
+			if c.Email.SMTP.Username == "" {
+				f.bad("email.smtp.username: required when authenticated_smtp is true")
+			}
+			if c.Email.SMTP.Port == 25 {
+				f.bad("email.smtp: authenticated_smtp on port 25 is refused — credentials must not cross a cleartext connection (use 587 with STARTTLS or 465)")
+			}
+		}
+		if c.Email.BaseURL == "" {
+			f.bad("email.base_url: required when email.enabled is true (links must come from operator config, never from the request's Host header)")
+		} else if err := validOrigin(c.Email.BaseURL); err != nil {
+			f.bad("email.base_url: %v", err)
+		}
+	}
+
 	switch c.Logging.Level {
 	case "debug", "info", "warn", "error":
 	default:
@@ -767,8 +832,11 @@ func (c *Config) Warnings() []string {
 			w = append(w, "code execution enabled with auto-approval AND open registration — prompt-injection risk (spec §9.13)")
 		}
 	}
-	if c.Auth.Registration == "open" {
-		w = append(w, "registration is open while email addresses are unverified in v1 — invite-only is the recommended public default (spec §9.12)")
+	if c.Auth.Registration == "open" && !c.Email.Enabled {
+		w = append(w, "registration is open while email addresses are unverified — enable email.enabled or use invite-only (spec §9.12)")
+	}
+	if c.Email.Enabled && !strings.HasPrefix(c.Email.BaseURL, "https://") {
+		w = append(w, "email.base_url is not https — password-reset and confirmation tokens would cross the network in the clear")
 	}
 	return w
 }
@@ -841,6 +909,55 @@ func dirWritable(dir string) error {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// ProbeSMTP dials the configured SMTP server for -check-config. It checks
+// reachability (and a working TLS handshake on the implicit-TLS port 465)
+// only: no message is sent, no credentials are ever transmitted or logged —
+// a dial cannot prove the username/password work anyway. Callers should
+// treat failure as a warning, never a deploy blocker.
+func (c *Config) ProbeSMTP(ctx context.Context) error {
+	if !c.Email.Enabled {
+		return nil
+	}
+	d := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", c.Email.SMTP.Addr())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if c.Email.SMTP.Port == 465 {
+		tconn := tls.Client(conn, &tls.Config{ServerName: c.Email.SMTP.Host, MinVersion: tls.VersionTLS12})
+		dl, ok := ctx.Deadline()
+		if !ok {
+			dl = time.Now().Add(10 * time.Second)
+		}
+		_ = tconn.SetDeadline(dl)
+		if err := tconn.HandshakeContext(ctx); err != nil {
+			return fmt.Errorf("TLS handshake: %w", err)
+		}
+	}
+	return nil
+}
+
+// validOrigin accepts http(s)://host[:port] with nothing below the authority:
+// mail links are built by string-append onto this value, so a path, query or
+// fragment here is always a typo.
+func validOrigin(s string) error {
+	u, err := url.Parse(s)
+	switch {
+	case err != nil:
+		return err
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("scheme must be http or https")
+	case u.Host == "":
+		return fmt.Errorf("host required")
+	case u.Path != "":
+		return fmt.Errorf("must not contain a path (links are appended to the origin)")
+	case u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("must not contain a query or fragment")
+	}
+	return nil
+}
 
 func parseProxy(p string) (netip.Prefix, error) {
 	if pre, err := netip.ParsePrefix(p); err == nil {
