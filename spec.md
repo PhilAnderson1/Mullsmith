@@ -538,10 +538,15 @@ output is data, never instructions; approval gates bound the blast radius).
    and, in that transaction, one placeholder `New chat` conversation: a fresh login lands
    on the newest conversation with the composer ready, so a new user never has to click
    "New chat" before typing (the SPA already auto-selects it). Auto-titling renames the
-   placeholder after the first exchange like any other untitled chat; a rolled-back
-   register (dead invite) leaves neither user nor conversation behind.
+   placeholder after the first exchange like any other untitled chat; a register refused
+   on a dead invite happens before the transaction and leaves neither user nor
+   conversation behind.
 3. Create `scratchpad/<user-id>/{uploads,artifacts,work}` (`0750`, process owner).
-   Failure here rolls back the DB insert (register is retried idempotently; ULID reused).
+   Failure returns 500 and the row stands — nothing rolls it back (audit1 I-2 made the
+   docs honest about that). The state self-heals: login is unaffected, and the upload
+   and code-exec paths both re-run `EnsureUserDirs`, recreating the workspace on first
+   use; an email-mode row (no confirm mail was queued) is swept after 24 h, freeing
+   the address.
 4. Features-off (`email.enabled: false`): create session, set cookies, return `201`.
    With `email.enabled` (§9.17): the address goes to `unconfirmed_email`, the row is
    `disabled`, the confirmation mail is queued once row and workspace exist, and the

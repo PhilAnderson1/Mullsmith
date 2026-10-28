@@ -234,11 +234,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Scratchpad provisioning (spec §8): a filesystem failure rolls back the
-	// user row so we never leave an account without its workspace.
+	// Scratchpad provisioning (spec §8). On filesystem failure the row
+	// SURVIVES — no rollback runs here, and none is promised (audit1 I-2:
+	// the old "best-effort rollback; M6 adds a reconciler" comment described
+	// machinery that never existed). The state is benign and self-healing:
+	// the account logs in normally, and both the upload path and code-exec
+	// re-run EnsureUserDirs, so the workspace appears on first use. In
+	// email mode the only casualty is the confirm mail never queued — the
+	// pending row is swept after 24 h (§9.17) and register works again.
 	if err := scratch.EnsureUserDirs(s.cfg.Scratchpad.Root, user.ID); err != nil {
 		s.logger.Error("scratchpad provisioning failed", "error", err, "user", user.ID)
-		// best-effort rollback; M6 adds a periodic reconciler
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
