@@ -293,14 +293,6 @@ func (s *Server) staticAssetsHandler() http.HandlerFunc {
 			_, _ = w.Write(body)
 			return
 		}
-		if r.URL.Path == "/assets/manifest-v4.webmanifest" &&
-			strings.Contains(r.UserAgent(), "Android") {
-			// Chrome for Windows prefers maskable icons for shortcuts and
-			// fills their transparency, so a sharp square is the best a
-			// maskable ever becomes there; desktop must never see one.
-			// Android wants exactly that entry. Same URL, two manifests.
-			r.URL.Path = "/assets/manifest-v4-android.webmanifest"
-		}
 		if strings.HasSuffix(r.URL.Path, ".webmanifest") {
 			// Go's mime table predates the extension; without this the
 			// manifest is sniffed as text/plain and browsers may ignore it.
