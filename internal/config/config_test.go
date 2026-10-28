@@ -283,15 +283,54 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 	if len(tmplLeaf) != len(miniLeaf) {
 		t.Fatalf("leaf count mismatch %d vs %d — flattenLeaves out of date?", len(tmplLeaf), len(miniLeaf))
 	}
+	// Keys the template must NOT carry: retired knobs whose presence (with a
+	// value) is itself a startup error — the template can only confuse.
+	notInTemplate := map[string]bool{
+		"rate_limit.requests_per_minute":            true,
+		"rate_limit.chat_messages_per_hour":         true,
+		"scratchpad.code_execution.mode":            true,
+		"scratchpad.code_execution.container_image": true,
+		"scratchpad.code_execution.run_as_user":     true,
+	}
 	for path, codeDefault := range miniLeaf {
-		if _, ok := exceptions[path]; ok {
-			continue
-		}
-		if !leafEqual(codeDefault, tmplLeaf[path]) {
+		if _, ok := exceptions[path]; !ok && !leafEqual(codeDefault, tmplLeaf[path]) {
 			t.Errorf("%s: template = %v, code default = %v — match them or list the path as a reasoned exception",
 				path, tmplLeaf[path], codeDefault)
 		}
+		// Presence: every live key is spelled out in the template, so the
+		// shipped file shows every knob and its default (the operator's
+		// doctrine: same options in the file as wired into the code).
+		present := rawHasPath(tmpl.rawDoc, path)
+		if notInTemplate[path] {
+			if present {
+				t.Errorf("%s: retired key spelled out in the template — it must be absent", path)
+			}
+			continue
+		}
+		if !present {
+			t.Errorf("%s: missing from configs/config.yaml — spell out the default or list the path as a reasoned exception", path)
+		}
 	}
+}
+
+// rawHasPath walks a dotted key path through the untyped YAML document.
+func rawHasPath(doc map[string]any, path string) bool {
+	here := doc
+	segs := strings.Split(path, ".")
+	for i, seg := range segs {
+		v, ok := here[seg]
+		if !ok {
+			return false
+		}
+		if i == len(segs)-1 {
+			return true
+		}
+		here, ok = v.(map[string]any)
+		if !ok {
+			return false
+		}
+	}
+	return false
 }
 
 // flattenLeaves maps every yaml-tagged scalar (including slices and maps)
