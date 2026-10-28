@@ -84,7 +84,7 @@ func TestSessionTokens(t *testing.T) {
 }
 
 func TestLimiter(t *testing.T) {
-	l := NewLimiter()
+	l := NewLimiter(nil)
 	window := 100 * time.Millisecond
 	for i := 0; i < 3; i++ {
 		if !l.Allow("k", 3, window) {
@@ -101,7 +101,7 @@ func TestLimiter(t *testing.T) {
 }
 
 func TestLoginLocks(t *testing.T) {
-	l := NewLoginLocks()
+	l := NewLoginLocks(nil)
 	if l.Locked("u") {
 		t.Error("fresh key locked")
 	}

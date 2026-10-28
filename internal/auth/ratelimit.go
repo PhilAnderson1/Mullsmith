@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -28,12 +29,32 @@ const (
 	evictFraction = maxLimiterEntries / 4
 )
 
+// saturationAlarm is embedded in both auth maps and raises the audit1 L-1
+// alarm: when the caps force fail-open behaviour (admitting unthrottled
+// keys, dropping failure records) the window becomes VISIBLE in the log —
+// at most one WARN per minute per map, so the flood that fills the map
+// cannot also flood the log. A nil logger (tests, zero values) is silent.
+// Callers hold the owning map's mutex.
+type saturationAlarm struct {
+	log  *slog.Logger
+	next time.Time
+}
+
+func (a *saturationAlarm) warn(now time.Time, msg string) {
+	if a.log == nil || now.Before(a.next) {
+		return
+	}
+	a.next = now.Add(time.Minute)
+	a.log.Warn(msg)
+}
+
 // Limiter is a small in-memory token bucket per key (spec §9.11). Lazy
 // eviction on access keeps background goroutines unnecessary for M1.
 type Limiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	gcAt    time.Time
+	mu              sync.Mutex
+	buckets         map[string]*bucket
+	gcAt            time.Time
+	saturationAlarm // warns when the entry cap bites (audit1 L-1)
 }
 
 type bucket struct {
@@ -43,8 +64,10 @@ type bucket struct {
 	last   time.Time
 }
 
-func NewLimiter() *Limiter {
-	return &Limiter{buckets: map[string]*bucket{}}
+// NewLimiter returns a limiter whose saturation alarms (audit1 L-1) go to
+// log; nil keeps them silent (tests).
+func NewLimiter(log *slog.Logger) *Limiter {
+	return &Limiter{buckets: map[string]*bucket{}, saturationAlarm: saturationAlarm{log: log}}
 }
 
 // Len reports retained buckets (observability and cap regression tests).
@@ -68,6 +91,8 @@ func (l *Limiter) Allow(key string, rate int, window time.Duration) bool {
 			// brand-new IP must not be punished for it either: admit
 			// WITHOUT retaining a bucket. Existing buckets keep throttling
 			// their own IPs; the hash gate is the real backstop (spec §9.1).
+			// The admit-unthrottled window is logged once a minute (L-1).
+			l.warn(now, "rate-limit map saturated: admitting fresh keys WITHOUT throttling — a flood of new source IPs; the hash gate remains the backstop (audit1 L-1)")
 			return true
 		}
 		b = &bucket{tokens: float64(rate), cap: float64(rate), refill: float64(rate) / window.Seconds(), last: now}
@@ -107,10 +132,15 @@ func (l *Limiter) makeRoomLocked(now time.Time) bool {
 	}
 	sort.Slice(byLast, func(i, j int) bool { return byLast[i].Before(byLast[j]) })
 	cutoff := byLast[evictFraction-1]
+	evicted := 0
 	for k, b := range l.buckets {
 		if !b.last.After(cutoff) {
 			delete(l.buckets, k)
+			evicted++
 		}
+	}
+	if evicted > 0 {
+		l.warn(now, "rate-limit map hit its 16 384-bucket cap: evicted the least-recently-used counters — a flood of new source IPs? (audit1 L-1)")
 	}
 	return len(l.buckets) < maxLimiterEntries
 }
@@ -145,7 +175,8 @@ type LoginLocks struct {
 	noRoomUntil time.Time // negative cache: nothing evictable until then
 	// now is a clock seam (nil = time.Now) so window/lockout tests step
 	// time explicitly instead of sleeping.
-	now func() time.Time
+	now             func() time.Time
+	saturationAlarm // warns when the entry cap bites (audit1 L-1)
 }
 
 type failRecord struct {
@@ -154,8 +185,10 @@ type failRecord struct {
 	lockedUntil time.Time // zero until a threshold crossing arms a lockout
 }
 
-func NewLoginLocks() *LoginLocks {
-	return &LoginLocks{m: map[string]*failRecord{}, now: time.Now}
+// NewLoginLocks returns lockers whose saturation alarms (audit1 L-1) go
+// to log; nil keeps them silent (tests).
+func NewLoginLocks(log *slog.Logger) *LoginLocks {
+	return &LoginLocks{m: map[string]*failRecord{}, now: time.Now, saturationAlarm: saturationAlarm{log: log}}
 }
 
 // clockNow keeps Fail and Locked on one notion of "now"; a zero-value
@@ -228,6 +261,7 @@ func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 			// noRoomUntil short-circuits the scan while the map is known
 			// immovable, so refusals stay O(1) instead of O(map) each.
 			if now.Before(l.noRoomUntil) || !l.makeRoomLocked(now) {
+				l.warn(now, "login-lock map saturated: every slot holds a live lockout — this failed login went untracked (existing lockouts preserved; per-IP buckets and the hash gate still apply) (audit1 L-1)")
 				return
 			}
 		}
@@ -282,6 +316,9 @@ func (l *LoginLocks) makeRoomLocked(now time.Time) bool {
 			delete(l.m, k)
 			freed++
 		}
+	}
+	if freed > 0 {
+		l.warn(now, "login-lock map hit its 16 384-record cap: evicted stale failure counters (lockouts are never evicted) — a flood of failing logins from fresh addresses? (audit1 L-1)")
 	}
 	return len(l.m) < maxLockEntries
 }

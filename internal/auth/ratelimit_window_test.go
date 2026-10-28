@@ -18,7 +18,7 @@ func (c *fakeClock) after(d time.Duration) { c.t = c.t.Add(d) }
 
 func newFakeLocks() (*LoginLocks, *fakeClock) {
 	c := &fakeClock{t: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
-	l := NewLoginLocks()
+	l := NewLoginLocks(nil)
 	l.now = c.now
 	return l, c
 }
