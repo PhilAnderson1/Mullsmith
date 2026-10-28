@@ -216,14 +216,14 @@ func TestJSEmailFeatureSurface(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`h === "#forgot"`,          // router knows the three new routes
+		`h === "#forgot"`, // router knows the three new routes
 		`startsWith("#reset")`,
 		`startsWith("#confirm")`,
-		"history.replaceState",     // consumed tokens must not linger in URL/history
+		"history.replaceState",        // consumed tokens must not linger in URL/history
 		"email_confirmation_required", // register swaps to the check-inbox panel
 		"state.pendingInbox",
-		"email_features",           // meta gate for #login-forgot
-		"unconfirmed_email",        // Settings pending notice
+		"email_features",    // meta gate for #login-forgot
+		"unconfirmed_email", // Settings pending notice
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("app.js lost %q", want)

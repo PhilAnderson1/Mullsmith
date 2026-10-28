@@ -5,7 +5,9 @@
 //	gabkeep -config /path/to/config.yaml
 //	gabkeep -config /path/to/config.yaml admin invite [n]
 //	gabkeep -config /path/to/config.yaml admin create-user -email E -name N -password P
-//	gabkeep -config /path/to/config.yaml admin reset-password <email>
+//	gabkeep -config /path/to/config.yaml admin reset-password <email> [-password P]
+//	gabkeep -config /path/to/config.yaml admin list-users
+//	gabkeep -config /path/to/config.yaml admin delete-user <id-or-email>
 package main
 
 import (
@@ -13,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -63,7 +66,10 @@ func run(args []string) int {
 		fmt.Fprintln(out, "\ncommands:")
 		fmt.Fprintln(out, "  admin invite [n]                     mint n single-use invite codes (default 1)")
 		fmt.Fprintln(out, "  admin create-user -email -name -password")
-		fmt.Fprintln(out, "  admin reset-password <email>         set a new password; revokes all sessions")
+		fmt.Fprintln(out, "  admin reset-password <email>         set a new password (or mail a reset")
+		fmt.Fprintln(out, "                                       link when email.enabled); revokes all sessions")
+		fmt.Fprintln(out, "  admin list-users                     every account incl. pending sign-ups")
+		fmt.Fprintln(out, "  admin delete-user <id-or-email>      remove an account (id names pending ones)")
 	}
 	cfgPath := fs.String("config", "", "path to YAML config file (required)")
 	showVersion := fs.Bool("version", false, "print version information and exit")
@@ -246,7 +252,7 @@ func expireSessionsLoop(ctx context.Context, db *store.DB, logger *slog.Logger) 
 
 func adminMain(cfgPath string, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: gabkeep -config CFG admin <invite|create-user|reset-password> [...]")
+		fmt.Fprintln(os.Stderr, "usage: gabkeep -config CFG admin <invite|create-user|reset-password|list-users|delete-user> [...]")
 		return 2
 	}
 	if cfgPath == "" {
@@ -279,6 +285,10 @@ func adminMain(cfgPath string, args []string) int {
 		return adminCreateUser(ctx, cfg, db, args[1:])
 	case "reset-password":
 		return adminResetPassword(ctx, cfg, db, args[1:])
+	case "list-users":
+		return adminListUsers(ctx, db, os.Stdout, args[1:])
+	case "delete-user":
+		return adminDeleteUser(ctx, db, os.Stdout, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "gabkeep: unknown admin command %q\n", args[0])
 		return 2
@@ -396,6 +406,15 @@ func adminResetPassword(ctx context.Context, cfg *config.Config, db *store.DB, a
 		return 1
 	}
 
+	// email_features enhancement (plan §2): with the switch on and no
+	// explicit -password override, mail the user a real reset link — the
+	// same flow a user triggers themselves. Any mail problem degrades to
+	// the classic prompt: mail is an upgrade, never a new recovery
+	// dependency for the operator.
+	if newPw == "" && cfg.Email.Enabled && adminMailReset(ctx, cfg, db, u) {
+		return 0
+	}
+
 	if newPw == "" {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
 			fmt.Fprintln(os.Stderr, "gabkeep: no terminal for prompt; use -password")
@@ -438,6 +457,100 @@ func adminResetPassword(ctx context.Context, cfg *config.Config, db *store.DB, a
 	} else {
 		fmt.Printf("password reset for %s; %d session(s) revoked\n", u.Email, n)
 	}
+	return 0
+}
+
+// adminMailReset mails a real reset link (the user-facing flow: one-shot,
+// expires in 30 min, completing it revokes every session). It DIALS
+// SYNCHRONOUSLY — the CLI is short-lived and has no outbox worker to hand
+// the job to. Returns false on any failure so the caller falls back to the
+// interactive prompt; -password stays the offline escape hatch regardless.
+func adminMailReset(ctx context.Context, cfg *config.Config, db *store.DB, u *store.User) bool {
+	raw, err := db.CreateToken(ctx, store.TokenResetPassword, u.ID, u.Email, time.Now().Add(30*time.Minute))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gabkeep: reset token:", err, "— falling back to password prompt")
+		return false
+	}
+	subject, body := mail.ResetMail(cfg.Email.BaseURL, raw)
+	if err := mail.NewSMTP(cfg.Email.SMTP).Deliver(u.Email, subject, body); err != nil {
+		fmt.Fprintf(os.Stderr, "gabkeep: mail failed (%v) — falling back to password prompt\n", err)
+		return false
+	}
+	fmt.Printf("reset link mailed to %s (one-shot, 30 min; completing it revokes all sessions)\n", u.Email)
+	return true
+}
+
+// adminListUsers prints every row — the only way to see (and name) pending
+// sign-ups, whose email column is NULL and who are therefore invisible to
+// every address-keyed lookup (email_features plan §2).
+func adminListUsers(ctx context.Context, db *store.DB, out io.Writer, args []string) int {
+	fs := flag.NewFlagSet("admin list-users", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	users, err := db.ListUsers(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gabkeep: list users:", err)
+		return 1
+	}
+	for _, u := range users {
+		fmt.Fprintf(out, "%s  %s  %s  %s\n", u.ID, adminEmailLabel(u), u.Status,
+			u.CreatedAt.UTC().Format(time.RFC3339))
+	}
+	return 0
+}
+
+// adminEmailLabel is how both list-users and delete-user speak of an
+// account: its confirmed address, or the pending one in angle brackets.
+func adminEmailLabel(u store.User) string {
+	if u.Email != "" {
+		return u.Email
+	}
+	return "<pending: " + u.UnconfirmedEmail + ">"
+}
+
+// adminDeleteUser removes an account by id or confirmed email. Id first:
+// pending sign-ups can ONLY be named that way (their address lives in
+// unconfirmed_email, which no lookup key matches — same invariant as
+// login). auth_tokens cascade via FK; scratchpad bytes go to the existing
+// unknown-user sweep (§8). Status is never a reason to refuse — the
+// operator has create-user standing (plan §11.3).
+func adminDeleteUser(ctx context.Context, db *store.DB, out io.Writer, args []string) int {
+	fs := flag.NewFlagSet("admin delete-user", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: admin delete-user <id-or-email>")
+		return 2
+	}
+	target := fs.Arg(0)
+	u, err := db.UserByID(ctx, target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		return 1
+	}
+	if u == nil && strings.Contains(target, "@") {
+		u, err = db.UserByEmail(ctx, strings.ToLower(target))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gabkeep:", err)
+			return 1
+		}
+	}
+	if u == nil {
+		fmt.Fprintf(os.Stderr, "gabkeep: no account with that id or confirmed email: %s\n", target)
+		return 1
+	}
+	deleted, err := db.DeleteUser(ctx, u.ID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gabkeep: delete user:", err)
+		return 1
+	}
+	if !deleted {
+		fmt.Fprintln(os.Stderr, "gabkeep: user vanished mid-delete; nothing removed")
+		return 1
+	}
+	fmt.Fprintf(out, "deleted user %s (%s)\n", u.ID, adminEmailLabel(*u))
 	return 0
 }
 
