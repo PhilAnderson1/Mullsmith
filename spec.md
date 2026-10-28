@@ -362,7 +362,9 @@ so a deleted chat never silently destroys artifacts the user kept using. The UI 
 every delete click and abandons in-flight generations before sending it; an unparseable
 race (delete arriving while another tab streams) can only ever make the worker's next
 write hit the FK constraint and fail — orphaned message rows are structurally impossible
-(`foreign_keys=1`). Soft-delete tombstones existed until migration 0009 and were removed
+(`foreign_keys=1`) **for the app**; the `sqlite3` CLI defaults to enforcement OFF, so
+hand-run surgery there can bypass the cascade (it happened once — migration 0010 sweeps
+whatever out-of-band writes left behind). Soft-delete tombstones existed until migration 0009 and were removed
 as pure cost: hidden rows confused every count while buying a recovery no flow used.
 Deleting a user — by the admin CLI or self-service from Settings
 (§5.1 `POST /auth/me/delete`) — cascades: DB rows (sessions, conversations → messages → tool
