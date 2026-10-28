@@ -169,9 +169,8 @@ llm:
 tools:
   web_search:
     enabled: true
-    provider: "brave"             # brave | searxng | duckduckgo
+    provider: "brave"             # the only implemented provider
     api_key: "${GABKEEP_SEARCH_API_KEY}"
-    endpoint: ""                  # for searxng instances
     max_results: 8
   web_fetch:
     enabled: true                 # fetch a URL and return extracted text (SSRF-guarded)
@@ -518,7 +517,7 @@ output is data, never instructions; approval gates bound the blast radius).
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `web_search` | `query` | Provider plugin (Brave API / SearXNG / DuckDuckGo) → N results `{title, url, snippet}` as JSON. |
+| `web_search` | `query` | Brave Search API → N results `{title, url, snippet}` as JSON. |
 | `web_fetch` | `url` | GET, http/https only, ≤ 3 redirects, ≤ `max_bytes`; strip HTML→text; SSRF blocklist (§9.6). |
 | `fs_list` | `path?` | List scratchpad dir (relative paths only; default root). |
 | `fs_read` | `path` | Read text file (≤ 256 KiB) from user's scratchpad. |
@@ -1234,7 +1233,8 @@ calls), and a smoke script per milestone.
   endpoint accepts inline images; it is enabled in this deployment.
 - **Web search provider = Brave Search API** (needs an API key; Brave's free allowance
   ended for new keys, so this is a paid API — the only per-request cost in the stack).
-  The provider interface (§7.1) still allows SearXNG/DuckDuckGo later.
+  Brave is the only provider the config accepts; a future second provider would land as
+  an implementation plus its provider name in the validation switch.
 - **Registration = invite-only** (the safe public-internet default, §9.12; email
   confirmation (§9.17) proves mailbox control, but gating *who may sign up* stays the
   first control). Admin mints codes: `gabkeep admin invite`; `open`/`closed` remain

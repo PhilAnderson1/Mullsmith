@@ -261,9 +261,8 @@ type Tools struct {
 
 type WebSearch struct {
 	Enabled    bool   `yaml:"enabled"`
-	Provider   string `yaml:"provider"` // brave | searxng | duckduckgo
+	Provider   string `yaml:"provider"` // brave — the only implemented provider
 	APIKey     string `yaml:"api_key"`
-	Endpoint   string `yaml:"endpoint"` // for searxng instances
 	MaxResults int    `yaml:"max_results"`
 }
 
@@ -898,21 +897,12 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Tools.WebSearch.Provider {
-	case "brave", "searxng", "duckduckgo":
+	case "brave":
 	default:
-		f.bad("tools.web_search.provider: must be brave, searxng or duckduckgo")
+		f.bad("tools.web_search.provider: only \"brave\" is implemented")
 	}
-	if c.Tools.WebSearch.Enabled {
-		switch c.Tools.WebSearch.Provider {
-		case "brave":
-			if c.Tools.WebSearch.APIKey == "" {
-				f.bad("tools.web_search.api_key: required for the brave provider (try ${GABKEEP_SEARCH_API_KEY:-})")
-			}
-		case "searxng":
-			if c.Tools.WebSearch.Endpoint == "" {
-				f.bad("tools.web_search.endpoint: required for the searxng provider")
-			}
-		}
+	if c.Tools.WebSearch.Enabled && c.Tools.WebSearch.APIKey == "" {
+		f.bad("tools.web_search.api_key: required for the brave provider (try ${GABKEEP_SEARCH_API_KEY:-})")
 	}
 	if c.Tools.WebFetch.MaxBytes <= 0 {
 		f.bad("tools.web_fetch.max_bytes: must be > 0")
