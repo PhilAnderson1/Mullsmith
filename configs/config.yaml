@@ -49,6 +49,7 @@ scratchpad:
     # (Old keys mode/container_image/run_as_user are retired — remove them.)
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
+      - { id: sh, binary: /bin/sh }
     timeout: 30s
     max_output: 32KiB
     max_memory: 256MiB
