@@ -170,6 +170,15 @@ when the feature is enabled (or prompts for a password directly, which works
 with mail down). Pending sign-ups have no email column to match — list them
 with `admin list-users` and name them by id to `admin delete-user`.
 
+Context windows: `llm.max_context_tokens: -1` (the default) reads the window
+from the endpoint's `/v1/models` listing (`context_length`, as llama.cpp and
+vLLM report it) — the fullness meter gets a real denominator, refreshed at
+startup and whenever a new chat starts. A spelled-out number pins it instead
+and the endpoint is never consulted. A backend that reports nothing shows
+plain "K tokens used" and overlong conversations fail at the endpoint: the
+server never guesses a window. `admin`/`-check-config` prints which number is
+in force and warns when a pin disagrees with the endpoint.
+
 Mail is best-effort: sends are queued and retried asynchronously, and a mail
 problem never turns into a failed request. See spec §9.17 for the full
 security doctrine (no-enumeration answers, hashed one-shot tokens).

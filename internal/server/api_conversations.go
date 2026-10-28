@@ -201,6 +201,11 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 		s.writeConvErr(w, r, err)
 		return
 	}
+	// A new chat is the refresh point for auto-detected context windows
+	// (§2.2): async when one is already cached, grace-capped when not.
+	if s.cfg.LLM.MaxContextTokens <= 0 {
+		s.refreshContextWindow()
+	}
 	writeJSON(w, http.StatusCreated, conversationJSON(c))
 }
 

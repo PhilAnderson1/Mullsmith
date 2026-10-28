@@ -183,6 +183,7 @@ func run(args []string) int {
 	}
 
 	srv := server.New(cfg, db, logger, version, codeRunner, mailer)
+	srv.StartContextWindowProbe() // no-op unless llm.max_context_tokens is -1
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("listening",
@@ -580,11 +581,15 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 		report(c)
 	}
 
-	ids, err := llm.Probe(context.Background(), cfg)
+	models, err := llm.ProbeModels(context.Background(), cfg)
 	if err != nil {
 		ok = false
 		fmt.Printf("[FAIL] llm.endpoint           %v\n", err)
 	} else {
+		ids := make([]string, 0, len(models))
+		for _, m := range models {
+			ids = append(ids, m.ID)
+		}
 		found := llm.HasModel(ids, cfg.LLM.Model)
 		if !found {
 			ok = false
@@ -596,6 +601,24 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 		fmt.Printf("[%s] llm.endpoint           %d model(s) served: %v\n", status, len(ids), ids)
 		if !found {
 			fmt.Printf("[FAIL] llm.model              %q not offered by endpoint\n", cfg.LLM.Model)
+		}
+		// Context window (§2.2): a pinned number is the operator's word;
+		// -1 means we read the endpoint's, and report honestly when the
+		// endpoint says nothing.
+		window, known := llm.ContextLengthFor(models, cfg.LLM.Model)
+		switch {
+		case cfg.LLM.MaxContextTokens > 0 && known && window != cfg.LLM.MaxContextTokens:
+			fmt.Printf("[warn] llm.max_context_tokens config pins %d, endpoint reports %d for %q\n",
+				cfg.LLM.MaxContextTokens, window, cfg.LLM.Model)
+		case cfg.LLM.MaxContextTokens > 0:
+			fmt.Printf("[ok]   llm.max_context_tokens pinned at %d (endpoint: %s)\n",
+				cfg.LLM.MaxContextTokens, windowOrNone(window, known))
+		case known:
+			fmt.Printf("[ok]   llm.max_context_tokens auto (-1): using %d reported by %q\n", window, cfg.LLM.Model)
+		default:
+			fmt.Printf("[warn] llm.max_context_tokens auto (-1): endpoint reports no window for %q — the\n", cfg.LLM.Model)
+			fmt.Printf("                           fullness meter shows token counts only and overlong\n")
+			fmt.Printf("                           conversations fail at the endpoint; set a number to fix.\n")
 		}
 	}
 	if cfg.Scratchpad.CodeExec.Enabled {
@@ -628,6 +651,14 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 	}
 	logger.Warn("config check failed")
 	return 1
+}
+
+// windowOrNone phrases an endpoint-reported window for the check report.
+func windowOrNone(window int, known bool) string {
+	if !known {
+		return "no window reported"
+	}
+	return fmt.Sprintf("%d tokens", window)
 }
 
 func openLogging(l config.Logging) (*os.File, *slog.Logger, error) {

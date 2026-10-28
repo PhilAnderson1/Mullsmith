@@ -632,7 +632,9 @@ func (c *Config) setDefaults() {
 		c.Scratchpad.CodeExec.MaxMemory = 256 << 20 // matches configs/config.yaml
 	}
 	if c.LLM.MaxContextTokens == 0 {
-		c.LLM.MaxContextTokens = 32768
+		// -1 (auto): discover the window from the endpoint's GET /models
+		// context_length. A spelled-out number pins it instead (§2.2).
+		c.LLM.MaxContextTokens = -1
 	}
 	if c.LLM.MaxTokensResponse == 0 {
 		c.LLM.MaxTokensResponse = 4096
@@ -880,11 +882,20 @@ func (c *Config) Validate() error {
 	if c.LLM.Model == "" {
 		f.bad("llm.model: required")
 	}
-	if c.LLM.MaxContextTokens < 4096 {
-		f.bad("llm.max_context_tokens: must be >= 4096")
+	// llm.max_context_tokens: -1 is the off-sentinel for auto-detection
+	// (the window is taken from the endpoint's /models context_length);
+	// anything else must be a positive number of tokens. A spelled 0 folds
+	// into the default like on every cap knob, hence rawDoc.
+	if c.LLM.MaxContextTokens < -1 {
+		f.bad("llm.max_context_tokens: must be -1 (auto-detect) or a positive number of tokens")
+	} else if c.spelledZero("llm", "max_context_tokens") {
+		f.bad("llm.max_context_tokens: 0 is not allowed — use -1 to auto-detect, or a positive number")
 	}
-	if c.LLM.MaxTokensResponse <= 0 || c.LLM.MaxTokensResponse >= c.LLM.MaxContextTokens {
-		f.bad("llm.max_tokens_response: must be > 0 and < max_context_tokens")
+	if c.LLM.MaxTokensResponse <= 0 {
+		f.bad("llm.max_tokens_response: must be > 0")
+	}
+	if c.LLM.MaxContextTokens > 0 && c.LLM.MaxTokensResponse >= c.LLM.MaxContextTokens {
+		f.bad("llm.max_tokens_response: must be smaller than max_context_tokens")
 	}
 	if c.LLM.DefaultTemperature < 0 || c.LLM.DefaultTemperature > 2 {
 		f.bad("llm.default_temperature: must be within 0..2")

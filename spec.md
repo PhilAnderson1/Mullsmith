@@ -157,7 +157,10 @@ llm:
   model: "Qwen3.8 Flash Next"
   models:                                # picker list in UI; `model` is always part of it
     - Qwen3.8 Flash Next
-  max_context_tokens: 262144             # per server /v1/models (context_length)
+  max_context_tokens: -1                 # -1 = read the window from the endpoint's /v1/models
+                                         # listing (context_length); a number pins it. When auto
+                                         # detects nothing the meter degrades to token counts and
+                                         # overfull conversations fail at the endpoint (§6.1)
   default_temperature: 0.7
   request_timeout: 5m
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
@@ -439,7 +442,9 @@ the chip behind as a historical record whose download 404s (by design).
 
 `GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
 `registration` mode, `remember_login`/`show_reasoning` flags, `email_features`
-(§9.17), `max_context_tokens` (the declared window behind the UI's context meter), message
+(§9.17), `max_context_tokens` (the context window in force for the meter: the pinned config
+number, or the endpoint-discovered one while auto; `null` while auto-detection has nothing),
+message
 char limit, tools
 map — `web_search`/`web_fetch`/`code_run` — and file caps: max size, max attachments,
 `blocked_extensions` — used by the login/register screens, composer and upload UI),
@@ -459,10 +464,14 @@ everything else behind auth.
    refused files (oversized, non-raster content, past the cap) degrade to the manifest
    line alone, and with the flag off the wire content stays a plain string — a text-only
    endpoint never sees a parts array.
-2. **Context assembly:** system prompt (global + conversation) → prior history trimmed to
-   fit the context budget — `llm.max_context_tokens` minus `max_tokens_response` headroom
-   (keep most recent turns; whole-turn granularity; oldest dropped first; tool results
-   count toward budget at their truncated size).
+2. **Context assembly:** system prompt (global + conversation) → the WHOLE conversation
+   history, oldest first, appended untouched. There is deliberately no trimming: the prompt
+   is append-only, which keeps the endpoint's prefix cache warm (a trimmed prompt re-prefills
+   everything after the shift — minutes on modest hardware), and silently forgetting old
+   turns is a worse failure than a refusal. Overflow is answered before sending when the
+   window is known — config pin or `/v1/models` discovery — with `409 context_full`
+   ("start a new chat"); when it is not, the endpoint's own error stands. `/compact`-style
+   summarisation is the eventual successor, not built (agreed 2026-10-28).
 3. Send to `llm.endpoint` `POST /chat/completions` with `stream: true` and the JSON tool
    schemas the user's config enables (§7).
 4. Pump SSE to browser: `token` deltas for content and for tool-call arguments.
@@ -1157,8 +1166,11 @@ Cross-cutting touch/responsive behavior:
 | **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
 note (completion tokens ÷ model-round time; absent on rows without timing, e.g. history
 from before the feature); docked above the composer a **context-fullness line** reads
-`N% used of M available` — the newest reply's total tokens against `llm.max_context_tokens`,
-hidden while neither figure exists. |
+`N% used of M available` — the newest reply's total tokens against the window in force
+(pinned config, or discovered from the endpoint); while auto-detection has found nothing
+it degrades to `K tokens used`, and it stays hidden with no usage figure at all. When a
+send would cross a known window the server answers `context_full` and the line carries
+the "conversation is full — start a new chat" explanation. |
 | **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
 | **Settings** | Display name, email address (with `email.enabled` a changed address waits in a pending state — visible notice with cancel — until the confirm mail is clicked; old mailbox gets a notice, §5.1/§9.17), change password, sign out everywhere; a red **Delete account** button in a bottom danger zone, gated by a confirmation dialog — one click deletes the account, all chats and all files irreversibly (§5.1). |
 

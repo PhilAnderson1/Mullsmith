@@ -634,15 +634,22 @@ function fmtInt(n) {
 }
 
 // updateCtxMeter fills the "N% used of M available" line under the thread:
-// N is the newest reply's total tokens (prompt + completion — the fullest
-// snapshot we have of the window) against the configured llm.max_context_
-// tokens. Hidden without a figure or a declared window.
+// the freshest assistant total (prompt+completion of the last reply, an
+// estimate where the endpoint reported nothing) against the context window
+// from /api/v1/meta. While auto-detection has no window the line degrades
+// to "K tokens used"; with no usage figure at all there is nothing to say.
 function updateCtxMeter(used) {
   const el = $("#ctx-meter");
   if (!el) return;
   const max = (state.meta && state.meta.max_context_tokens) || 0;
-  if (!max || !(used > 0)) {
+  if (!(used > 0)) {
     el.hidden = true;
+    return;
+  }
+  if (!max) {
+    el.textContent = `${fmtInt(used)} tokens used`;
+    el.title = "the endpoint reports no context window";
+    el.hidden = false;
     return;
   }
   const pct = Math.max(1, Math.round((used / max) * 100));
@@ -1757,6 +1764,15 @@ async function newChat() {
   try {
     const c = await api.createConversation("");
     state.convs.unshift(c);
+    // A new chat is also the server's refresh point for an auto-detected
+    // context window, so re-read meta: the meter gets its denominator even
+    // if boot-time discovery raced a starting model server.
+    try {
+      const meta = await api.meta();
+      const fresh = (meta && meta.max_context_tokens) || 0;
+      const now = (state.meta && state.meta.max_context_tokens) || 0;
+      if (fresh && fresh !== now) state.meta = meta;
+    } catch (_) { /* the old denominator stands */ }
     const list = $("#conv-list");
     list.prepend(convRow(c));
     markActive();

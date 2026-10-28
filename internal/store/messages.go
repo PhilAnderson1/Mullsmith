@@ -165,8 +165,10 @@ func (d *DB) SweepStreaming(ctx context.Context) (int64, error) {
 }
 
 // ContextHistory returns the conversation's completed messages (chronological,
-// excluding excludeID) for prompt assembly. A generous row cap; the token
-// budget in agent.BuildContext does the real trimming. Assistant rows carry
+// excluding excludeID) for prompt assembly and the overflow estimate. Every
+// stored turn is returned (the row cap is a runaway guard, not a policy):
+// the request is append-only and the context-full gate (server.ctxwindow)
+// answers before a send would cross the window. Assistant rows carry
 // their Calls and tool rows their ToolCallID so the agent can replay the
 // OpenAI tool protocol faithfully.
 func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Message, error) {

@@ -49,6 +49,15 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Overflow gate (spec §6.1): with a known window, a send that would
+	// cross it is refused before anything is persisted or paid for — the
+	// conversation is append-only until the end. Unknown window: the gate
+	// is open and the endpoint's own error stands.
+	if s.conversationFull(conv.ID, content) {
+		writeAPIError(w, r, http.StatusConflict, "context_full",
+			"this conversation has reached its context window — start a new chat")
+		return
+	}
 
 	// Persist the user turn first (spec §6.1 step 1), then stream. The user
 	// text also seeds auto-titling when the conversation is still unnamed.
@@ -242,7 +251,13 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	// streamAssistant secures the per-conversation slot BEFORE prepare runs,
 	// so a 409 leaves the existing reply untouched. Regeneration never
-	// retitles: the conversation already has its name.
+	// retitles: the conversation already has its name. The overflow gate
+	// applies here too — retrying a reply is still a send.
+	if s.conversationFull(conv.ID, "") {
+		writeAPIError(w, r, http.StatusConflict, "context_full",
+			"this conversation has reached its context window — start a new chat")
+		return
+	}
 	s.streamAssistant(w, r, conv, "", func(bg context.Context) error {
 		return s.store.DeleteMessage(bg, m.ID)
 	})
@@ -376,8 +391,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			sysPrompt += agent.CodeRunGuidance
 		}
 	}
-	msgs := agent.BuildContext(sysPrompt, s.historyToLLM(hist, s.tools.Enabled(), user.ID),
-		s.cfg.LLM.MaxContextTokens, s.cfg.LLM.MaxTokensResponse)
+	msgs := agent.BuildContext(sysPrompt, s.historyToLLM(hist, s.tools.Enabled(), user.ID))
 
 	am := &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
 	if err := s.store.AddMessage(genCtx, user.ID, am); err != nil {

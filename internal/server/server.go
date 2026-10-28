@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gabkeep/internal/agent"
@@ -52,6 +53,14 @@ type Server struct {
 	// switch first, so the nil mailer is unreachable; sendConfirmMail and
 	// friends lean on Outbox.Send's nil-receiver safety anyway.
 	mailer *mail.Outbox
+	// ctxWindow caches the endpoint-discovered context window while
+	// llm.max_context_tokens is -1 (auto): the newest context_length the
+	// /models listing reported for the configured model; 0 = unknown.
+	// A pinned config bypasses discovery entirely.
+	ctxWindow atomic.Int64
+	// windowProbe is the seam for the /models lookup; tests substitute
+	// canned answers.
+	windowProbe func(context.Context) (int, bool)
 }
 
 // hashQueue is how many callers may wait behind the hash gate before new
@@ -117,6 +126,11 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	// fs_write, files_share copies and code_run staging make their quota
 	// decisions under one lock (audit2 finding 3).
 	s.tools = tools.BuildFor(cfg, logger, nil, code, &s.commitMu)
+
+	// Auto window (§2.2 llm.max_context_tokens: -1): the seam is set here;
+	// the first probe itself belongs to StartContextWindowProbe so tests
+	// can install canned answers before anything runs.
+	s.windowProbe = s.probeEndpointWindow
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -240,9 +254,11 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// exactly like remember_login and registration drive theirs.
 		"email_features": s.cfg.Email.Enabled,
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
-		// max_context_tokens is the declared window the SPA's context meter
-		// divides the last reply's token_count by (config llm.max_context_tokens).
-		"max_context_tokens": s.cfg.LLM.MaxContextTokens,
+		// The context window in force for the SPA's meter and fullness
+		// warning: the pinned llm.max_context_tokens, or the auto-detected
+		// one; null while auto-detection has nothing — the UI then shows
+		// a bare "K tokens used" instead of a percentage.
+		"max_context_tokens": s.contextWindowMeta(),
 		"limits": map[string]any{
 			"max_message_chars": s.cfg.Limits.MaxMessageChars,
 		},
