@@ -224,6 +224,14 @@
           <input id="pw-confirm" type="password" autocomplete="new-password" required>
           <button type="submit" class="btn primary">Update password</button>
         </form>
+        <!-- Danger zone: one button, a confirmation dialog between the click
+             and an irreversible delete (server: row + cascades + scratchpad). -->
+        <div class="settings-form danger-zone">
+          <h3>Danger zone</h3>
+          <p class="auth-mode">Deleting your account erases your login, every chat and all
+            your files immediately. There is no undo.</p>
+          <button id="btn-delete-account" class="btn danger" type="button">Delete account</button>
+        </div>
         </div>
       </section>
     </main>

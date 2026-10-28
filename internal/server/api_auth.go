@@ -531,6 +531,39 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// --- POST /api/v1/auth/me/delete ------------------------------------------------
+
+// handleDeleteAccount ends the account, now, at the user's own request. The
+// row deletion cascades the entire database footprint through the FKs
+// (0001–0008: sessions, conversations → messages → tool calls & attachment
+// links, auth_tokens — all ON DELETE CASCADE, FK enforcement always on in
+// the DSN). The scratchpad directory goes immediately as well: unlike the
+// admin CLI — whose bytes age out through the orphan sweep — self-service
+// must not leave a gone user's files lying around until the next pass.
+// Sessions died with the row, so the cookie is explicitly cleared: the
+// browser should not walk around with a phantom that 401s on the next click.
+func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	user := UserFrom(r.Context())
+	deleted, err := s.store.DeleteUser(r.Context(), user.ID)
+	if err != nil {
+		s.logger.Error("account deletion failed", "error", err, "user", user.ID,
+			"rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	if !deleted {
+		// Raced an admin delete; nothing left to remove — same empty answer.
+		s.logger.Warn("account delete: row already gone", "user", user.ID)
+	}
+	http.SetCookie(w, auth.ClearSessionCookie(secureRequest(s.cfg, r)))
+	if err := scratch.RemoveUserDirs(s.cfg.Scratchpad.Root, user.ID); err != nil {
+		// The account is already gone; the orphan sweep collects the bytes.
+		s.logger.Error("scratchpad removal after account delete failed", "error", err, "user", user.ID)
+	}
+	s.logger.Info("account deleted", "user", user.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

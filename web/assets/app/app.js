@@ -337,6 +337,28 @@ async function onCancelPendingEmail() {
   }
 }
 
+// The irreversible one: the shared dialog is the required confirmation
+// (same pattern as deleting a conversation, weightier words).
+async function onDeleteAccount() {
+  const ok = await confirmDialog(
+    "Delete your account permanently? Every chat, file and setting is erased now — this cannot be undone.");
+  if (!ok) return;
+  try {
+    await api.deleteAccount();
+  } catch (err) {
+    handleErr(err, "delete account");
+    return;
+  }
+  // The row, sessions, chats and scratchpad are gone server-side; blank
+  // everything that carried this identity. showAuth abandons any live
+  // stream, hides the panels and lands on the sign-in form.
+  state.convs = [];
+  state.convCursor = "";
+  $("#conv-list").replaceChildren();
+  showAuth();
+  toast("Account deleted. Goodbye.", false);
+}
+
 function applyMetaFlags() {
   const m = state.meta;
   show($("#login-remember-row"), m.remember_login);
@@ -1821,6 +1843,7 @@ async function boot() {
   $("#form-profile").addEventListener("submit", onSettingsSave);
   $("#form-password").addEventListener("submit", onPasswordSave);
   $("#btn-cancel-email").addEventListener("click", onCancelPendingEmail);
+  $("#btn-delete-account").addEventListener("click", onDeleteAccount);
   for (const fb of document.querySelectorAll(".files-filter")) {
     fb.addEventListener("click", () => {
       state.filesKind = fb.dataset.kind || "";

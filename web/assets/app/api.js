@@ -85,6 +85,7 @@ export const api = {
   confirmEmail: (token) => request("POST", "/api/v1/auth/confirm-email", { token }),
   resendConfirm: (email) => request("POST", "/api/v1/auth/resend-confirm", { email }),
   cancelEmail: () => request("POST", "/api/v1/auth/me/cancel-email", {}),
+  deleteAccount: () => request("POST", "/api/v1/auth/me/delete"),
 
   listConversations: (q, cursor) => {
     const p = new URLSearchParams();

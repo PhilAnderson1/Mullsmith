@@ -133,6 +133,9 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	mux.HandleFunc("POST /api/v1/auth/confirm-email", s.handleConfirmEmail)
 	mux.HandleFunc("POST /api/v1/auth/resend-confirm", s.handleResendConfirm)
 	mux.Handle("POST /api/v1/auth/me/cancel-email", s.authRequired(s.handleCancelEmail))
+	// Self-service account deletion: always available (not an email-feature),
+	// CSRF-guarded like every mutation; the UI adds a confirmation dialog.
+	mux.Handle("POST /api/v1/auth/me/delete", s.authRequired(s.handleDeleteAccount))
 	mux.Handle("GET /api/v1/conversations", s.authRequired(s.handleConversationsList))
 	mux.Handle("POST /api/v1/conversations", s.authRequired(s.handleConversationCreate))
 	mux.Handle("GET /api/v1/conversations/{id}", s.authRequired(s.handleConversationGet))

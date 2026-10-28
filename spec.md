@@ -346,6 +346,7 @@ with no internals leaked (§9.12).
 | POST | `/api/v1/auth/confirm-email` | `{token}` — public. The one copy `unconfirmed_email` → `email`, flips a pending sign-up to `active`. Address re-pointed / token spent → 400; claimed by someone else in the meantime → 409 `email_taken`. |
 | POST | `/api/v1/auth/resend-confirm` | `{email}` — public. Re-mails a never-confirmed sign-up (old link dies, 24 h window is not extended). Same generic-200 answer as forgot-password. |
 | POST | `/api/v1/auth/me/cancel-email` | Authenticated. Clears a pending address change (`unconfirmed_email` → null, confirm tokens deleted). Returns the fresh `me` payload. |
+| POST | `/api/v1/auth/me/delete` | Authenticated. Irreversible self-service deletion: the user row goes and every FK cascades with it (sessions, conversations → messages → tool calls & attachment links, `auth_tokens`); the scratchpad directory is removed immediately (not left to the orphan sweep); response 204 with the session cookie cleared. The UI gates the call behind a confirmation dialog (§10). |
 
 Password policy: ≥ 10 characters, checked against a small embedded common-password list.
 
@@ -1055,7 +1056,7 @@ Cross-cutting touch/responsive behavior:
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. |
 | **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. |
 | **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
-| **Settings** | Display name, change password, sign out everywhere. |
+| **Settings** | Display name, change password, sign out everywhere; a red **Delete account** button in a bottom danger zone, gated by a confirmation dialog — one click deletes the account, all chats and all files irreversibly (§5.1). |
 
 Implementation notes: SSE client with auto-reconnect hint on dropped stream; conversations
 lazy-load messages; UI polls nothing (all live state via SSE). Accessible: focus-managed

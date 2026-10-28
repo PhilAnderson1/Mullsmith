@@ -251,3 +251,50 @@ func TestJSEmailFeatureSurface(t *testing.T) {
 		}
 	}
 }
+
+// Self-service account deletion (spec §5.1): the shell owns the red
+// danger-zone button, api.js names the endpoint, and onDeleteAccount may
+// only delete behind the shared confirmation dialog — then wipes the
+// identity state and falls back to the auth view. Source-is-the-contract,
+// like the rest of this file.
+func TestJSAccountDeletionSurface(t *testing.T) {
+	appSrc, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(appSrc)
+	apiSrc, err := web.FS.ReadFile("assets/app/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := web.FS.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := string(html)
+
+	if !strings.Contains(hs, `id="btn-delete-account"`) {
+		t.Error("index.html lost #btn-delete-account")
+	}
+	if !strings.Contains(hs, `btn-delete-account" class="btn danger"`) {
+		t.Error("the delete-account button must use the existing .btn.danger styling")
+	}
+
+	apiStr := string(apiSrc)
+	if !strings.Contains(apiStr, "deleteAccount:") ||
+		!strings.Contains(apiStr, `"/api/v1/auth/me/delete"`) {
+		t.Error("api.js lost deleteAccount → /api/v1/auth/me/delete")
+	}
+
+	fn := jsFuncBody(t, src, "async function onDeleteAccount(")
+	for _, want := range []string{
+		"confirmDialog(", // the required confirmation — no silent delete
+		"api.deleteAccount",
+		`state.convs = []`, // identity state blanked afterwards
+		"showAuth()",
+	} {
+		if !strings.Contains(fn, want) {
+			t.Errorf("onDeleteAccount must contain %q", want)
+		}
+	}
+}
