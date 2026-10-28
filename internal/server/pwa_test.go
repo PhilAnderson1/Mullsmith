@@ -24,7 +24,7 @@ func TestManifestServedAsJSONWithUsableIcons(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/assets/manifest-v3.webmanifest")
+	resp, err := http.Get(ts.URL + "/assets/manifest-v4.webmanifest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,13 +91,48 @@ func TestIndexLinksManifestAndAppleTags(t *testing.T) {
 	}
 	h := string(b)
 	for _, want := range []string{
-		`rel="manifest" href="/assets/manifest-v3.webmanifest"`,
+		`rel="manifest" href="/assets/manifest-v4.webmanifest"`,
 		`rel="apple-touch-icon" href="/assets/gk-apple-touch.png"`,
 		`name="theme-color"`,
 		`media="(prefers-color-scheme: dark)"`,
 	} {
 		if !strings.Contains(h, want) {
 			t.Errorf("index.html lost %s", want)
+		}
+	}
+}
+
+// Chrome for Windows turns any maskable into an opaque square shortcut,
+// so only Android may see the maskable entry; everyone else must get the
+// manifest without it. Same URL, routed by User-Agent.
+func TestManifestSplitsMaskableByUserAgent(t *testing.T) {
+	cfg := chatCfg(t, "http://127.0.0.1:1/v1")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(cfg, testStore(t), logger, "test", nil, nil)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	for _, tc := range []struct {
+		ua         string
+		wantMasked bool
+	}{{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0", false},
+		{"Mozilla/5.0 (Linux; Android 15; Pixel 9) Chrome/131.0", true}} {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/assets/manifest-v4.webmanifest", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("User-Agent", tc.ua)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(body), `"maskable"`); got != tc.wantMasked {
+			t.Errorf("UA %q: maskable present = %v, want %v", tc.ua, got, tc.wantMasked)
 		}
 	}
 }
