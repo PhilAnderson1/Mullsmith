@@ -84,6 +84,37 @@ func TestStreamHappyPath(t *testing.T) {
 	}
 }
 
+// Usage arrives on the final chunk; completion_tokens rides alongside
+// total_tokens and powers the per-message tok/s readout.
+func TestStreamUsageCompletionTokens(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"hi"}}]}`,
+		``,
+		`data: {"usage":{"completion_tokens":7,"total_tokens":99}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	ts := sseServer(t, body)
+
+	var usage, completion int64
+	err := clientFor(ts, nil).Stream(context.Background(), "", nil, func(d Delta) error {
+		if d.Usage > 0 {
+			usage = d.Usage
+		}
+		if d.Completion > 0 {
+			completion = d.Completion
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage != 99 || completion != 7 {
+		t.Errorf("usage=%d completion=%d, want 99/7", usage, completion)
+	}
+}
+
 func TestStreamReasoningKeptSeparate(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"choices":[{"delta":{"reasoning_content":"think "}}]}`,

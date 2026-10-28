@@ -301,6 +301,8 @@ messages (
   content         TEXT NOT NULL,         -- markdown/text; '' allowed mid-tool-loop
   status          TEXT NOT NULL DEFAULT 'complete', -- streaming|complete|error|aborted
   token_count     INTEGER,               -- estimate, for context budgeting
+  completion_tokens INTEGER,             -- output tokens (reported, else estimated) — per-message tok/s
+  duration_ms     INTEGER,               -- model-round wall time (tool runs excluded) — per-message tok/s
   created_at      INTEGER NOT NULL
 )
 
@@ -437,7 +439,8 @@ the chip behind as a historical record whose download 404s (by design).
 
 `GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
 `registration` mode, `remember_login`/`show_reasoning` flags, `email_features`
-(§9.17), message char limit, tools
+(§9.17), `max_context_tokens` (the declared window behind the UI's context meter), message
+char limit, tools
 map — `web_search`/`web_fetch`/`code_run` — and file caps: max size, max attachments,
 `blocked_extensions` — used by the login/register screens, composer and upload UI),
 everything else behind auth.
@@ -471,7 +474,10 @@ everything else behind auth.
      (e.g. 8 KiB, middle-elided), persist `tool_calls` row, emit `tool_call` end event;
    - append tool result to messages, re-invoke the model; loop up to `max_tool_rounds`.
 6. Persist final assistant message; bump `conversations.updated_at`; emit `done`
-   (with token usage estimates) and close SSE.
+   (with token usage: the round's `total_tokens`, `completion_tokens` — both estimated
+   when the endpoint stays silent — and the model-round `duration_ms`, tool runs
+   excluded) and close SSE. The persisted row carries the same figures so the reload
+   renders the same readouts.
 7. **Auto-title** (alongside the first exchange of a conversation still named
    `New chat`): a small non-streaming side request to the model turns the first user
    message into a ≤5-word topic. Written only if the row is still unnamed (a guarded
@@ -1148,7 +1154,11 @@ Cross-cutting touch/responsive behavior:
 | View | Contents |
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
-| **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. |
+| **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
+note (completion tokens ÷ model-round time; absent on rows without timing, e.g. history
+from before the feature); docked above the composer a **context-fullness line** reads
+`N% used of M available` — the newest reply's total tokens against `llm.max_context_tokens`,
+hidden while neither figure exists. |
 | **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
 | **Settings** | Display name, email address (with `email.enabled` a changed address waits in a pending state — visible notice with cancel — until the confirm mail is clicked; old mailbox gets a notice, §5.1/§9.17), change password, sign out everywhere; a red **Delete account** button in a bottom danger zone, gated by a confirmation dialog — one click deletes the account, all chats and all files irreversibly (§5.1). |
 

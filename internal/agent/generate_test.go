@@ -119,6 +119,32 @@ func TestRoundContentAndReasoningSeparate(t *testing.T) {
 	}
 }
 
+// completion_tokens feeds the tok/s readout; without it the round falls
+// back to the same estimate the total uses — never a zero.
+func TestRoundCompletionTokens(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"content":"answer"}}],"usage":{"completion_tokens":9,"total_tokens":42}}`,
+	)
+	g := genFor(t, ts)
+	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil }, nil)
+	if res.Usage != 42 || res.Completion != 9 {
+		t.Errorf("usage=%d completion=%d, want 42/9", res.Usage, res.Completion)
+	}
+}
+
+func TestRoundUsageEstimatedWhenUnreported(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"content":"some words came back"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	)
+	g := genFor(t, ts)
+	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil }, nil)
+	if res.Usage <= 0 || res.Completion <= 0 {
+		t.Errorf("no upstream usage: usage=%d completion=%d, want estimates > 0",
+			res.Usage, res.Completion)
+	}
+}
+
 func TestRoundClientGoneIsAborted(t *testing.T) {
 	ts := sseServer(t,
 		`{"choices":[{"delta":{"content":"x"}}]}`,

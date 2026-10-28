@@ -387,7 +387,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 
 	conn, err := newSSE(w)
 	if err != nil {
-		s.finishMessage(genCtx, am.ID, "", "aborted", 0)
+		s.finishMessage(genCtx, am.ID, "", "aborted", 0, 0, 0)
 		return
 	}
 	if err := conn.Event("start", map[string]any{
@@ -396,7 +396,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		"conversation_id": conv.ID,
 	}); err != nil {
 		conn.Close()
-		s.finishMessage(genCtx, am.ID, "", "aborted", 0)
+		s.finishMessage(genCtx, am.ID, "", "aborted", 0, 0, 0)
 		return
 	}
 
@@ -440,27 +440,32 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		maxRounds = 0
 	}
 	var res agent.Result
+	var lastMS int64 // model-round wall time behind the final message row
 	round := 0
 	for {
 		roundTools := toolSpecs
 		if round >= maxRounds {
 			roundTools = nil // force a final, tool-less answer
 		}
+		roundStart := time.Now() // model time only: tool runs land on tool cards
 		res = s.runModelRound(genCtx, conn, conv.Model, msgs, roundTools)
+		roundMS := time.Since(roundStart).Milliseconds()
 
 		if res.Err != nil || res.Status == "aborted" {
-			s.finishMessage(genCtx, am.ID, res.Content, res.Status, res.Usage)
+			lastMS = roundMS
+			s.finishMessage(genCtx, am.ID, res.Content, res.Status, res.Usage, res.Completion, roundMS)
 			break
 		}
 		if len(res.ToolCalls) == 0 || round >= maxRounds {
-			s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage)
+			lastMS = roundMS
+			s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS)
 			break
 		}
 
 		// Persist the answered assistant turn, then execute every call
 		// (the protocol requires one answer per call) and continue with a
 		// fresh placeholder row. runToolCall owns the audit rows.
-		s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage)
+		s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS)
 
 		msgs = append(msgs, llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls})
 		for _, call := range res.ToolCalls {
@@ -499,6 +504,11 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		"message_id":   am.ID,
 		"status":       res.Status,
 		"usage_tokens": res.Usage,
+		// The numbers behind the UI's per-message tok/s readout: what the
+		// model produced and the model-round wall time it took (tool runs
+		// excluded — they show on their cards).
+		"completion_tokens": res.Completion,
+		"duration_ms":       lastMS,
 	})
 	conn.Close()
 }
@@ -758,10 +768,10 @@ func (s *Server) nameConversation(conv *store.Conversation, firstUser string, co
 
 // finishMessage persists the final state on a short background context: the
 // browser may already be gone (and genCtx already cancelled) when we save.
-func (s *Server) finishMessage(_ context.Context, msgID, content, status string, usage int64) {
+func (s *Server) finishMessage(_ context.Context, msgID, content, status string, usage, completion, durationMS int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.store.FinalizeMessage(ctx, msgID, content, status, usage); err != nil {
+	if err := s.store.FinalizeMessage(ctx, msgID, content, status, usage, completion, durationMS); err != nil {
 		s.logger.Error("failed to persist message final state", "error", err, "message", msgID)
 	}
 }

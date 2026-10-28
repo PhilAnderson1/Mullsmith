@@ -23,11 +23,12 @@ var ErrClientGone = errors.New("client disconnected")
 
 // Result carries the final state of a generation for persistence.
 type Result struct {
-	Content   string
-	Reasoning string
-	Status    string // complete | aborted | error
-	Usage     int64  // upstream total_tokens, else an estimate
-	Err       error  // non-nil only when Status == "error"
+	Content    string
+	Reasoning  string
+	Status     string // complete | aborted | error
+	Usage      int64  // upstream total_tokens, else an estimate
+	Completion int64  // upstream completion_tokens, else an estimate
+	Err        error  // non-nil only when Status == "error"
 	// ToolCalls holds the complete calls the model proposed this round
 	// (empty when it just answered), ordered by stream index.
 	ToolCalls []llm.ChatToolCall
@@ -57,10 +58,11 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	toolDelta func(callIndex int, d llm.ToolCallDelta),
 ) Result {
 	var (
-		content   strings.Builder
-		reasoning strings.Builder
-		usage     int64
-		finish    string
+		content    strings.Builder
+		reasoning  strings.Builder
+		usage      int64
+		completion int64
+		finish     string
 	)
 	acc := map[int]*callAccumulator{}
 	var order []int
@@ -68,6 +70,9 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	err := g.LLM.StreamTools(ctx, model, msgs, tools, func(d llm.Delta) error {
 		if d.Usage > 0 {
 			usage = d.Usage
+		}
+		if d.Completion > 0 {
+			completion = d.Completion
 		}
 		if d.Finish != "" {
 			finish = d.Finish
@@ -100,10 +105,11 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	})
 
 	res := Result{
-		Content:   content.String(),
-		Reasoning: reasoning.String(),
-		Usage:     usage,
-		Finish:    finish,
+		Content:    content.String(),
+		Reasoning:  reasoning.String(),
+		Usage:      usage,
+		Completion: completion,
+		Finish:     finish,
 	}
 	sort.Ints(order) // fragments may arrive out of index order; calls follow it
 	for _, idx := range order {
@@ -127,6 +133,11 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	}
 	if res.Usage == 0 {
 		res.Usage = int64(EstimateTokens(res.Content) + EstimateTokens(res.Reasoning))
+	}
+	if res.Completion == 0 {
+		// Generated output = answer + reasoning; the same estimate the
+		// total falls back to (an endpoint may report only one or neither).
+		res.Completion = int64(EstimateTokens(res.Content) + EstimateTokens(res.Reasoning))
 	}
 	return res
 }

@@ -330,6 +330,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   font-size: 0.82em;
 }
 .msg-role { font-weight: 700; }
+.msg-tps { font-variant-numeric: tabular-nums; }
 .msg-status { margin: 0.3rem 0 0; font-size: 0.82em; }
 .load-earlier { max-width: var(--thread-max); margin: 0 auto; }
 
@@ -341,6 +342,17 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .empty-state h2 { color: var(--fg); margin-bottom: 0.2rem; }
 
+/* Context-fullness line docked above the composer (app.js: updateCtxMeter). */
+.ctx-meter {
+  margin: 0;
+  padding: 0.35rem clamp(0.6rem, 3vw, 1.5rem) 0.4rem;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 0.78em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .composer {
   display: flex;
   gap: 0.5rem;
@@ -788,6 +800,7 @@ details.tool-card summary::-webkit-details-marker { display: none; }
 }
 body.files-open .thread,
 body.files-open .composer,
+body.files-open .ctx-meter,
 body.files-open .pending-files { display: none; }
 .files-head { display: flex; align-items: center; justify-content: space-between; }
 .files-head h2 { margin: 0; font-size: 1.25rem; }

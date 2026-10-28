@@ -125,7 +125,9 @@ func TestTLSConfigAddsHSTSAndUpgrade(t *testing.T) {
 }
 
 func TestMetaStub(t *testing.T) {
-	ts := newTestServer(t, testCfg())
+	cfg := testCfg()
+	cfg.LLM.MaxContextTokens = 32768 // the context meter's denominator
+	ts := newTestServer(t, cfg)
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/api/v1/meta")
 	if err != nil {
@@ -138,6 +140,9 @@ func TestMetaStub(t *testing.T) {
 	}
 	if meta["app"] != "gabkeep" || meta["registration"] != "invite-only" {
 		t.Errorf("meta = %v", meta)
+	}
+	if meta["max_context_tokens"] != float64(32768) {
+		t.Errorf("max_context_tokens = %v, want 32768", meta["max_context_tokens"])
 	}
 	if _, leaked := meta["api_key"]; leaked {
 		t.Error("meta must not expose api_key")

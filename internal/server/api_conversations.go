@@ -45,6 +45,12 @@ func (s *Server) messageJSON(m *store.Message, userID string) map[string]any {
 	if m.TokenCount != nil {
 		j["token_count"] = *m.TokenCount
 	}
+	if m.CompletionTokens != nil && *m.CompletionTokens > 0 {
+		j["completion_tokens"] = *m.CompletionTokens
+	}
+	if m.DurationMS != nil && *m.DurationMS > 0 {
+		j["duration_ms"] = *m.DurationMS
+	}
 	if m.ToolCallID != "" {
 		j["tool_call_id"] = m.ToolCallID
 	}

@@ -240,6 +240,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// exactly like remember_login and registration drive theirs.
 		"email_features": s.cfg.Email.Enabled,
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
+		// max_context_tokens is the declared window the SPA's context meter
+		// divides the last reply's token_count by (config llm.max_context_tokens).
+		"max_context_tokens": s.cfg.LLM.MaxContextTokens,
 		"limits": map[string]any{
 			"max_message_chars": s.cfg.Limits.MaxMessageChars,
 		},

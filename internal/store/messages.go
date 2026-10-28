@@ -18,7 +18,13 @@ type Message struct {
 	Content        string
 	Status         string // streaming | complete | error | aborted
 	TokenCount     *int64
-	CreatedAt      time.Time
+	// CompletionTokens and DurationMS are the generation stats of an
+	// assistant reply (upstream usage + round wall time; nil when the
+	// endpoint never reported and nothing was produced). UI readouts
+	// (context meter, tok/s) project these; context replay ignores them.
+	CompletionTokens *int64
+	DurationMS       *int64
+	CreatedAt        time.Time
 	// ToolCallID is set on role='tool' rows: the call this result answers.
 	ToolCallID string
 	// Calls holds the audit rows for assistant messages that proposed tool
@@ -132,11 +138,19 @@ func (d *DB) DeleteMessage(ctx context.Context, msgID string) error {
 }
 
 // FinalizeMessage writes the produced content and status once a generation
-// ends (complete | aborted | error).
-func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, status string, tokens int64) error {
+// ends (complete | aborted | error). Non-positive completion/duration store
+// NULL: an absent statistic is never faked with a zero.
+func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, status string, tokens, completion, durationMS int64) error {
+	var comp, dur any
+	if completion > 0 {
+		comp = completion
+	}
+	if durationMS > 0 {
+		dur = durationMS
+	}
 	_, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE messages SET content = ?, status = ?, token_count = ? WHERE id = ?`,
-		content, status, tokens, msgID)
+		`UPDATE messages SET content = ?, status = ?, token_count = ?, completion_tokens = ?, duration_ms = ? WHERE id = ?`,
+		content, status, tokens, comp, dur, msgID)
 	return err
 }
 
@@ -256,7 +270,8 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 		limit = 200
 	}
 	sb := strings.Builder{}
-	sb.WriteString(`SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id
+	sb.WriteString(`SELECT id, conversation_id, role, content, status, token_count,
+	                        completion_tokens, duration_ms, created_at, tool_call_id
 	                 FROM messages WHERE conversation_id = ?`)
 	args := []any{convID}
 	if cursor != "" {
@@ -279,14 +294,25 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 		var (
 			m       Message
 			tok     sql.NullInt64
+			comp    sql.NullInt64
+			dur     sql.NullInt64
 			created int64
 		)
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created, &m.ToolCallID); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status,
+			&tok, &comp, &dur, &created, &m.ToolCallID); err != nil {
 			return nil, "", err
 		}
 		if tok.Valid {
 			v := tok.Int64
 			m.TokenCount = &v
+		}
+		if comp.Valid {
+			v := comp.Int64
+			m.CompletionTokens = &v
+		}
+		if dur.Valid {
+			v := dur.Int64
+			m.DurationMS = &v
 		}
 		m.CreatedAt = time.Unix(created, 0)
 		items = append(items, m)

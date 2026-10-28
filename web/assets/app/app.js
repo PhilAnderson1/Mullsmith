@@ -582,6 +582,7 @@ function msgNode(m) {
   const time = el.querySelector("time");
   time.dateTime = m.created_at;
   time.textContent = new Date(m.created_at).toLocaleString();
+  if (m.role === "assistant") tpsNote(el, m.completion_tokens, m.duration_ms);
 
   const body = el.querySelector(".msg-body");
   if (m.role === "assistant" && m.content) {
@@ -625,6 +626,61 @@ function showStatusNote(el, text) {
   show(st, true);
 }
 
+// --- context meter + per-message speed ---------------------------------------
+
+// fmtInt groups thousands (32,768) in the browser's locale.
+function fmtInt(n) {
+  return Number(n).toLocaleString();
+}
+
+// updateCtxMeter fills the "N% used of M available" line under the thread:
+// N is the newest reply's total tokens (prompt + completion — the fullest
+// snapshot we have of the window) against the configured llm.max_context_
+// tokens. Hidden without a figure or a declared window.
+function updateCtxMeter(used) {
+  const el = $("#ctx-meter");
+  if (!el) return;
+  const max = (state.meta && state.meta.max_context_tokens) || 0;
+  if (!max || !(used > 0)) {
+    el.hidden = true;
+    return;
+  }
+  const pct = Math.max(1, Math.round((used / max) * 100));
+  el.textContent = `${pct}% used of ${fmtInt(max)} tokens available`;
+  el.title = `${fmtInt(used)} of ${fmtInt(max)} context tokens`;
+  el.hidden = false;
+}
+
+// lastContextUsed scans a page of messages (chronological) from the end for
+// the assistant total that best represents how full the context is now.
+function lastContextUsed(items) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i];
+    if (m.role === "assistant" && m.token_count > 0) return m.token_count;
+  }
+  return 0;
+}
+
+// msgTps is the reply's output tokens per second (completion ÷ model-round
+// time, tool runs excluded), or null when either figure is missing — rows
+// predating per-message timing stay silent rather than show a lie.
+function msgTps(completion, durationMS) {
+  if (!(completion > 0) || !(durationMS > 0)) return null;
+  const tps = (completion / durationMS) * 1000;
+  return tps >= 100 ? String(Math.round(tps)) : tps.toFixed(1);
+}
+
+function tpsNote(el, completion, durationMS) {
+  const tps = msgTps(completion, durationMS);
+  if (!tps) return;
+  const host = el.querySelector(".msg-meta");
+  if (!host || host.querySelector(".msg-tps")) return;
+  const span = document.createElement("span");
+  span.className = "msg-tps";
+  span.textContent = `${tps} tok/s`;
+  host.append(span);
+}
+
 async function selectConversation(id) {
   if (id === state.currentId) return;
   await abandonInflight(); // a live stream belongs to the old thread
@@ -665,6 +721,7 @@ async function loadFirstMessages() {
   }
   state.messagesCursor = data.next_cursor;
   refreshLastAssistant();
+  updateCtxMeter(lastContextUsed(data.items));
   scrollThreadToBottom();
 }
 
@@ -1579,6 +1636,8 @@ function finishGeneration(st, done) {
     showStatusNote(nodes.el, "Connection lost — the reply was interrupted.");
   }
   nodes.el.dataset.id = done.message_id || st.msgId || "";
+  tpsNote(nodes.el, done.completion_tokens, done.duration_ms);
+  if (done.usage_tokens > 0) updateCtxMeter(done.usage_tokens); // freshest fullness figure
   refreshLastAssistant();
   if (nodes.el.dataset.id) attachRegen(nodes.el); // the button becomes visible now — make it work
   maybeScroll();
@@ -1673,6 +1732,7 @@ function renderConversation() {
   if (!state.currentId) {
     state.currentConv = null;
     $("#thread").replaceChildren(initialEmptyState());
+    updateCtxMeter(0); // no thread: no meter
   }
 }
 

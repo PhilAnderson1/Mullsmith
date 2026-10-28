@@ -256,6 +256,61 @@ func TestChatSendStreamsAndPersists(t *testing.T) {
 	}
 }
 
+// The usage the upstream reports (total AND completion) must reach the
+// browser on the done event and survive on the stored row, so the context
+// meter and the per-message tok/s readout work after a reload too.
+func TestChatDoneReportsUsageAndTiming(t *testing.T) {
+	fake := newFakeLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		sseUp(w, deltaJSON(map[string]any{"content": "hello"}))
+		time.Sleep(5 * time.Millisecond) // so round duration is observable
+		sseUp(w, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+		sseUp(w, `{"usage":{"completion_tokens":3,"total_tokens":1203}}`)
+		sseUp(w, "[DONE]")
+	})
+	a := signedInChat(t, chatCfg(t, fake.URL))
+	c := createConv(t, a, map[string]any{"title": "U"})
+
+	resp := sendChat(t, a, c.ID, "hi")
+	defer resp.Body.Close()
+	rd := newSSEReader(t, resp)
+	_, _, done := rd.untilDone()
+
+	if done["usage_tokens"] != float64(1203) {
+		t.Errorf("done usage_tokens = %v, want 1203", done["usage_tokens"])
+	}
+	if done["completion_tokens"] != float64(3) {
+		t.Errorf("done completion_tokens = %v, want 3", done["completion_tokens"])
+	}
+	if ms, _ := done["duration_ms"].(float64); ms <= 0 {
+		t.Errorf("done duration_ms = %v, want > 0", done["duration_ms"])
+	}
+
+	var page struct {
+		Items []struct {
+			Role             string `json:"role"`
+			TokenCount       *int64 `json:"token_count"`
+			CompletionTokens *int64 `json:"completion_tokens"`
+			DurationMS       *int64 `json:"duration_ms"`
+		} `json:"items"`
+	}
+	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
+	if len(page.Items) != 2 || page.Items[1].Role != "assistant" {
+		t.Fatalf("messages = %+v", page.Items)
+	}
+	asst := page.Items[1]
+	if asst.TokenCount == nil || *asst.TokenCount != 1203 {
+		t.Errorf("stored token_count = %v, want 1203", asst.TokenCount)
+	}
+	if asst.CompletionTokens == nil || *asst.CompletionTokens != 3 {
+		t.Errorf("stored completion_tokens = %v, want 3", asst.CompletionTokens)
+	}
+	if asst.DurationMS == nil || *asst.DurationMS <= 0 {
+		t.Errorf("stored duration_ms = %v, want > 0", asst.DurationMS)
+	}
+}
+
 func TestChatContextSentUpstream(t *testing.T) {
 	type chatReq struct {
 		Model    string `json:"model"`

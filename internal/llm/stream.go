@@ -79,12 +79,13 @@ type ToolFunction struct {
 
 // Delta is one parsed streaming update.
 type Delta struct {
-	Content   string // answer text
-	Reasoning string // chain-of-thought, never part of Content (spec §6.2)
-	ToolCalls []ToolCallDelta
-	Finish    string // finish_reason when seen ("stop", "tool_calls", …)
-	Done      bool   // finish_reason seen
-	Usage     int64  // total tokens if the upstream reported one
+	Content    string // answer text
+	Reasoning  string // chain-of-thought, never part of Content (spec §6.2)
+	ToolCalls  []ToolCallDelta
+	Finish     string // finish_reason when seen ("stop", "tool_calls", …)
+	Done       bool   // finish_reason seen
+	Usage      int64  // total tokens if the upstream reported one
+	Completion int64  // completion tokens if the upstream reported them
 }
 
 // ToolCallDelta is a fragment of a streamed tool call. Fragments of the same
@@ -254,7 +255,8 @@ type chunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		TotalTokens int `json:"total_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
 	} `json:"usage"`
 }
 
@@ -285,6 +287,7 @@ func parseSSE(r io.Reader, onDelta func(Delta) error, abort func() error) error 
 		var d Delta
 		if ch.Usage != nil {
 			d.Usage = int64(ch.Usage.TotalTokens)
+			d.Completion = int64(ch.Usage.CompletionTokens)
 		}
 		for _, cch := range ch.Choices {
 			d.Content = cch.Delta.Content
@@ -307,7 +310,7 @@ func parseSSE(r io.Reader, onDelta func(Delta) error, abort func() error) error 
 				finished = true
 			}
 		}
-		if d.Content == "" && d.Reasoning == "" && d.Usage == 0 && !d.Done && len(d.ToolCalls) == 0 {
+		if d.Content == "" && d.Reasoning == "" && d.Usage == 0 && d.Completion == 0 && !d.Done && len(d.ToolCalls) == 0 {
 			return nil
 		}
 		return onDelta(d)
