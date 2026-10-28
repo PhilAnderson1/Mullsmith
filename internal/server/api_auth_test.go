@@ -143,6 +143,50 @@ func (a *authTest) register(email, password string, remember bool) *http.Respons
 	})
 }
 
+// --- audit1 L-6: auth transitions rotate the double-submit token -----------
+
+func TestCSRFTokenRotatesAtAuthTransitions(t *testing.T) {
+	a := newAuthTest(t, authCfg(t))
+	boot := a.csrf
+
+	a.invite("gk-code-1")
+	resp := a.register("rotate@b.io", "uncommon-password-9", false)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register = %d", resp.StatusCode)
+	}
+	if a.csrf == boot {
+		t.Error("entering auth did not rotate the CSRF token")
+	}
+	atLogin := a.csrf
+
+	resp = a.do(http.MethodPost, "/api/v1/auth/logout", nil)
+	resp.Body.Close()
+	if a.csrf == atLogin {
+		t.Error("logout did not rotate the CSRF token")
+	}
+
+	// Rotated, not just cleared: the very next mutation (a fresh login)
+	// must pass the double-submit check with the new token.
+	resp = a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email": "rotate@b.io", "password": "uncommon-password-9",
+	})
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		t.Error("post-rotation login hit csrf_failed — token was cleared, not rotated")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post-rotation login = %d, want 200", resp.StatusCode)
+	}
+
+	// Logout of the second session rotates yet again.
+	resp = a.do(http.MethodPost, "/api/v1/auth/logout", nil)
+	resp.Body.Close()
+	if a.csrf == atLogin || a.csrf == boot {
+		t.Error("second logout reused a stale CSRF token")
+	}
+}
+
 func sessionCookieFrom(t *testing.T, resp *http.Response) *http.Cookie {
 	t.Helper()
 	for _, c := range resp.Cookies() {

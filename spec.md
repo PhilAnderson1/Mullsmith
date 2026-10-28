@@ -742,7 +742,10 @@ files) produce markdown rendered in the victim's browser.
   (readable by same-origin JS — it carries no authority) + `X-Gabkeep-CSRF` header,
   required on **every** non-GET/HEAD request under `/api/v1`, including login, register,
   logout, the SSE `POST …/messages`, and `/toolcalls/{id}/approval`. Constant-time
-  compare; token rotates with the session.
+  compare. The token is re-minted on every auth transition — session creation (login,
+  register, confirm) and logout (rotation, not clearing, so the SPA keeps a usable
+  token for the next login): a token planted or observed before a transition never
+  outlives it (audit1 L-6).
 - `SameSite=Lax` on the session cookie blocks cross-site POSTs as a second layer (Lax is
   sufficient because all state-change is same-origin fetch, never top-level navigation).
 - **CORS: none.** Gabkeep emits no `Access-Control-Allow-*` headers, on any route, ever;

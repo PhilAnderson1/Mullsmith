@@ -63,6 +63,15 @@ func (s *Server) newSessionAndCookie(w http.ResponseWriter, r *http.Request, use
 		return err
 	}
 	http.SetCookie(w, auth.SessionCookie(raw, remembered, expires, secureRequest(s.cfg, r)))
+	// L-6 hygiene: crossing INTO authenticated rotates the double-submit
+	// token too, so a token planted or sniffed pre-login never outlives
+	// the transition. Double-submit keeps no server state, and the SPA
+	// re-reads the cookie per request (api.js cookieValue), so rotation
+	// costs nothing. A rand failure leaves the middleware-minted token
+	// standing — still valid, just unrotated.
+	if tok, err := auth.NewCSRFToken(); err == nil {
+		http.SetCookie(w, auth.CSRFCookie(tok, secureRequest(s.cfg, r)))
+	}
 	return nil
 }
 
@@ -361,6 +370,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.SetCookie(w, auth.ClearSessionCookie(secureRequest(s.cfg, r)))
+	// L-6: rotate on the way OUT as well — the token that authenticated
+	// this session's mutations is discarded, and the SPA still has a
+	// usable token for the next login (rotation, not clearing).
+	if tok, err := auth.NewCSRFToken(); err == nil {
+		http.SetCookie(w, auth.CSRFCookie(tok, secureRequest(s.cfg, r)))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
