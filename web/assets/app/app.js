@@ -633,28 +633,59 @@ function fmtInt(n) {
   return Number(n).toLocaleString();
 }
 
-// updateCtxMeter fills the "N% used of M available" line under the thread:
-// the freshest assistant total (prompt+completion of the last reply, an
-// estimate where the endpoint reported nothing) against the context window
-// from /api/v1/meta. While auto-detection has no window the line degrades
-// to "K tokens used"; with no usage figure at all there is nothing to say.
+// fmtTokens compacts the big counts the meter trades in: 71.5K, 192K.
+// Below 10K the exact number is more useful than a rounded "2K", which
+// would blur 1.6K and 2.4K into the same figure.
+function fmtTokens(n) {
+  if (n < 10000) return fmtInt(n);
+  const steps = [[1e6, "M"], [1e3, "K"]];
+  for (const [scale, suffix] of steps) {
+    if (n >= scale) {
+      const v = n / scale;
+      const s = v >= 100 ? String(Math.round(v)) : v.toFixed(1).replace(/\.0$/, "");
+      return s + suffix;
+    }
+  }
+  return fmtInt(n); // unreachable, but the loop should never strand a number
+}
+
+// updateCtxMeter fills the fullness line above the composer: the freshest
+// assistant total (prompt+completion of the last reply, an estimate where
+// the endpoint reported nothing) against the context window from
+// /api/v1/meta — "71.5K (37%)". With no known window it reduces to the
+// count alone; with no usage figure at all there is nothing to say.
 function updateCtxMeter(used) {
   const el = $("#ctx-meter");
   if (!el) return;
+  el.classList.remove("ctx-meter-full"); // a live figure replaces any refusal
   const max = (state.meta && state.meta.max_context_tokens) || 0;
   if (!(used > 0)) {
     el.hidden = true;
     return;
   }
   if (!max) {
-    el.textContent = `${fmtInt(used)} tokens used`;
-    el.title = "the endpoint reports no context window";
-    el.hidden = false;
+    el.textContent = fmtTokens(used);
+    el.title = "context tokens used — the endpoint reports no window";
+  } else {
+    const pct = Math.max(1, Math.round((used / max) * 100));
+    el.textContent = `${fmtTokens(used)} (${pct}%)`;
+    el.title = `${fmtInt(used)} of ${fmtInt(max)} context tokens`;
+  }
+  el.hidden = false;
+}
+
+// showCtxFull pins the server's "conversation is full" answer to the meter
+// line: the refusal stands for this thread, so it should not fade out like
+// a toast. Any later usage figure clears it (see updateCtxMeter).
+function showCtxFull(message) {
+  const el = $("#ctx-meter");
+  if (!el) {
+    toast(message);
     return;
   }
-  const pct = Math.max(1, Math.round((used / max) * 100));
-  el.textContent = `${pct}% used of ${fmtInt(max)} tokens available`;
-  el.title = `${fmtInt(used)} of ${fmtInt(max)} context tokens`;
+  el.textContent = message || "this conversation is full — start a new chat";
+  el.title = "nothing was sent";
+  el.classList.add("ctx-meter-full");
   el.hidden = false;
 }
 
@@ -677,15 +708,18 @@ function msgTps(completion, durationMS) {
   return tps >= 100 ? String(Math.round(tps)) : tps.toFixed(1);
 }
 
+// tpsNote prints the reply's generation rate in the message footer — the
+// bottom-right corner under the answer, where a report on the round reads
+// better than in the who/when header. Missing figures (rows from before
+// the feature, or an endpoint that reported nothing) print nothing.
 function tpsNote(el, completion, durationMS) {
   const tps = msgTps(completion, durationMS);
   if (!tps) return;
-  const host = el.querySelector(".msg-meta");
-  if (!host || host.querySelector(".msg-tps")) return;
-  const span = document.createElement("span");
-  span.className = "msg-tps";
+  const foot = el.querySelector(".msg-foot");
+  const span = el.querySelector(".msg-tps");
+  if (!foot || !span || span.textContent) return;
   span.textContent = `${tps} tok/s`;
-  host.append(span);
+  foot.hidden = false;
 }
 
 async function selectConversation(id) {
@@ -1607,7 +1641,13 @@ async function startGeneration(url, body, rollback, onAccepted) {
       finishGeneration(st, { status: "lost" });
     } else {
       if (rollback) rollback();
-      toast(err.message || "Could not start a reply.");
+      if (err instanceof ApiError && err.code === "context_full") {
+        // The thread can take no more turns: pin the explanation where the
+        // fullness figures live instead of a toast that fades in five seconds.
+        showCtxFull(err.message);
+      } else {
+        toast(err.message || "Could not start a reply.");
+      }
       state.inflight = null;
       syncComposerButtons();
     }

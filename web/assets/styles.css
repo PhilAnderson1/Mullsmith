@@ -330,6 +330,18 @@ body.drawer-open #sidebar { transform: translateX(0); }
   font-size: 0.82em;
 }
 .msg-role { font-weight: 700; }
+/* Generation footnote row (tok/s): bottom-right under the answer, not in
+   the who/when header — it reports the round, not the sender. */
+.msg-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 0.2rem;
+  color: var(--fg-muted);
+  font-size: 0.78em;
+}
+/* An author-level display beats [hidden] in the UA sheet, so say it again. */
+.msg-foot[hidden] { display: none; }
 .msg-tps { font-variant-numeric: tabular-nums; }
 .msg-status { margin: 0.3rem 0 0; font-size: 0.82em; }
 .load-earlier { max-width: var(--thread-max); margin: 0 auto; }
@@ -353,6 +365,8 @@ body.drawer-open #sidebar { transform: translateX(0); }
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+/* The pinned "conversation is full" refusal — same line, louder colour. */
+.ctx-meter-full { color: var(--danger); }
 .composer {
   display: flex;
   gap: 0.5rem;
