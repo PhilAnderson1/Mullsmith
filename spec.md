@@ -52,12 +52,13 @@ like a modern assistant, not just a chat window.
 ### 2.1 Command line
 
 ```
-gabkeep -config /path/to/config.yaml
+gabkeep                                  # default config: /etc/gabkeep/config.yaml
+gabkeep -config /path/to/config.yaml     # explicit path always wins
 ```
 
 | Flag | Description |
 |---|---|
-| `-config <path>` | Path to YAML config file. **Required.** Program exits with a clear error if missing or invalid. |
+| `-config <path>` | Path to YAML config file. Defaults to `/etc/gabkeep/config.yaml` — the location every supported install uses, so a default install never names it. Program exits with a clear error if the file (default or given) is missing or invalid. |
 | `-version` | Print version, commit, build date; exit. |
 | `-check-config` | Load and validate config (connectivity to DB dir, scratchpad writability, LLM endpoint reachability); print report; exit non-zero on failure. With `email.enabled` also dials the SMTP server and reports the result — warn-only, never counts toward the exit code (§9.17). |
 
@@ -542,7 +543,9 @@ CLI mints codes), `closed` (admin CLI creates users).
   form includes an unchecked-by-default **"Stay logged in on this computer"** checkbox;
   the choice is sent as `remember_me` in the request body (§5.1) and applies to that
   session only. The admin can hide the checkbox with `auth.remember_login: false`, in
-  which case every login behaves as unchecked.
+  which case every login behaves as unchecked. With `email.enabled` the registration
+  copy is hidden too — sign-up there ends at the confirmation mail and creates no
+  session to remember (§9.17); login keeps the checkbox.
   - **Unchecked (public/shared machine behavior):** the cookie is a *browser session
     cookie* (no `Expires`/`Max-Age`) — the browser deletes it on close — and the DB row
     carries the short `session_ttl` as a hard cap. Gabkeep therefore logs the user out
@@ -1049,7 +1052,7 @@ Cross-cutting touch/responsive behavior:
 
 | View | Contents |
 |---|---|
-| **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`); shows invite field when invite-only. |
+| **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. |
 | **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. |
 | **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
 | **Settings** | Display name, change password, sign out everywhere. |

@@ -224,6 +224,9 @@ func TestJSEmailFeatureSurface(t *testing.T) {
 		"state.pendingInbox",
 		"email_features",    // meta gate for #login-forgot
 		"unconfirmed_email", // Settings pending notice
+		// With confirm-before-login on, sign-up creates no session, so the
+		// remember-me checkbox belongs on login only.
+		"m.remember_login && !m.email_features",
 		// Field bug guard: mail links land on LOGGED-IN sessions (Settings
 		// confirmations) — the token route must settle before enterChat,
 		// both at boot and on a live-tab hashchange.

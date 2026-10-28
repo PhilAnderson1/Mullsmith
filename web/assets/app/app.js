@@ -340,7 +340,11 @@ async function onCancelPendingEmail() {
 function applyMetaFlags() {
   const m = state.meta;
   show($("#login-remember-row"), m.remember_login);
-  show($("#register-remember-row"), m.remember_login);
+  // Registration only hands out a session when email confirmation is off —
+  // with email_features on, sign-up ends at the check-inbox panel, so the
+  // remember-me checkbox would promise something that cannot happen yet
+  // (it reappears on login, where it does apply).
+  show($("#register-remember-row"), m.remember_login && !m.email_features);
   show($("#register-invite-wrap"), m.registration === "invite-only");
   show($("#login-forgot"), !!m.email_features);
   if (m.registration === "closed") {
