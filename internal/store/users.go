@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -17,11 +18,19 @@ var (
 
 // User is a users-table row.
 type User struct {
-	ID           string
-	Email        string // stored lowercased (collate NOCASE as belt-and-braces)
-	Name         string
-	PasswordHash string
-	Status       string
+	ID   string
+	Name string
+	// Email is the CONFIRMED address ("" = none yet): the only address
+	// login, forgot-password and every credential-facing lookup sees.
+	// NULL in the database — pending sign-ups prove ownership of nothing
+	// until their confirm link is clicked.
+	Email string
+	// UnconfirmedEmail is the address awaiting a confirmation click
+	// ("" = nothing pending): set at sign-up (email_features on) and by a
+	// Settings address change; ConfirmEmail copies it into Email.
+	UnconfirmedEmail string
+	PasswordHash     string
+	Status           string
 	// DefaultSystemPrompt seeds new conversations created without an
 	// explicit prompt (settings page); existing chats keep their own.
 	DefaultSystemPrompt string
@@ -29,17 +38,26 @@ type User struct {
 	UpdatedAt           time.Time
 }
 
-const userCols = `id, email, name, password_hash, status, default_system_prompt, created_at, updated_at`
+const userCols = `id, email, name, password_hash, status, default_system_prompt, unconfirmed_email, created_at, updated_at`
+
+// nilIfEmpty maps "" to a SQL NULL: the email columns store absence as
+// NULL, never as the empty string (which would collide under UNIQUE).
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
 
 func (d *DB) CreateUser(ctx context.Context, u *User) error {
 	if u.ID == "" {
 		u.ID = id.New()
 	}
 	_, err := d.sqlDB.ExecContext(ctx,
-		`INSERT INTO users(id, email, name, password_hash, status, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		u.ID, u.Email, u.Name, u.PasswordHash, u.Status,
-		u.CreatedAt.Unix(), u.UpdatedAt.Unix())
+		`INSERT INTO users(id, email, name, password_hash, status, unconfirmed_email, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, nilIfEmpty(u.Email), u.Name, u.PasswordHash, u.Status,
+		nilIfEmpty(u.UnconfirmedEmail), u.CreatedAt.Unix(), u.UpdatedAt.Unix())
 	if isUnique(err, "users.email") {
 		return ErrUserExists
 	}
@@ -60,17 +78,20 @@ func (d *DB) UserByID(ctx context.Context, userID string) (*User, error) {
 
 func scanUser(row row) (*User, error) {
 	var (
-		u             User
-		created, seen int64
+		u              User
+		email, pending sql.NullString
+		created, seen  int64
 	)
-	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Status,
-		&u.DefaultSystemPrompt, &created, &seen)
+	err := row.Scan(&u.ID, &email, &u.Name, &u.PasswordHash, &u.Status,
+		&u.DefaultSystemPrompt, &pending, &created, &seen)
 	switch {
 	case errors.Is(err, ErrNoRows):
 		return nil, nil
 	case err != nil:
 		return nil, err
 	}
+	u.Email = email.String
+	u.UnconfirmedEmail = pending.String
 	u.CreatedAt = time.Unix(created, 0)
 	u.UpdatedAt = time.Unix(seen, 0)
 	return &u, nil
@@ -113,10 +134,13 @@ func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time
 // UpdateProfile changes the account's display details in one statement.
 // Taking the whole row (not pointers) keeps the settings page honest: what
 // the form shows is what is stored. A taken email maps to ErrUserExists.
+// It deliberately does NOT touch unconfirmed_email: clearing a pending
+// address change is the caller's explicit decision (the features-off
+// Settings email write does it via SetUnconfirmedEmail, §5).
 func (d *DB) UpdateProfile(ctx context.Context, userID, name, email, defaultPrompt string, now time.Time) error {
 	_, err := d.sqlDB.ExecContext(ctx,
 		`UPDATE users SET name = ?, email = ?, default_system_prompt = ?, updated_at = ? WHERE id = ?`,
-		name, email, defaultPrompt, now.Unix(), userID)
+		name, nilIfEmpty(email), defaultPrompt, now.Unix(), userID)
 	if err != nil {
 		if isUnique(err, "users.email") {
 			return ErrUserExists
@@ -167,10 +191,10 @@ func (d *DB) Register(ctx context.Context, u *User, invite string) error {
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO users(id, email, name, password_hash, status, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		u.ID, u.Email, u.Name, u.PasswordHash, u.Status,
-		u.CreatedAt.Unix(), u.UpdatedAt.Unix()); err != nil {
+		`INSERT INTO users(id, email, name, password_hash, status, unconfirmed_email, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, nilIfEmpty(u.Email), u.Name, u.PasswordHash, u.Status,
+		nilIfEmpty(u.UnconfirmedEmail), u.CreatedAt.Unix(), u.UpdatedAt.Unix()); err != nil {
 		if isUnique(err, "users.email") {
 			return ErrUserExists
 		}
@@ -185,4 +209,82 @@ func (d *DB) Register(ctx context.Context, u *User, invite string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// ListUsers returns every account, newest first — the admin CLI's view.
+// It is the only way to see pending sign-ups (NULL email), which no
+// email-keyed lookup can name.
+func (d *DB) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := d.sqlDB.QueryContext(ctx,
+		`SELECT `+userCols+` FROM users ORDER BY created_at DESC, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		var (
+			u              User
+			email, pending sql.NullString
+			created, seen  int64
+		)
+		if err := rows.Scan(&u.ID, &email, &u.Name, &u.PasswordHash, &u.Status,
+			&u.DefaultSystemPrompt, &pending, &created, &seen); err != nil {
+			return nil, err
+		}
+		u.Email = email.String
+		u.UnconfirmedEmail = pending.String
+		u.CreatedAt = time.Unix(created, 0)
+		u.UpdatedAt = time.Unix(seen, 0)
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// DeleteUser removes an account by id. FKs cascade (sessions, invites.used_by
+// is left as a dangling historical reference exactly as deleting any user
+// today did — there is no FK on it); scratchpad bytes age out through the
+// existing unknown-user sweep (§8). Reports whether a row was deleted.
+func (d *DB) DeleteUser(ctx context.Context, userID string) (bool, error) {
+	res, err := d.sqlDB.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SetUnconfirmedEmail points (or re-points) an account at a new address
+// awaiting a confirmation click; "" clears the pending value (the cancel
+// path). It does not mint the token — the caller pairs this with
+// CreateToken(confirm_email) bound to the same address.
+func (d *DB) SetUnconfirmedEmail(ctx context.Context, userID, email string, now time.Time) error {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE users SET unconfirmed_email = ?, updated_at = ? WHERE id = ?`,
+		nilIfEmpty(email), now.Unix(), userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// EmailAvailable reports whether an address may be claimed at sign-up:
+// it must match neither any confirmed email nor any pending unconfirmed
+// one. Without the second column a typo'd pending sign-up's address could
+// be registered by someone else, stranding both parties (plan §3).
+func (d *DB) EmailAvailable(ctx context.Context, email string) (bool, error) {
+	var one int
+	err := d.sqlDB.QueryRowContext(ctx,
+		`SELECT 1 FROM users WHERE email = ? OR unconfirmed_email = ? COLLATE NOCASE LIMIT 1`,
+		email, email).Scan(&one)
+	switch {
+	case errors.Is(err, ErrNoRows):
+		return true, nil
+	case err != nil:
+		return false, err
+	}
+	return false, nil
 }

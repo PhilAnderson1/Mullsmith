@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -77,24 +78,67 @@ func (d *DB) migrate() error {
 		if err != nil {
 			return err
 		}
-		tx, err := d.sqlDB.Begin()
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(string(body)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("migration %s: %w", name, err)
-		}
-		if _, err := tx.Exec(`INSERT INTO schema_version(version, applied_at) VALUES(?, ?)`,
-			ver, time.Now().Unix()); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
+		if err := d.runMigration(name, ver, string(body)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// runMigration applies one migration body plus its schema_version stamp in
+// a single transaction. Bodies carrying the "+no-foreign-keys" marker are
+// the table-rebuild kind: PRAGMA foreign_keys is a no-op INSIDE a
+// transaction, and with enforcement on a DROP TABLE of a parent fires its
+// children's ON DELETE actions — silently destroying rows (verified: a
+// users-table rebuild under this app's DSN emptied sessions with a nil
+// error). For those bodies the official recipe is enforcement off OUTSIDE
+// the transaction, which requires pinning the connection the transaction
+// runs on. Every other migration executes exactly as before.
+func (d *DB) runMigration(name string, ver int, body string) error {
+	ctx := context.Background()
+
+	if !strings.Contains(body, "+no-foreign-keys") {
+		tx, err := d.sqlDB.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, body); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration %s: %w", name, err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version(version, applied_at) VALUES(?, ?)`,
+			ver, time.Now().Unix()); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		return tx.Commit()
+	}
+
+	conn, err := d.sqlDB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	// LIFO: this restores enforcement before the connection is released.
+	defer func() { _, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`) }()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, body); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("migration %s: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version(version, applied_at) VALUES(?, ?)`,
+		ver, time.Now().Unix()); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 // ErrNoRows aliases sql.ErrNoRows for row lookups.
