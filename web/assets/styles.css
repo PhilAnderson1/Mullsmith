@@ -330,19 +330,22 @@ body.drawer-open #sidebar { transform: translateX(0); }
   font-size: 0.82em;
 }
 .msg-role { font-weight: 700; }
-/* Generation footnote row (tok/s): bottom-right under the answer, not in
-   the who/when header — it reports the round, not the sender. */
+/* Footnote row under the answer: the regenerate button on the left, the
+   round's tok/s pinned right. Hidden until it has something to show — a
+   tok/s figure (app.js adds .on) or the regenerate button, which only the
+   last assistant reply carries. Both live on one line: they are footnotes
+   on the same answer, and tok/s keeps its place when the button comes and
+   goes. */
 .msg-foot {
-  display: flex;
-  justify-content: flex-end;
+  display: none;
+  align-items: center;
   gap: 0.6rem;
-  margin-top: 0.2rem;
+  margin-top: 0.15rem;
   color: var(--fg-muted);
   font-size: 0.78em;
 }
-/* An author-level display beats [hidden] in the UA sheet, so say it again. */
-.msg-foot[hidden] { display: none; }
-.msg-tps { font-variant-numeric: tabular-nums; }
+.msg-foot.on, .msg.last-assistant .msg-foot { display: flex; }
+.msg-tps { font-variant-numeric: tabular-nums; margin-left: auto; }
 .msg-status { margin: 0.3rem 0 0; font-size: 0.82em; }
 .load-earlier { max-width: var(--thread-max); margin: 0 auto; }
 
@@ -610,7 +613,9 @@ details.thinking pre {
 }
 
 /* regenerate affordance: only on the newest assistant bubble */
-.msg-actions { display: none; justify-content: flex-end; gap: 0.2rem; margin-top: 0.2rem; }
+/* The regenerate control now lives inside .msg-foot, so it is just the
+   button itself — visibility still follows .last-assistant. */
+.msg-actions { display: none; gap: 0.2rem; }
 .msg.last-assistant .msg-actions { display: flex; }
 
 .stop-btn { color: var(--danger); }

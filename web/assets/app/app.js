@@ -633,20 +633,15 @@ function fmtInt(n) {
   return Number(n).toLocaleString();
 }
 
-// fmtTokens compacts the big counts the meter trades in: 71.5K, 192K.
-// Below 10K the exact number is more useful than a rounded "2K", which
-// would blur 1.6K and 2.4K into the same figure.
+// fmtTokens always speaks thousands with a K suffix — 0.2K, 2.2K, 71.5K,
+// 192K — because the K is what tells you the line counts tokens: a bare
+// "2,237 (1%)" is an unexplained number. One decimal below 100K, whole
+// above, and M past a million; the tooltip always carries the exact count.
 function fmtTokens(n) {
-  if (n < 10000) return fmtInt(n);
-  const steps = [[1e6, "M"], [1e3, "K"]];
-  for (const [scale, suffix] of steps) {
-    if (n >= scale) {
-      const v = n / scale;
-      const s = v >= 100 ? String(Math.round(v)) : v.toFixed(1).replace(/\.0$/, "");
-      return s + suffix;
-    }
-  }
-  return fmtInt(n); // unreachable, but the loop should never strand a number
+  const [scale, suffix] = n >= 1e6 ? [1e6, "M"] : [1e3, "K"];
+  const v = n / scale;
+  const s = v >= 100 ? String(Math.round(v)) : v.toFixed(1).replace(/\.0$/, "");
+  return s + suffix;
 }
 
 // updateCtxMeter fills the fullness line above the composer: the freshest
@@ -719,7 +714,7 @@ function tpsNote(el, completion, durationMS) {
   const span = el.querySelector(".msg-tps");
   if (!foot || !span || span.textContent) return;
   span.textContent = `${tps} tok/s`;
-  foot.hidden = false;
+  foot.classList.add("on"); // the row shows when it has a figure or a button
 }
 
 async function selectConversation(id) {

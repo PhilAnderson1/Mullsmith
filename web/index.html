@@ -271,12 +271,16 @@
       <header class="msg-meta"><span class="msg-role"></span><time class="msg-time"></time></header>
       <div class="msg-body"></div>
       <p class="muted msg-status" hidden></p>
-      <footer class="msg-foot" hidden><span class="msg-tps"></span></footer>
-      <div class="msg-actions">
-        <button class="icon-btn tiny regen-btn" type="button" aria-label="Regenerate reply" title="Regenerate">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1M20.5 4v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        </button>
-      </div>
+      <!-- One footnote row: the reply's action on the left, its generation
+           rate pinned right (styles.css: .msg-foot). -->
+      <footer class="msg-foot">
+        <div class="msg-actions">
+          <button class="icon-btn tiny regen-btn" type="button" aria-label="Regenerate reply" title="Regenerate">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1M20.5 4v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          </button>
+        </div>
+        <span class="msg-tps"></span>
+      </footer>
     </article>
   </template>
 

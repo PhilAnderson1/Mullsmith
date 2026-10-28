@@ -1164,15 +1164,18 @@ Cross-cutting touch/responsive behavior:
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
 | **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
-note in the bottom-right corner under the answer (completion tokens ÷
-model-round time; absent on rows without timing, e.g. history from before the
-feature) — a footnote on how the round went, kept out of the who/when header;
+note, pinned to the right of a footnote row under the answer (completion tokens
+÷ model-round time; absent on rows without timing, e.g. history from before the
+feature). The **regenerate** button shares that row at the far left, so the two
+footnotes on the answer sit on one line and the figure never shifts when the
+button appears or disappears;
 docked above the composer a **context-fullness line** reads `71.5K (37%)` — the
 newest reply's total tokens against the window in force (pinned config, or
 discovered from the endpoint), exact figures in the tooltip; with no window
 known it reduces to the count alone (`71.5K`), and it stays hidden with no usage
-figure at all. Counts under 10K print in full, since a rounded `2K` would blur
-1.6K and 2.4K. When a send would cross a known window the server answers
+figure at all. Counts always carry the K suffix — even `0.2K` — because that
+suffix is what says the line counts tokens, with exact numbers in the tooltip.
+When a send would cross a known window the server answers
 `context_full` and that line pins the "conversation is full — start a new chat"
 explanation in the danger colour until the next figure replaces it. |
 | **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
