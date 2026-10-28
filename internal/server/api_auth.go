@@ -229,7 +229,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// nothing about its mailbox yet. A token-mint failure here is logged,
 	// not fatal: resend-confirm from the login screen is the escape hatch.
 	if s.cfg.Email.Enabled {
-		s.sendConfirmMail(r.Context(), user.ID, email)
+		s.sendConfirmMail(r.Context(), user.ID, email, confirmPurposeSignup)
 		s.logger.Info("user registered, confirmation pending", "user", user.ID, "ip", ip)
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"email":                       email, // echoed from the request
@@ -447,7 +447,7 @@ func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 			return
 		}
-		s.sendConfirmMail(r.Context(), user.ID, pendingAddr)
+		s.sendConfirmMail(r.Context(), user.ID, pendingAddr, confirmPurposeChange)
 		if user.Email != "" {
 			subject, msg := mail.AddressChangedMail()
 			s.mailer.Send(user.Email, subject, msg)

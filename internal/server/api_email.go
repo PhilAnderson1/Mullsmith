@@ -49,18 +49,31 @@ func mailQueued(w http.ResponseWriter) {
 	})
 }
 
+// Confirmation purposes for sendConfirmMail: same token machinery, but the
+// mail must read differently — activating an account vs. moving an existing
+// account's address (field feedback: one wording for both confused users).
+const (
+	confirmPurposeSignup = "signup"
+	confirmPurposeChange = "change"
+)
+
 // sendConfirmMail mints the address-bound confirmation token and queues the
 // mail for a pending address (sign-up or Settings change). Errors are
 // logged, never surfaced to the requester: the pending row exists and
 // resend-confirm is the documented escape hatch.
-func (s *Server) sendConfirmMail(ctx context.Context, userID, email string) {
+func (s *Server) sendConfirmMail(ctx context.Context, userID, email, purpose string) {
 	raw, err := s.store.CreateToken(ctx, store.TokenConfirmEmail, userID, email,
 		time.Now().Add(confirmTokenTTL))
 	if err != nil {
 		s.logger.Error("confirm token mint failed", "error", err, "user", userID)
 		return
 	}
-	subject, body := mail.ConfirmationMail(s.cfg.Email.BaseURL, raw)
+	var subject, body string
+	if purpose == confirmPurposeChange {
+		subject, body = mail.ConfirmationMailChange(s.cfg.Email.BaseURL, raw)
+	} else {
+		subject, body = mail.ConfirmationMail(s.cfg.Email.BaseURL, raw)
+	}
 	s.mailer.Send(email, subject, body)
 }
 
@@ -275,7 +288,7 @@ func (s *Server) handleResendConfirm(w http.ResponseWriter, r *http.Request) {
 		// Reissue invalidates the older link (plan §3). The 24 h
 		// pending-account window is NOT extended — link and account die
 		// together at 24 h from sign-up.
-		s.sendConfirmMail(r.Context(), user.ID, email)
+		s.sendConfirmMail(r.Context(), user.ID, email, confirmPurposeSignup)
 		s.logger.Info("confirmation mail re-queued", "user", user.ID, "ip", ip)
 	}
 	mailQueued(w) // identical whether or not anything matched

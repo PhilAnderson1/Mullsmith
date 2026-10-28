@@ -184,6 +184,15 @@ function scrubHash() {
   routeAuthForm();
 }
 
+// Which mail-link route (if any) the current hash carries. Shared by the
+// auth-view router and the live-session handler below.
+function emailTokenRoute() {
+  if (!(state.meta && state.meta.email_features)) return "";
+  if (location.hash.startsWith("#confirm")) return "confirm";
+  if (location.hash.startsWith("#reset")) return "reset";
+  return "";
+}
+
 function routeAuthForm() {
   const emailOn = !!(state.meta && state.meta.email_features);
   const h = location.hash;
@@ -232,6 +241,40 @@ async function runConfirmEmail(tok) {
     const errEl = $("#confirm-error");
     errEl.textContent = err.message;
     show(errEl, true);
+  }
+}
+
+// A mail link landing on an ALREADY-RUNNING, logged-in session — the normal
+// path for Settings address confirmations (you are signed in when you
+// request them) and for reset links clicked in the same browser. Without
+// this, enterChat()/the chat router would wipe #confirm?t=… as a #login
+// leftover and the confirmation would never be sent — the field bug this
+// guards. Returns null (nothing to do), "auth" (auth view took over), or a
+// fresh user object when a confirmation applied.
+async function consumeEmailToken() {
+  const route = emailTokenRoute();
+  if (!route) return null;
+  const tok = hashToken();
+  if (!tok) {
+    history.replaceState(null, "", location.pathname + location.search);
+    return null;
+  }
+  if (route === "reset") {
+    // Completing a reset kills every session anyway; hand the screen to
+    // the real form while the token hash is still visible to the router.
+    showAuth();
+    return "auth";
+  }
+  try {
+    await api.confirmEmail(tok);
+    const fresh = await api.me();
+    history.replaceState(null, "", location.pathname + location.search);
+    toast("Email address confirmed — " + fresh.email + " is now your sign-in address.", false);
+    return fresh;
+  } catch (err) {
+    history.replaceState(null, "", location.pathname + location.search);
+    toast("Confirming the email address failed: " + err.message, true);
+    return null;
   }
 }
 
@@ -1688,6 +1731,16 @@ function onHashChange() {
     routeAuthForm();
     return;
   }
+  if (emailTokenRoute()) {
+    // Mail link opened in an already-running tab: settle it in place.
+    consumeEmailToken().then((handled) => {
+      if (!handled || handled === "auth") return;
+      state.me = handled;
+      $("#user-chip").textContent = handled.name || handled.email;
+      if (state.settingsOpen) fillSettingsForm();
+    });
+    return;
+  }
   if (location.hash === "#/files") {
     openFilesView();
     return;
@@ -1805,7 +1858,12 @@ async function boot() {
 
   try {
     const me = await api.me();
-    enterChat(me);
+    // A mail link can land on a live session (Settings confirmations are
+    // clicked exactly when logged in): settle it BEFORE enterChat, which
+    // would otherwise wipe the token hash as a leftover.
+    const handled = await consumeEmailToken();
+    if (handled === "auth") return;
+    enterChat(handled || me);
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 401) {
       toast(`Cannot reach the server: ${err.message}`);

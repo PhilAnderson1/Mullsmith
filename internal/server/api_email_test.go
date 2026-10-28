@@ -337,6 +337,9 @@ func TestSignupConfirmPendingLifecycle(t *testing.T) {
 	// below; consuming early also keeps later expectQuiet calls honest).
 	regJob := fm.next(t)
 	oldTok := tokenFromJob(t, regJob, "/#confirm?t=")
+	if !strings.Contains(regJob.Body, "activate your gabkeep account") {
+		t.Errorf("sign-up confirm mail must read as an activation:\n%s", regJob.Body)
+	}
 
 	// DB shape: disabled + NULL email + address in unconfirmed_email.
 	ctx := context.Background()
@@ -452,8 +455,17 @@ func TestSettingsEmailChangeFlow(t *testing.T) {
 		switch j.To {
 		case newAddr:
 			confirmTok = tokenFromJob(t, j, "/#confirm?t=")
+			// Field feedback: the Settings mail must NOT read like a
+			// sign-up activation (no account-creation, no deletion promise).
+			if !strings.Contains(j.Body, "email address change") ||
+				strings.Contains(j.Body, "activate your gabkeep account") ||
+				strings.Contains(j.Body, "deleted") {
+				t.Errorf("settings confirm mail wording wrong:\n%s", j.Body)
+			}
 		case "old@change.io":
-			toOld = strings.Contains(j.Subject, "changed")
+			// Requested, not done — the notice fires BEFORE any change.
+			toOld = strings.Contains(j.Subject, "change was requested") &&
+				!strings.Contains(j.Body, "was changed")
 		default:
 			t.Errorf("unexpected mail to %q", j.To)
 		}

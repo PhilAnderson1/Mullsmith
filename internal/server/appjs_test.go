@@ -224,6 +224,12 @@ func TestJSEmailFeatureSurface(t *testing.T) {
 		"state.pendingInbox",
 		"email_features",    // meta gate for #login-forgot
 		"unconfirmed_email", // Settings pending notice
+		// Field bug guard: mail links land on LOGGED-IN sessions (Settings
+		// confirmations) — the token route must settle before enterChat,
+		// both at boot and on a live-tab hashchange.
+		"function consumeEmailToken",
+		"await consumeEmailToken()",
+		"consumeEmailToken().then",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("app.js lost %q", want)

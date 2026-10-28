@@ -428,6 +428,24 @@ func TestMessageBuilders(t *testing.T) {
 		!strings.Contains(body, "30 minutes") {
 		t.Errorf("reset mail malformed: %s / %s", subj, body)
 	}
+	if subj, body = ConfirmationMailChange("https://gk.example:3210", "TOK7"); !strings.Contains(body, "https://gk.example:3210/#confirm?t=TOK7") {
+		t.Errorf("change-confirm link missing: %s", body)
+	}
+	if !strings.Contains(subj, "address change") ||
+		!strings.Contains(body, "activate your Gabkeep email address change") {
+		t.Errorf("change-confirm must read as an address change, not an activation: %q / %s", subj, body)
+	}
+	if strings.Contains(body, "activate your gabkeep account") || strings.Contains(body, "deleted") {
+		t.Errorf("change-confirm must carry no sign-up/deletion wording: %s", body)
+	}
+	// Sign-up wording must stay distinct from the change wording.
+	if s1, _ := ConfirmationMail("https://g", "T"); s1 == subj {
+		t.Error("sign-up and address-change confirm mails share a subject")
+	}
+	subj, body = AddressChangedMail()
+	if !strings.Contains(subj, "was requested") || !strings.Contains(body, "Nothing has changed yet") {
+		t.Errorf("old-mailbox notice must be request-time, not accomplished fact: %q / %s", subj, body)
+	}
 	if subj, _ = AddressChangedMail(); subj == "" {
 		t.Error("address-change notice needs a subject")
 	}
