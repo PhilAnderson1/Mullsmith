@@ -54,9 +54,9 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 		t.Errorf("code_run approval default = %q, want confirm", cfg.Tools.Agent.Approval["code_run"])
 	}
 	// The file's two off-switches outside limits default to off IN the
-	// house spelling (§2.2): -1s and -1.
-	if cfg.Server.WriteTimeout != Duration(-time.Second) {
-		t.Errorf("write_timeout default = %v, want -1s off-sentinel", cfg.Server.WriteTimeout.D())
+	// house spelling (§2.2): the bare flag -1 on both.
+	if cfg.Server.WriteTimeout != offDuration {
+		t.Errorf("write_timeout default = %v, want the -1 off-sentinel", cfg.Server.WriteTimeout.D())
 	}
 	if cfg.Server.WriteTimeout.HTTPDeadline() != 0 {
 		t.Errorf("write_timeout HTTPDeadline = %v, want 0 (Go's no-deadline)", cfg.Server.WriteTimeout.HTTPDeadline())
@@ -142,11 +142,10 @@ func TestCapSyntax(t *testing.T) {
 	}
 }
 
-// The two off-switches outside limits follow the house syntax too (§2.2),
-// so "off" has exactly one spelling everywhere: -1s on write_timeout
-// (durations carry their unit) and -1 on hsts_max_age (plain seconds).
-// Absent means the default — which for both knobs IS off, in the same
-// sentinel spelling.
+// The two off-switches outside limits follow the house syntax too (§2.2):
+// the flag is the bare -1 on every knob, durations included — "-1s" is
+// not a spelling of off, it is a typo. Absent means the default, which
+// for both knobs IS off, in the same sentinel spelling.
 func TestOffSwitchesOutsideCaps(t *testing.T) {
 	at := func(extra string) error {
 		body := strings.Replace(minimalYAML, `  listen: "127.0.0.1:8090"`,
@@ -157,12 +156,14 @@ func TestOffSwitchesOutsideCaps(t *testing.T) {
 	for _, tc := range []struct {
 		key  string
 		body string
-		want string // "" = must load; else the error must name this key
+		want string // "" = must load; else a substring the error must name
 	}{
-		{"write_timeout", "  write_timeout: -1s\n", ""},
+		{"write_timeout", "  write_timeout: -1\n", ""},
 		{"write_timeout", "  write_timeout: 30s\n", ""},
-		{"write_timeout", "  write_timeout: 0s\n", "server.write_timeout"},
+		{"write_timeout", "  write_timeout: -1s\n", "-1 for no write cap"}, // a duration, not the flag
 		{"write_timeout", "  write_timeout: -2s\n", "server.write_timeout"},
+		{"write_timeout", "  write_timeout: 0s\n", "write -1"},
+		{"write_timeout", "  write_timeout: 0\n", "write -1"}, // numbers reach the same gate
 		{"hsts_max_age", "  hsts_max_age: -1\n", ""},
 		{"hsts_max_age", "  hsts_max_age: 600\n", ""},
 		{"hsts_max_age", "  hsts_max_age: 0\n", "server.hsts_max_age"},
@@ -181,12 +182,17 @@ func TestOffSwitchesOutsideCaps(t *testing.T) {
 	// And the sentinel's meaning at the one Go boundary that cares:
 	// http.Server must receive 0 (no deadline), never a negative.
 	cfg, err := Load(writeCfg(t, strings.Replace(minimalYAML, `  listen: "127.0.0.1:8090"`,
-		"  listen: \"127.0.0.1:8090\"\n  write_timeout: -1s", 1)))
+		"  listen: \"127.0.0.1:8090\"\n  write_timeout: -1", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d := cfg.Server.WriteTimeout.HTTPDeadline(); d != 0 {
-		t.Errorf("HTTPDeadline with -1s = %v, want 0", d)
+		t.Errorf("HTTPDeadline with -1 = %v, want 0", d)
+	}
+	// A knob with no off-switch must refuse the flag too.
+	if err := at("  read_timeout: -1\n"); err == nil ||
+		!strings.Contains(err.Error(), "server.read_timeout") {
+		t.Errorf("read_timeout: -1 err = %v, want rejection naming the key", err)
 	}
 }
 
@@ -453,8 +459,8 @@ llm: {endpoint: "http://x/v1", model: m}
 			"server.listen",
 		},
 		{
-			// write_timeout has the house off-switch (-1s); any
-			// OTHER negative is still a passed deadline — reject.
+			// write_timeout has the house off-switch (the flag -1);
+			// any OTHER negative is still a passed deadline — reject.
 			"negative write_timeout",
 			`
 server:

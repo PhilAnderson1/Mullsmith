@@ -25,10 +25,21 @@ import (
 // Duration is a YAML string parsed by time.ParseDuration, e.g. "720h", "30s".
 type Duration time.Duration
 
+// offDuration is the house off-sentinel (§2.2): the bare YAML number -1,
+// a flag rather than a duration. It is not a legal duration in its own
+// right; consumers treat any negative as "off", and validation lets only
+// this one survive on off-switch knobs (-1s, -2… are typos).
+const offDuration = Duration(-1)
+
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	// The off-sentinel is the only bare number a duration accepts (§2.2).
+	if value.Tag == "!!int" && value.Value == "-1" {
+		*d = offDuration
+		return nil
+	}
 	var s string
 	if err := value.Decode(&s); err != nil {
-		return fmt.Errorf("must be a duration string like \"30s\" or \"720h\"")
+		return fmt.Errorf(`must be a duration string like "30s" or "720h" — the only bare number is -1, which turns supported controls off`)
 	}
 	v, err := time.ParseDuration(s)
 	if err != nil {
@@ -42,8 +53,8 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // HTTPDeadline reads a duration the way http.Server does: the house
-// off-sentinel (negative, only -1s survives validation) means Go's 0,
-// "no deadline".
+// off-sentinel (negative; validation leaves only the bare -1 standing)
+// means Go's 0, "no deadline".
 func (d Duration) HTTPDeadline() time.Duration {
 	if d < 0 {
 		return 0
@@ -127,10 +138,10 @@ type Server struct {
 	// Durations take no off-sentinel (§2.2): absent → code default,
 	// negative → startup error — EXCEPT the two knobs below, the only
 	// off-switches outside limits. They follow the house syntax so the
-	// file has exactly one spelling of "off": -1 on limits, -1s here
-	// (durations carry their unit), -1 for hsts_max_age (plain seconds).
+	// file has exactly one spelling of "off": the bare flag -1, on
+	// durations no less than on counts.
 	ReadTimeout    Duration `yaml:"read_timeout"`
-	WriteTimeout   Duration `yaml:"write_timeout"` // -1s = no write cap (the default; streams)
+	WriteTimeout   Duration `yaml:"write_timeout"` // -1 = no write cap (the default; streams)
 	ShutdownGrace  Duration `yaml:"shutdown_grace"`
 	TrustedProxies []string `yaml:"trusted_proxies"`
 	HSTSMaxAge     int64    `yaml:"hsts_max_age"` // seconds; -1 = header off (the default)
@@ -404,20 +415,26 @@ func (c *Config) spelledZero(section, key string) bool {
 	return isNum && n == 0
 }
 
-// spelledZeroDur is spelledZero for Duration knobs, whose raw spelling is
-// a string ("0s", "0h"): any zero-valued duration string collapses into
-// the default typed read, the same trap the caps rawDoc walk exists for.
+// spelledZeroDur is spelledZero for Duration knobs, whose zero can arrive
+// spelled either way: a duration string ("0s", "0h" — and yaml.v3 hands
+// bare numbers to the string decode too, where ParseDuration accepts a
+// unitless "0"). Any zero folds into the default typed read, the same
+// trap the caps rawDoc walk exists for.
 func (c *Config) spelledZeroDur(section, key string) bool {
 	sec, ok := c.rawDoc[section].(map[string]any)
 	if !ok {
 		return false
 	}
-	s, ok := sec[key].(string)
+	raw, ok := sec[key]
 	if !ok {
 		return false
 	}
-	d, err := time.ParseDuration(s)
-	return err == nil && d == 0
+	if s, isStr := raw.(string); isStr {
+		d, err := time.ParseDuration(s)
+		return err == nil && d == 0
+	}
+	n, isNum := capNumber(raw)
+	return isNum && n == 0
 }
 
 type Logging struct {
@@ -531,7 +548,7 @@ func (c *Config) setDefaults() {
 	// value names "off" the same way the caps do; the http.Server read
 	// maps any negative to Go's 0 (no deadline).
 	if c.Server.WriteTimeout == 0 {
-		c.Server.WriteTimeout = Duration(-time.Second)
+		c.Server.WriteTimeout = offDuration
 	}
 	// HSTS absent means off, likewise spelled with the house -1 (§2.2).
 	if c.Server.HSTSMaxAge == 0 {
@@ -768,13 +785,13 @@ func (c *Config) Validate() error {
 		}
 	}
 	// write_timeout: the streaming exception that carries a real
-	// off-switch, so it follows the house syntax too (§2.2) — the
-	// sentinel is written -1s because every duration carries its unit.
-	if wt := c.Server.WriteTimeout; wt < 0 && wt != Duration(-time.Second) {
-		f.bad("server.write_timeout: must be a positive duration like 30s, or -1s for no write cap")
+	// off-switch, so it follows the house syntax too (§2.2) — the flag is
+	// the bare -1, never a duration spelling like -1s.
+	if wt := c.Server.WriteTimeout; wt < 0 && wt != offDuration {
+		f.bad("server.write_timeout: must be a positive duration like 30s, or -1 for no write cap")
 	}
 	if c.spelledZeroDur("server", "write_timeout") {
-		f.bad("server.write_timeout: 0 is not the off spelling — write -1s for no write cap")
+		f.bad("server.write_timeout: 0 is not the off spelling — write -1 for no write cap")
 	}
 	c.TrustedNets = nil
 	for _, p := range c.Server.TrustedProxies {
