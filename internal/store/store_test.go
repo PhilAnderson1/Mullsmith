@@ -113,6 +113,43 @@ func TestRegisterConsumesInvite(t *testing.T) {
 	}
 }
 
+// Every account opens with exactly one untitled "New chat" conversation,
+// inserted in the Register transaction itself (spec §8): the SPA lands a
+// fresh login on the newest row, so a brand-new user can type immediately.
+func TestRegisterSeedsFirstConversation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	u := mkUser("seed@x.io")
+	if err := db.Register(ctx, u, ""); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := db.ListConversations(ctx, u.ID, "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("fresh account has %d conversations, want exactly the seeded one", len(items))
+	}
+	if items[0].Title != DefaultTitle || items[0].SystemPrompt != "" || items[0].Model != "" {
+		t.Errorf("seeded conversation = %+v, want placeholder defaults", items[0])
+	}
+
+	// A rolled-back Register (dead invite) leaves no orphan conversation:
+	// the seed rides the user insert's transaction.
+	bad := mkUser("seed2@x.io")
+	if err := db.Register(ctx, bad, "no-such-code"); err == nil {
+		t.Fatal("invite should have failed")
+	}
+	var n int
+	if err := db.sqlDB.QueryRow(`SELECT COUNT(*) FROM conversations`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("failed register left %d conversations, want the one from the successful sign-up", n)
+	}
+}
+
 func TestSessionsLifecycle(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

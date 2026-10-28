@@ -150,6 +150,19 @@ func TestPostingReordersList(t *testing.T) {
 	me := decodeBody(t, a.do(http.MethodGet, "/api/v1/auth/me", nil))
 	uid := me["id"].(string)
 
+	// Sign-ups open with one seeded chat (spec §8) stamped NOW; it would
+	// outrank the synthetic rows below, so remove it — the ordering this
+	// test pins is about posts, not the seed.
+	seed := decodeBody(t, a.do(http.MethodGet, "/api/v1/conversations", nil))
+	seedItems := seed["items"].([]any)
+	if len(seedItems) != 1 {
+		t.Fatalf("want the one seeded conversation, got %v", seedItems)
+	}
+	if resp := a.do(http.MethodDelete,
+		"/api/v1/conversations/"+seedItems[0].(map[string]any)["id"].(string), nil); resp.StatusCode != 204 {
+		t.Fatalf("clear seeded chat = %d", resp.StatusCode)
+	}
+
 	ctx := context.Background()
 	now := time.Now()
 	older := &store.Conversation{ID: id.New(), UserID: uid, Title: "older",

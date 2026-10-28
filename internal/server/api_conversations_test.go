@@ -70,6 +70,18 @@ func TestConversationsRequireAuth(t *testing.T) {
 func TestConversationLifecycle(t *testing.T) {
 	a := signedIn(t)
 
+	// A new account opens carrying exactly one seeded "New chat" row
+	// (spec §8) — first login lands there — so every count below includes it.
+	var list struct {
+		Items      []convResp `json:"items"`
+		NextCursor string     `json:"next_cursor"`
+	}
+	getJSON(t, a, "/api/v1/conversations", &list)
+	if len(list.Items) != 1 || list.Items[0].Title != "New chat" {
+		t.Fatalf("fresh sign-up = %+v, want one seeded New chat", list.Items)
+	}
+	seeded := list.Items[0].ID
+
 	c := createConv(t, a, map[string]any{"title": "Trip planning"})
 	if c.ID == "" || c.Title != "Trip planning" {
 		t.Fatalf("create body = %+v", c)
@@ -80,12 +92,8 @@ func TestConversationLifecycle(t *testing.T) {
 		t.Errorf("defaults = %+v", d)
 	}
 
-	var list struct {
-		Items      []convResp `json:"items"`
-		NextCursor string     `json:"next_cursor"`
-	}
 	getJSON(t, a, "/api/v1/conversations", &list)
-	if len(list.Items) != 2 {
+	if len(list.Items) != 3 {
 		t.Fatalf("list = %+v", list.Items)
 	}
 
@@ -113,8 +121,14 @@ func TestConversationLifecycle(t *testing.T) {
 		t.Errorf("re-delete: %d", resp.StatusCode)
 	}
 	getJSON(t, a, "/api/v1/conversations", &list)
-	if len(list.Items) != 1 || list.Items[0].ID != d.ID {
+	if len(list.Items) != 2 {
 		t.Errorf("list after delete = %+v", list.Items)
+	}
+	survivors := map[string]bool{d.ID: true, seeded: true}
+	for _, it := range list.Items {
+		if !survivors[it.ID] {
+			t.Errorf("unexpected row after delete: %+v", it)
+		}
 	}
 }
 

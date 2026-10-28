@@ -355,7 +355,7 @@ with no internals leaked (§9.12).
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). 409 on duplicate email. Respects `registration` mode. With `email.enabled` (§9.17): the address waits in `unconfirmed_email`, the row is `disabled`, no session cookie, and the answer is `201 {email, email_confirmation_required}` + a confirmation mail. |
+| POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). The account opens carrying one placeholder `New chat` conversation (same transaction), so the first login lands ready for typing (§8). 409 on duplicate email. Respects `registration` mode. With `email.enabled` (§9.17): the address waits in `unconfirmed_email`, the row is `disabled`, no session cookie, and the answer is `201 {email, email_confirmation_required}` + a confirmation mail. |
 | POST | `/api/v1/auth/login` | `{email, password, remember_me}` → sets session cookie; `remember_me` (from the login checkbox) selects persistent vs browser-session cookie (§9.1). Rate limited + lockout. Never matches a pending (unconfirmed) account. |
 | POST | `/api/v1/auth/logout` | Destroys session. |
 | GET  | `/api/v1/auth/me` | `{id, email, unconfirmed_email, name, created_at, default_system_prompt, quota: {used_bytes, total_bytes}}` |
@@ -509,7 +509,12 @@ output is data, never instructions; approval gates bound the blast radius).
 
 **Register** (single transaction + filesystem step):
 1. Validate email format, uniqueness, password policy.
-2. Insert `users` row (argon2id hash; hashing deliberately done outside the DB transaction).
+2. Insert `users` row (argon2id hash; hashing deliberately done outside the DB transaction)
+   and, in that transaction, one placeholder `New chat` conversation: a fresh login lands
+   on the newest conversation with the composer ready, so a new user never has to click
+   "New chat" before typing (the SPA already auto-selects it). Auto-titling renames the
+   placeholder after the first exchange like any other untitled chat; a rolled-back
+   register (dead invite) leaves neither user nor conversation behind.
 3. Create `scratchpad/<user-id>/{uploads,artifacts,work}` (`0750`, process owner).
    Failure here rolls back the DB insert (register is retried idempotently; ULID reused).
 4. Features-off (`email.enabled: false`): create session, set cookies, return `201`.
@@ -1025,9 +1030,11 @@ initiates a connection carrying credentials. Doctrine:
   for (constant-time compared against the pending target), reissue of a kind
   invalidates the prior unconsumed token. TTLs: 30 min reset, 24 h confirm.
   Completing a reset also revokes every session of the account.
-- **Pending sign-ups own nothing**: the address lives in `unconfirmed_email`
+- **Pending sign-ups own nothing usable**: the address lives in `unconfirmed_email`
   with `email IS NULL` and `status = 'disabled'`, invisible to login,
-  forgot-password and every address-keyed lookup; older than 24 h the row is
+  forgot-password and every address-keyed lookup; the placeholder chat (§8)
+  and scratchpad dirs come with the row and go with it — FK cascade plus
+  the orphan sweep — nothing lingers. Older than 24 h the row is
   swept away hourly (admin CLI `list-users` names them, `delete-user` by id).
 - **Transport**: SMTP AUTH only ever after STARTTLS or over implicit TLS (465);
   authenticated send on bare port 25 is a config error, and the client refuses

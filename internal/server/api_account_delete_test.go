@@ -58,8 +58,9 @@ func TestDeleteAccountCascadesEverything(t *testing.T) {
 	ctx := context.Background()
 	uid := decodeBody(t, a.do(http.MethodGet, "/api/v1/auth/me", nil))["id"].(string)
 
-	// Seed the full footprint. Session row came with register; chats and
-	// messages via the store; a scratchpad file nested one level deep.
+	// Seed the full footprint. Session row and the account's first
+	// "New chat" came free with register (spec §8); a second chat and its
+	// message via the store; a scratchpad file nested one level deep.
 	conv := &store.Conversation{UserID: uid, Title: "secret chats"}
 	if err := a.db.CreateConversation(ctx, conv); err != nil {
 		t.Fatal(err)
@@ -81,7 +82,8 @@ func TestDeleteAccountCascadesEverything(t *testing.T) {
 	if n := count(`SELECT COUNT(*) FROM sessions WHERE user_id = ?`, uid); n != 1 {
 		t.Fatalf("sessions before = %d, want 1", n)
 	}
-	if n := count(`SELECT COUNT(*) FROM conversations WHERE user_id = ?`, uid); n != 1 {
+	if n := count(`SELECT COUNT(*) FROM conversations WHERE user_id = ?`, uid); n != 2 {
+		// one seeded by register + one added below
 		t.Fatalf("conversations before = %d", n)
 	}
 	if n := count(`SELECT COUNT(*) FROM messages`); n != 1 {

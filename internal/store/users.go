@@ -208,6 +208,21 @@ func (d *DB) Register(ctx context.Context, u *User, invite string) error {
 			return err
 		}
 	}
+
+	// Every account opens with exactly one untitled conversation: the SPA
+	// lands a fresh login on the newest row, so the first session is ready
+	// for typing without a "New chat" click (§8). In this transaction the
+	// account can never exist without it, and a dead invite (rollback)
+	// never leaves the chat behind. The placeholder title lives the normal
+	// life — auto-titling renames it after the first exchange, exactly as
+	// for button-made conversations.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO conversations(id, user_id, title, model, system_prompt, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		id.New(), u.ID, DefaultTitle, "", u.DefaultSystemPrompt,
+		u.CreatedAt.Unix(), u.CreatedAt.Unix()); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
