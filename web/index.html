@@ -16,6 +16,7 @@
 
       <form id="form-login" novalidate>
         <h2 id="login-heading">Sign in</h2>
+        <p class="auth-mode" id="auth-done-note" hidden></p>
         <p class="form-error" id="login-error" role="alert" hidden></p>
         <label for="login-email">Email</label>
         <input id="login-email" name="email" type="email" autocomplete="username" required>
@@ -28,6 +29,9 @@
         <button type="submit" class="btn primary">Sign in</button>
         <p class="switch-line" id="login-switch">No account yet?
           <a href="#register" id="link-register">Create one</a>
+        </p>
+        <p class="switch-line" id="login-forgot" hidden>Lost your password?
+          <a href="#forgot" id="link-forgot">Reset it</a>
         </p>
       </form>
 
@@ -54,6 +58,48 @@
           <a href="#login" id="link-login">Sign in</a>
         </p>
       </form>
+
+      <!-- email_features forms (plan §6): shown only when meta.email_features;
+           #form-confirm auto-submits once with the token from #confirm?t=… -->
+      <form id="form-forgot" novalidate hidden>
+        <h2>Reset password</h2>
+        <p class="form-error" id="forgot-error" role="alert" hidden></p>
+        <p class="auth-mode" id="forgot-ok" hidden>
+          If an account exists for that address, a reset link is on its way — check your inbox.
+        </p>
+        <div id="forgot-input-wrap">
+          <label for="forgot-email">Email</label>
+          <input id="forgot-email" name="email" type="email" autocomplete="username" required>
+          <button type="submit" class="btn primary">Send reset link</button>
+        </div>
+        <p class="switch-line"><a href="#login" id="link-forgot-back">Back to sign in</a></p>
+      </form>
+
+      <form id="form-reset" novalidate hidden>
+        <h2>Choose a new password</h2>
+        <p class="form-error" id="reset-error" role="alert" hidden></p>
+        <label for="reset-password">New password</label>
+        <input id="reset-password" type="password" autocomplete="new-password" required minlength="10">
+        <label for="reset-confirm">Confirm new password</label>
+        <input id="reset-confirm" type="password" autocomplete="new-password" required minlength="10">
+        <button type="submit" class="btn primary">Set new password</button>
+      </form>
+
+      <form id="form-confirm" novalidate hidden>
+        <h2>Confirm email address</h2>
+        <p class="auth-mode" id="confirm-note">Checking your confirmation link…</p>
+        <p class="form-error" id="confirm-error" role="alert" hidden></p>
+      </form>
+
+      <div id="register-confirm-note" hidden>
+        <h2>Check your inbox</h2>
+        <p class="auth-mode">We sent a confirmation link to <strong id="confirm-note-email"></strong>.
+          It works once and expires within 24 hours — after that the pending account is
+          deleted automatically and you can sign up again.</p>
+        <p class="form-error" id="resend-error" role="alert" hidden></p>
+        <button id="btn-resend-confirm" class="btn ghost" type="button">Resend confirmation mail</button>
+        <p class="switch-line"><a href="#login" id="link-confirm-back">Back to sign in</a></p>
+      </div>
     </main>
   </div>
 
@@ -158,6 +204,12 @@
           <input id="settings-name" type="text" autocomplete="name" maxlength="120" required>
           <label for="settings-email">Email</label>
           <input id="settings-email" type="email" autocomplete="email" required>
+          <!-- email_features: a changed address waits here for its confirm click -->
+          <p class="auth-mode" id="settings-email-pending" hidden>
+            Awaiting confirmation: <strong id="pending-email-addr"></strong> — the address
+            changes when you click the link.
+            <button id="btn-cancel-email" class="btn ghost" type="button">Cancel</button>
+          </p>
           <label for="settings-prompt">Default system prompt</label>
           <textarea id="settings-prompt" rows="5" placeholder="Optional instructions for every new chat — e.g. tone, format, language. Existing chats keep what they were created with."></textarea>
           <button type="submit" class="btn primary">Save</button>

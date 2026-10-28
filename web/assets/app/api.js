@@ -77,6 +77,15 @@ export const api = {
   register: (payload) => request("POST", "/api/v1/auth/register", payload),
   logout: () => request("POST", "/api/v1/auth/logout"),
 
+  // email_features (plan §6): all POST like the rest of the API; the token
+  // values arrive via the SPA hash routes, never as GET query params.
+  forgotPassword: (email) => request("POST", "/api/v1/auth/forgot-password", { email }),
+  resetPassword: (token, password) =>
+    request("POST", "/api/v1/auth/reset-password", { token, password }),
+  confirmEmail: (token) => request("POST", "/api/v1/auth/confirm-email", { token }),
+  resendConfirm: (email) => request("POST", "/api/v1/auth/resend-confirm", { email }),
+  cancelEmail: () => request("POST", "/api/v1/auth/me/cancel-email", {}),
+
   listConversations: (q, cursor) => {
     const p = new URLSearchParams();
     if (q) p.set("q", q);

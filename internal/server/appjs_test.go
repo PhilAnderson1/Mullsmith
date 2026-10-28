@@ -181,3 +181,64 @@ func TestJSModelPickerShowsModelInUse(t *testing.T) {
 		}
 	}
 }
+
+// The email_features SPA contract (plan §6, §8): the shell owns the new
+// forms, the hash router recognizes #forgot/#reset/#confirm (tokens scrubbed
+// after consumption), api.js names the five endpoints, and the register flow
+// branches to the check-inbox panel. No browser harness exists — the source
+// is the contract, pinned textually like the rest of this file.
+func TestJSEmailFeatureSurface(t *testing.T) {
+	appSrc, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(appSrc)
+	apiSrc, err := web.FS.ReadFile("assets/app/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiSrcStr := string(apiSrc)
+	html, err := web.FS.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := string(html)
+
+	for _, id := range []string{
+		"form-forgot", "form-reset", "form-confirm", "register-confirm-note",
+		"login-forgot", "forgot-email", "reset-password", "reset-confirm",
+		"confirm-error", "btn-resend-confirm", "settings-email-pending",
+		"pending-email-addr", "btn-cancel-email", "auth-done-note",
+	} {
+		if !strings.Contains(hs, `id="`+id+`"`) {
+			t.Errorf("index.html lost #%s", id)
+		}
+	}
+
+	for _, want := range []string{
+		`h === "#forgot"`,          // router knows the three new routes
+		`startsWith("#reset")`,
+		`startsWith("#confirm")`,
+		"history.replaceState",     // consumed tokens must not linger in URL/history
+		"email_confirmation_required", // register swaps to the check-inbox panel
+		"state.pendingInbox",
+		"email_features",           // meta gate for #login-forgot
+		"unconfirmed_email",        // Settings pending notice
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js lost %q", want)
+		}
+	}
+
+	for _, m := range []struct{ fn, path string }{
+		{"forgotPassword", "/api/v1/auth/forgot-password"},
+		{"resetPassword", "/api/v1/auth/reset-password"},
+		{"confirmEmail", "/api/v1/auth/confirm-email"},
+		{"resendConfirm", "/api/v1/auth/resend-confirm"},
+		{"cancelEmail", "/api/v1/auth/me/cancel-email"},
+	} {
+		if !strings.Contains(apiSrcStr, m.fn+":") || !strings.Contains(apiSrcStr, `"`+m.path+`"`) {
+			t.Errorf("api.js lost %s → %s", m.fn, m.path)
+		}
+	}
+}

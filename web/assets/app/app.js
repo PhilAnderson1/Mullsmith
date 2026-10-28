@@ -24,6 +24,12 @@ const state = {
   filesOpen: false,
   filesKind: "",
   settingsOpen: false,
+  // email_features (plan §6): the token currently being acted on, the
+  // address whose "check your inbox" panel is showing ("" = off), and the
+  // confirm token already spent — auto-submission must fire exactly once.
+  emailToken: "",
+  pendingInbox: "",
+  confirmDone: "",
 };
 
 // --- tiny DOM helpers -------------------------------------------------------
@@ -144,11 +150,148 @@ async function enterChat(user) {
 
 // --- auth view -------------------------------------------------------------------
 
+// The auth card holds exactly one visible form; the rest of the API surface
+// for email features (#forgot, token-carrying #reset?t= / #confirm?t=, the
+// post-signup inbox panel) routes through the same hash mechanism as
+// #login/#register do.
+const AUTH_FORMS = [
+  "form-login", "form-register", "form-forgot", "form-reset",
+  "form-confirm", "register-confirm-note",
+];
+
+function showAuthForm(id) {
+  for (const f of AUTH_FORMS) show($("#" + f), f === id);
+  // Any switch clears the previous success note; the handlers that set one
+  // display it AFTER routing (scrub → route → note), never before.
+  show($("#auth-done-note"), false);
+  if (id !== "form-forgot") show($("#forgot-ok"), false);
+  if (id === "form-forgot") show($("#forgot-input-wrap"), true);
+}
+
+// The mail link arrives as https://host/#reset?t=<token>: one query string
+// hanging off the fragment, parsed with URLSearchParams.
+function hashToken() {
+  const i = location.hash.indexOf("?t=");
+  if (i < 0) return "";
+  return new URLSearchParams(location.hash.slice(i + 1)).get("t") || "";
+}
+
+// Consumed tokens must not linger in the URL or history. replaceState never
+// fires hashchange, so routing is re-run by hand after the scrub.
+function scrubHash() {
+  state.emailToken = "";
+  history.replaceState(null, "", location.pathname + location.search);
+  routeAuthForm();
+}
+
 function routeAuthForm() {
-  const wantRegister = location.hash === "#register" &&
-    state.meta.registration !== "closed";
-  show($("#form-login"), !wantRegister);
-  show($("#form-register"), wantRegister);
+  const emailOn = !!(state.meta && state.meta.email_features);
+  const h = location.hash;
+  if (emailOn && h === "#forgot") {
+    showAuthForm("form-forgot");
+    return;
+  }
+  if (emailOn && h.startsWith("#reset")) {
+    const tok = hashToken();
+    if (!tok) { location.hash = ""; return; }
+    state.emailToken = tok;
+    showAuthForm("form-reset");
+    return;
+  }
+  if (emailOn && h.startsWith("#confirm")) {
+    const tok = hashToken();
+    if (!tok || tok === state.confirmDone) { showAuthForm("form-login"); return; }
+    showAuthForm("form-confirm");
+    runConfirmEmail(tok);
+    return;
+  }
+  if (state.pendingInbox) { showAuthForm("register-confirm-note"); return; }
+  const wantRegister = h === "#register" && state.meta.registration !== "closed";
+  showAuthForm(wantRegister ? "form-register" : "form-login");
+}
+
+async function runConfirmEmail(tok) {
+  state.confirmDone = tok; // one attempt per token, dead or alive
+  show($("#confirm-error"), false);
+  $("#confirm-note").textContent = "Checking your confirmation link…";
+  show($("#confirm-note"), true);
+  try {
+    await api.confirmEmail(tok);
+    state.pendingInbox = "";
+    history.replaceState(null, "", location.pathname + location.search);
+    state.emailToken = "";
+    routeAuthForm(); // token is gone from the hash: lands on login
+    $("#auth-done-note").textContent = "Email confirmed — sign in.";
+    show($("#auth-done-note"), true);
+  } catch (err) {
+    // Stay on this (already visible) form so the verdict is readable; the
+    // token still disappears from the URL.
+    history.replaceState(null, "", location.pathname + location.search);
+    state.emailToken = "";
+    $("#confirm-note").textContent = "This link no longer works — it was already used, expired, or the pending address changed since.";
+    const errEl = $("#confirm-error");
+    errEl.textContent = err.message;
+    show(errEl, true);
+  }
+}
+
+async function onForgot(ev) {
+  ev.preventDefault();
+  const errEl = $("#forgot-error");
+  show(errEl, false);
+  try {
+    await api.forgotPassword($("#forgot-email").value.trim());
+    // The server answers one generic 200; this copy mirrors it verbatim.
+    show($("#forgot-input-wrap"), false);
+    show($("#forgot-ok"), true);
+  } catch (err) {
+    errEl.textContent = err.message;
+    show(errEl, true);
+  }
+}
+
+async function onResetSubmit(ev) {
+  ev.preventDefault();
+  const errEl = $("#reset-error");
+  show(errEl, false);
+  const pw = $("#reset-password").value;
+  if (pw !== $("#reset-confirm").value) {
+    errEl.textContent = "New passwords do not match.";
+    show(errEl, true);
+    return;
+  }
+  try {
+    await api.resetPassword(state.emailToken, pw);
+    $("#form-reset").reset();
+    scrubHash(); // lands on the login form
+    $("#auth-done-note").textContent = "Password updated — sign in with the new one. Every device was signed out.";
+    show($("#auth-done-note"), true);
+  } catch (err) {
+    errEl.textContent = err.message;
+    show(errEl, true);
+  }
+}
+
+async function onResendConfirm() {
+  const errEl = $("#resend-error");
+  show(errEl, false);
+  try {
+    await api.resendConfirm(state.pendingInbox);
+    toast("Confirmation mail sent again — check your inbox.", false);
+  } catch (err) {
+    errEl.textContent = err.message;
+    show(errEl, true);
+  }
+}
+
+async function onCancelPendingEmail() {
+  try {
+    state.me = await api.cancelEmail();
+    fillSettingsForm();
+    toast("Pending address change cancelled", false);
+  } catch (err) {
+    handleErr(err, "cancel email change");
+  }
 }
 
 function applyMetaFlags() {
@@ -156,6 +299,7 @@ function applyMetaFlags() {
   show($("#login-remember-row"), m.remember_login);
   show($("#register-remember-row"), m.remember_login);
   show($("#register-invite-wrap"), m.registration === "invite-only");
+  show($("#login-forgot"), !!m.email_features);
   if (m.registration === "closed") {
     $("#auth-mode-note").textContent = "Accounts are created by the administrator.";
     show($("#auth-mode-note"), true);
@@ -185,6 +329,7 @@ function applyMetaFlags() {
 
 async function onLogin(ev) {
   ev.preventDefault();
+  show($("#auth-done-note"), false);
   const errEl = $("#login-error");
   show(errEl, false);
   try {
@@ -212,6 +357,15 @@ async function onRegister(ev) {
       remember_me: $("#register-remember").checked,
       invite: $("#register-invite").value.trim(),
     });
+    if (me && me.email_confirmation_required) {
+      // Pending sign-up (plan §6): swap to the check-inbox panel instead
+      // of entering chat — there is no session and nothing to enter yet.
+      state.pendingInbox = me.email || $("#register-email").value.trim();
+      $("#confirm-note-email").textContent = state.pendingInbox;
+      if (location.hash === "#register") location.hash = "";
+      routeAuthForm();
+      return;
+    }
     enterChat(me);
   } catch (err) {
     errEl.textContent = err.message;
@@ -1025,6 +1179,11 @@ function fillSettingsForm() {
   $("#settings-email").value = me.email || "";
   $("#settings-prompt").value = me.default_system_prompt || "";
   $("#form-password").reset();
+  // email_features: the field keeps showing the CONFIRMED address; a
+  // pending change is a notice with its own escape hatch, not a value.
+  const pendingAddr = me.unconfirmed_email || "";
+  show($("#settings-email-pending"), !!pendingAddr);
+  if (pendingAddr) $("#pending-email-addr").textContent = pendingAddr;
 }
 
 // Both save buttons double as "done": on SUCCESS the panel closes and the
@@ -1044,7 +1203,11 @@ async function onSettingsSave(ev) {
     });
     $("#user-chip").textContent = state.me.name || state.me.email;
     leaveSettings();
-    toast("Settings saved", false);
+    if (state.me.unconfirmed_email) {
+      toast("Confirmation link sent to " + state.me.unconfirmed_email, false);
+    } else {
+      toast("Settings saved", false);
+    }
   } catch (err) {
     handleErr(err, "save settings");
   }
@@ -1550,6 +1713,22 @@ async function boot() {
   $("#btn-theme").addEventListener("click", cycleTheme);
   $("#form-login").addEventListener("submit", onLogin);
   $("#form-register").addEventListener("submit", onRegister);
+  $("#form-forgot").addEventListener("submit", onForgot);
+  $("#form-reset").addEventListener("submit", onResetSubmit);
+  $("#btn-resend-confirm").addEventListener("click", onResendConfirm);
+  $("#link-forgot").addEventListener("click", (e) => {
+    e.preventDefault();
+    location.hash = "#forgot";
+  });
+  $("#link-forgot-back").addEventListener("click", (e) => {
+    e.preventDefault();
+    location.hash = "";
+  });
+  $("#link-confirm-back").addEventListener("click", (e) => {
+    e.preventDefault();
+    state.pendingInbox = ""; // "back to sign in" also dismisses the panel
+    location.hash = "";
+  });
   $("#link-register").addEventListener("click", (e) => {
     e.preventDefault();
     location.hash = "#register";
@@ -1584,6 +1763,7 @@ async function boot() {
   });
   $("#form-profile").addEventListener("submit", onSettingsSave);
   $("#form-password").addEventListener("submit", onPasswordSave);
+  $("#btn-cancel-email").addEventListener("click", onCancelPendingEmail);
   for (const fb of document.querySelectorAll(".files-filter")) {
     fb.addEventListener("click", () => {
       state.filesKind = fb.dataset.kind || "";
@@ -1618,7 +1798,8 @@ async function boot() {
   try {
     state.meta = await api.meta();
   } catch {
-    state.meta = { registration: "open", remember_login: true, models: [], default_model: "" };
+    state.meta = { registration: "open", remember_login: true, email_features: false,
+      models: [], default_model: "" };
   }
   applyMetaFlags();
 
