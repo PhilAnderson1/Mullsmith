@@ -40,6 +40,15 @@ func putUser(t *testing.T, db *store.DB, email, pending, status string) *store.U
 
 // --- list-users (plan §8): pending rows must be visible and nameable -----
 
+// The default config path is the whole point of a "default install": bare
+// `gabkeep` (and bare `gabkeep admin …`) must find /etc/gabkeep/config.yaml
+// without being told (spec §2.1).
+func TestDefaultConfigPath(t *testing.T) {
+	if defaultConfigPath != "/etc/gabkeep/config.yaml" {
+		t.Errorf("defaultConfigPath = %q, want /etc/gabkeep/config.yaml", defaultConfigPath)
+	}
+}
+
 func TestAdminListUsersShowsPendingRows(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()

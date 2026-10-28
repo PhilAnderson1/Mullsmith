@@ -110,15 +110,16 @@ terminate TLS at a proxy instead, bind gabkeep to loopback and skip all of it.
 ### CLI
 
 ```text
-gabkeep -config CFG                          serve
+gabkeep                                      serve (default config /etc/gabkeep/config.yaml)
+gabkeep -config CFG                          serve with an explicit config (dev runs)
 gabkeep -config CFG -check-config            validate config + probe LLM endpoint
 gabkeep -version                             version/commit/build date
-gabkeep -config CFG admin invite [n]         mint invite codes (invite-only mode)
-gabkeep -config CFG admin create-user -email E -name N -password P
-gabkeep -config CFG admin reset-password <email>   (prompts, or mails a reset
+gabkeep admin invite [n]                     mint invite codes (invite-only mode)
+gabkeep admin create-user -email E -name N -password P
+gabkeep admin reset-password <email>         (prompts, or mails a reset
                                              link when email.enabled; revokes all sessions)
-gabkeep -config CFG admin list-users         every account incl. pending sign-ups
-gabkeep -config CFG admin delete-user <id-or-email>
+gabkeep admin list-users                     every account incl. pending sign-ups
+gabkeep admin delete-user <id-or-email>
 ```
 
 Relative paths in the config resolve against the config file's directory, so

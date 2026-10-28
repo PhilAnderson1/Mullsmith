@@ -2,12 +2,13 @@
 //
 // Usage:
 //
+//	gabkeep                                              # serve (default config)
 //	gabkeep -config /path/to/config.yaml
-//	gabkeep -config /path/to/config.yaml admin invite [n]
-//	gabkeep -config /path/to/config.yaml admin create-user -email E -name N -password P
-//	gabkeep -config /path/to/config.yaml admin reset-password <email> [-password P]
-//	gabkeep -config /path/to/config.yaml admin list-users
-//	gabkeep -config /path/to/config.yaml admin delete-user <id-or-email>
+//	gabkeep [-config /path/to/config.yaml] admin invite [n]
+//	gabkeep [-config /path/to/config.yaml] admin create-user -email E -name N -password P
+//	gabkeep [-config /path/to/config.yaml] admin reset-password <email> [-password P]
+//	gabkeep [-config /path/to/config.yaml] admin list-users
+//	gabkeep [-config /path/to/config.yaml] admin delete-user <id-or-email>
 package main
 
 import (
@@ -56,11 +57,16 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+// defaultConfigPath is where gabkeep looks when -config is omitted: every
+// supported install (tarball, .deb, .rpm) puts the file there, so a default
+// install never has to name it (spec §2.1).
+const defaultConfigPath = "/etc/gabkeep/config.yaml"
+
 func run(args []string) int {
 	fs := flag.NewFlagSet("gabkeep", flag.ContinueOnError)
 	fs.Usage = func() {
 		out := fs.Output()
-		fmt.Fprintln(out, "usage: gabkeep -config /path/to/config.yaml [command]")
+		fmt.Fprintln(out, "usage: gabkeep [flags] [command]")
 		fmt.Fprintln(out, "\nflags:")
 		fs.PrintDefaults()
 		fmt.Fprintln(out, "\ncommands:")
@@ -71,7 +77,7 @@ func run(args []string) int {
 		fmt.Fprintln(out, "  admin list-users                     every account incl. pending sign-ups")
 		fmt.Fprintln(out, "  admin delete-user <id-or-email>      remove an account (id names pending ones)")
 	}
-	cfgPath := fs.String("config", "", "path to YAML config file (required)")
+	cfgPath := fs.String("config", defaultConfigPath, "path to YAML config file")
 	showVersion := fs.Bool("version", false, "print version information and exit")
 	checkOnly := fs.Bool("check-config", false, "validate configuration, print a report, exit non-zero on failure")
 	if err := fs.Parse(args); err != nil {
@@ -92,11 +98,6 @@ func run(args []string) int {
 			return adminMain(*cfgPath, rest[1:])
 		}
 		fmt.Fprintf(os.Stderr, "gabkeep: unexpected argument %q\n", rest[0])
-		return 2
-	}
-	if *cfgPath == "" {
-		fmt.Fprintln(os.Stderr, "gabkeep: -config is required")
-		fs.Usage()
 		return 2
 	}
 
@@ -252,11 +253,7 @@ func expireSessionsLoop(ctx context.Context, db *store.DB, logger *slog.Logger) 
 
 func adminMain(cfgPath string, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: gabkeep -config CFG admin <invite|create-user|reset-password|list-users|delete-user> [...]")
-		return 2
-	}
-	if cfgPath == "" {
-		fmt.Fprintln(os.Stderr, "gabkeep: -config is required")
+		fmt.Fprintln(os.Stderr, "usage: gabkeep [-config CFG] admin <invite|create-user|reset-password|list-users|delete-user> [...]")
 		return 2
 	}
 	cfg, err := config.Load(cfgPath)
