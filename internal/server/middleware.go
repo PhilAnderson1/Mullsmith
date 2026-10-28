@@ -255,14 +255,15 @@ func securityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 
 // cacheControl: API, health and the app shell are never cached. Assets
 // carry a one-hour max-age — OWNER-ACCEPTED (2026-10-26): deploys are
-// rare and one user, so a stale module import is worth a hard reload.
-// The hazard to remember: the shell build-stamps only the URLs index.html
-// references, while app.js imports api.js/sse.js/markdown.js by bare URL.
-// After a contract-changing deploy those bare imports can lag up to an
-// hour, pairing NEW app.js with OLD api.js (the 405-delete incident).
-// Remedy: Ctrl+Shift+R, or wait out the hour. The proper upgrade is
-// content-hashed URLs (rotating import map or import rewriting) — build
-// it only if this ever bites more than once more.
+// rare and one user. The hazard this used to imply — the shell build-
+// stamps only the URLs index.html references, while app.js imports
+// api.js/sse.js/markdown.js by bare URL, so a contract-changing deploy
+// could pair NEW app.js with OLD api.js — bit twice (the 405-delete
+// incident, then "api.deleteAccount is not a function" 2026-10-28) and
+// is CLOSED: staticAssetsHandler rewrites those import specifiers with
+// the same build stamp, so every module URL rotates per deploy and a
+// stale pairing can no longer happen. max-age stays an hour; the full
+// hash-in-filename upgrade is no longer needed.
 func cacheControl(path string) string {
 	switch {
 	case strings.HasPrefix(path, "/assets/"):

@@ -256,33 +256,63 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 }
 
 // staticAssetsHandler serves embedded files under /assets/. A trailing-slash
-// directory request never yields a listing (spec §9.2).
+// directory request never yields a listing (spec §9.2). The app modules are
+// served from a startup-rewritten copy (stampedModules) so their import
+// specifiers rotate with the build stamp too; everything else rides the
+// plain embedded server.
 func (s *Server) staticAssetsHandler() http.HandlerFunc {
 	files := http.FileServerFS(web.FS)
+	stamped := stampedModules(buildStamp(s.appVer))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/") {
 			s.handleNotFound(w, r)
+			return
+		}
+		if body, ok := stamped[r.URL.Path]; ok {
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			_, _ = w.Write(body)
 			return
 		}
 		files.ServeHTTP(w, r)
 	})
 }
 
-// versionedIndex is the app shell with a build stamp appended to the
-// /assets/* URLs. Assets cache for an hour (middleware cacheControl), so
-// without rotating the URLs a deploy leaves browsers on the PREVIOUS
-// app.js until expiry. The stamp cannot reach app.js's own module imports
-// (api.js, sse.js, markdown.js ride bare URLs): after a contract-changing
-// deploy that is an accepted ≤1h mixed-version window — see cacheControl.
-func versionedIndex(ver string) []byte {
-	b, err := web.FS.ReadFile("index.html")
-	if err != nil {
+// moduleSpecs are the absolute import specifiers the app's ES modules use
+// between each other (app.js imports all three, sse.js imports api.js).
+var moduleSpecs = []string{"/assets/app/api.js", "/assets/app/sse.js", "/assets/app/markdown.js"}
+
+// stampedModules returns the /assets/app/*.js bodies with every quoted
+// import specifier carrying ?v=stamp, so module imports rotate with each
+// deploy. Without it the shell's stamp reaches app.js but app.js's own
+// imports ride bare URLs, and the one-hour asset cache pairs NEW app.js
+// with OLD api.js after a contract-changing deploy — it bit once as the
+// 405-delete incident and again as "api.deleteAccount is not a function"
+// (2026-10-28), which is what this rewriting closes. Rewriting the import
+// strings (rather than an inline import map) keeps CSP at script-src 'self'.
+// An unusable stamp (dev build) yields nil: the bare embedded files serve.
+func stampedModules(stamp string) map[string][]byte {
+	if stamp == "" {
 		return nil
 	}
-	if ver == "" {
-		return b
+	out := make(map[string][]byte, 4)
+	for _, name := range []string{"app.js", "api.js", "sse.js", "markdown.js"} {
+		b, err := web.FS.ReadFile("assets/app/" + name)
+		if err != nil {
+			return nil
+		}
+		h := string(b)
+		for _, spec := range moduleSpecs {
+			h = strings.ReplaceAll(h, `"`+spec+`"`, `"`+spec+`?v=`+stamp+`"`)
+		}
+		out["/assets/app/"+name] = []byte(h)
 	}
-	safe := strings.Map(func(r rune) rune {
+	return out
+}
+
+// buildStamp sanitizes the ldflags version for embedding in URLs; "" means
+// no usable stamp (nothing may rotate, shell and modules serve bare).
+func buildStamp(ver string) string {
+	return strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
 			r == '.', r == '_', r == '-':
@@ -290,6 +320,19 @@ func versionedIndex(ver string) []byte {
 		}
 		return -1
 	}, ver)
+}
+
+// versionedIndex is the app shell with a build stamp appended to the
+// /assets/* URLs. Assets cache for an hour (middleware cacheControl), so
+// without rotating the URLs a deploy leaves browsers on the PREVIOUS
+// app.js until expiry. app.js's own module imports are rotated separately,
+// by the request-time rewriting in stampedModules.
+func versionedIndex(ver string) []byte {
+	b, err := web.FS.ReadFile("index.html")
+	if err != nil {
+		return nil
+	}
+	safe := buildStamp(ver)
 	if safe == "" {
 		return b
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 
 	"gabkeep/internal/config"
 	"gabkeep/internal/store"
+	"gabkeep/web"
 )
 
 func testCfg() *config.Config {
@@ -357,9 +359,9 @@ func TestBodyLimit(t *testing.T) {
 // The app shell is no-store while assets cache for an hour, so a deploy
 // without URL versioning leaves browsers running the PREVIOUS app.js
 // until expiry — production proved it twice. Every build (version change)
-// must therefore rotate the asset URLs the shell references. Module
-// imports inside app.js cannot be reached this way; see cacheControl for
-// the accepted lag window.
+// must therefore rotate the asset URLs the shell references — and the
+// module imports inside app.js get the same stamp by request-time
+// rewriting (stampedModules), which TestStampedModuleImports pins.
 func TestIndexAssetURLsAreVersioned(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s := New(testCfg(), testStore(t), logger, "abc123", nil, nil)
@@ -393,6 +395,63 @@ func TestIndexAssetURLsAreVersioned(t *testing.T) {
 	}
 }
 
+// The mixed-version incident (twice: 405-delete, then api.deleteAccount
+// undefined on 2026-10-28) was a NEW app.js importing an hour-stale bare
+// /assets/app/api.js. Request-time rewriting must stamp EVERY inter-module
+// specifier — app.js's three imports and sse.js's import of api.js — so
+// one deploy rotates the whole module graph together.
+func TestStampedModuleImports(t *testing.T) {
+	stamped := stampedModules("abc123")
+	if len(stamped) != 4 {
+		t.Fatalf("stampedModules covered %d files, want 4", len(stamped))
+	}
+	app := string(stamped["/assets/app/app.js"])
+	for _, spec := range moduleSpecs {
+		if !strings.Contains(app, `"`+spec+`?v=abc123"`) {
+			t.Errorf("app.js import of %s not stamped", spec)
+		}
+		if strings.Contains(app, `"`+spec+`"`) {
+			t.Errorf("app.js still imports %s bare", spec)
+		}
+	}
+	sse := string(stamped["/assets/app/sse.js"])
+	if !strings.Contains(sse, `"/assets/app/api.js?v=abc123"`) {
+		t.Error("sse.js import of api.js not stamped")
+	}
+	// Files without imports keep their exact bytes.
+	apiRaw, err := web.FS.ReadFile("assets/app/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stamped["/assets/app/api.js"], apiRaw) {
+		t.Error("api.js altered by rewriting")
+	}
+	// No usable stamp → nil map → the plain embedded server serves.
+	if stampedModules("") != nil {
+		t.Error("empty stamp must disable rewriting")
+	}
+
+	// End to end: a stamped server hands out rewritten modules through
+	// the /assets/ route with a JS content type.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(testCfg(), testStore(t), logger, "abc123", nil, nil)
+	for _, path := range []string{"/assets/app/app.js", "/assets/app/sse.js?v=abc123"} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+			t.Errorf("GET %s Content-Type = %q", path, ct)
+		}
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/app/app.js", nil))
+	if !strings.Contains(rec.Body.String(), `"/assets/app/api.js?v=abc123"`) {
+		t.Error("served app.js lacks the stamped api.js import")
+	}
+}
+
 // The owner-sanctioned asset caching contract (see middleware
 // cacheControl): assets are cacheable for exactly one hour, everything
 // else no-store. Pinned because a silent loosening here is what shipped
@@ -404,6 +463,7 @@ func TestAssetCachingPolicy(t *testing.T) {
 		{"/assets/app/app.js", "public, max-age=3600"},
 		{"/assets/app/api.js", "public, max-age=3600"},
 		{"/assets/styles.css", "public, max-age=3600"},
+		{"/assets/app/app.js?v=somebuild", "public, max-age=3600"}, // stamp rotates the key, not the policy
 		{"/", "no-store"},
 		{"/api/v1/meta", "no-store"},
 	} {
