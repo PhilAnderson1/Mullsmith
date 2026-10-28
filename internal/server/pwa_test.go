@@ -89,7 +89,7 @@ func TestIndexLinksManifestAndAppleTags(t *testing.T) {
 	h := string(b)
 	for _, want := range []string{
 		`rel="manifest" href="/assets/manifest.webmanifest"`,
-		`rel="apple-touch-icon" href="/assets/apple-touch-icon.png?v=2"`,
+		`rel="apple-touch-icon" href="/assets/gk-apple-touch.png"`,
 		`name="theme-color"`,
 		`media="(prefers-color-scheme: dark)"`,
 	} {
