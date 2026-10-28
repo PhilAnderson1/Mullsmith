@@ -42,7 +42,6 @@ like a modern assistant, not just a chat window.
 - Multi-tenant orgs, teams, billing, usage metering.
 - Model training, fine-tuning, or model hosting — Gabkeep is a client to an inference server.
 - Native mobile apps.
-- SMTP-based password reset (replaced by an admin CLI command; see §14).
 - Real-time multi-device sync of an in-flight stream beyond simple reconnect.
 
 ---
@@ -62,12 +61,16 @@ gabkeep -config /path/to/config.yaml     # explicit path always wins
 | `-version` | Print version, commit, build date; exit. |
 | `-check-config` | Load and validate config (connectivity to DB dir, scratchpad writability, LLM endpoint reachability); print report; exit non-zero on failure. With `email.enabled` also dials the SMTP server and reports the result — warn-only, never counts toward the exit code (§9.17). |
 
-Subcommand for administration (no email dependency):
+Subcommands for administration (work without email configured):
 
 ```
-gabkeep admin reset-password <email>     # prints an ephemeral reset token / prompts new password
+gabkeep admin reset-password <email>     # set a new password, or mail a one-shot reset
+                                         # link when email.enabled (§9.17); revokes all
+                                         # sessions either way
 gabkeep admin create-user                # non-interactive account creation for bootstrap
 gabkeep admin invite [n]                 # mint n single-use invite codes (default 1) → stdout
+gabkeep admin list-users                 # every account, incl. pending sign-ups (§9.17)
+gabkeep admin delete-user <id-or-email>  # remove an account (id also names pending ones)
 ```
 
 On startup Gabkeep: loads config → opens/creates SQLite DB → applies embedded schema
@@ -239,10 +242,13 @@ All ids are ULIDs (time-ordered, sortable). All timestamps UTC (ISO-8601 / unix)
 ```sql
 users (
   id            TEXT PRIMARY KEY,
-  email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  email         TEXT UNIQUE COLLATE NOCASE,  -- NULL until confirmed (§9.17); features-off and
+                                             -- confirmed accounts always carry the address
   name          TEXT NOT NULL,
   password_hash TEXT NOT NULL,           -- argon2id
-  status        TEXT NOT NULL DEFAULT 'active',   -- active | disabled
+  status        TEXT NOT NULL DEFAULT 'active',   -- active | disabled (pending sign-up, §9.17)
+  default_system_prompt TEXT NOT NULL DEFAULT '',
+  unconfirmed_email TEXT,                -- address awaiting its confirm click; NULL = none pending
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 )
@@ -303,6 +309,18 @@ invites (   -- only used when auth.registration = invite-only
   created_at INTEGER NOT NULL,
   used_at    INTEGER
 )
+
+auth_tokens (   -- one-shot mail tokens, email.enabled only (§9.17)
+  kind       TEXT NOT NULL,              -- 'confirm_email' | 'reset_password'
+  token_hash BLOB NOT NULL,              -- sha256 of the raw URL token; raw never stored
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email      TEXT NOT NULL,              -- address the mail went to; the token is only
+                                         -- valid while this still matches its target
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,           -- 30 min reset, 24 h confirm
+  used_at    INTEGER,
+  PRIMARY KEY (kind, token_hash)
+)
 ```
 
 There is deliberately **no `files` table**: a file exists if and only if its
@@ -317,7 +335,9 @@ Indexes on: `conversations(user_id, deleted_at, updated_at DESC)`,
 
 Deletion policy: deleting a conversation soft-deletes rows; the message content is retained
 for the same TTL as artifacts unless the user requests hard delete (§12 file manager also
-offers "delete all data"). Deleting a user (admin) cascades: DB rows + scratchpad directory.
+offers "delete all data"). Deleting a user — by the admin CLI or self-service from Settings
+(§5.1 `POST /auth/me/delete`) — cascades: DB rows (sessions, conversations → messages → tool
+calls & attachment links, auth_tokens, all `ON DELETE CASCADE`) + scratchpad directory.
 
 ---
 
@@ -492,10 +512,16 @@ output is data, never instructions; approval gates bound the blast radius).
 2. Insert `users` row (argon2id hash; hashing deliberately done outside the DB transaction).
 3. Create `scratchpad/<user-id>/{uploads,artifacts,work}` (`0750`, process owner).
    Failure here rolls back the DB insert (register is retried idempotently; ULID reused).
-4. Create session, set cookies, return `201`.
+4. Features-off (`email.enabled: false`): create session, set cookies, return `201`.
+   With `email.enabled` (§9.17): the address goes to `unconfirmed_email`, the row is
+   `disabled`, the confirmation mail is queued once row and workspace exist, and the
+   answer is `201 {email, email_confirmation_required}` — no session, no cookie. A
+   never-confirmed row is swept after 24 h (§9.17); its scratchpad dir is then
+   indistinguishable from any deleted account's and joins the orphan sweep below.
 
 **Background jobs** (single ticker goroutine, hourly; once at startup):
-- Expire sessions; soft-delete purging;
+- Expire sessions; purge expired one-shot mail tokens from `auth_tokens`; sweep
+  never-confirmed sign-ups past 24 h (§9.17); soft-delete purging;
 - scratchpad TTL sweep — **the disk is the single source of truth, so the
   sweep is pure mtime arithmetic**: there is no registry to consult and the
   old "bytes without a row" orphan definition cannot even be expressed.
@@ -538,8 +564,12 @@ CLI mints codes), `closed` (admin CLI creates users).
   runs a dummy argon2 hash on unknown emails so timing does not leak account existence.
 - **Known enumeration trade-off:** registration returns `409` on a duplicate email (useful,
   but reveals account existence to anyone probing). Accepted for v1 because registration is
-  IP-throttled and email is unverified (§8) anyway, so the information has little value;
-  switches to a generic response once email verification exists.
+  IP-throttled and email is unverified (§8) anyway, so the information has little value.
+  Kept once §9.17 added email confirmation — the features-on path answers the same
+  `duplicate_email` 409 from its availability pre-flight, which is acceptable because
+  public sign-up is invite-only/`closed` (§14.1) while every **mail-facing** endpoint
+  (forgot-password, resend, dead confirm/reset links) is generic per §9.17: what an
+  attacker learns from the API stops at addresses the mailbox already proves.
 - **"Stay logged in" — per-login user choice (checkbox).** The login (and registration)
   form includes an unchecked-by-default **"Stay logged in on this computer"** checkbox;
   the choice is sent as `remember_me` in the request body (§5.1) and applies to that
@@ -1053,10 +1083,10 @@ Cross-cutting touch/responsive behavior:
 
 | View | Contents |
 |---|---|
-| **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. |
+| **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
 | **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat"); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. |
 | **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
-| **Settings** | Display name, change password, sign out everywhere; a red **Delete account** button in a bottom danger zone, gated by a confirmation dialog — one click deletes the account, all chats and all files irreversibly (§5.1). |
+| **Settings** | Display name, email address (with `email.enabled` a changed address waits in a pending state — visible notice with cancel — until the confirm mail is clicked; old mailbox gets a notice, §5.1/§9.17), change password, sign out everywhere; a red **Delete account** button in a bottom danger zone, gated by a confirmation dialog — one click deletes the account, all chats and all files irreversibly (§5.1). |
 
 Implementation notes: SSE client with auto-reconnect hint on dropped stream; conversations
 lazy-load messages; UI polls nothing (all live state via SSE). Accessible: focus-managed
@@ -1140,8 +1170,9 @@ calls), and a smoke script per milestone.
 - **Web search provider = Brave Search API** (needs an API key; Brave's free allowance
   ended for new keys, so this is a paid API — the only per-request cost in the stack).
   The provider interface (§7.1) still allows SearXNG/DuckDuckGo later.
-- **Registration = invite-only** (the safe public-internet default given no email
-  verification, §9.12). Admin mints codes: `gabkeep admin invite`; `open`/`closed` remain
+- **Registration = invite-only** (the safe public-internet default, §9.12; email
+  confirmation (§9.17) proves mailbox control, but gating *who may sign up* stays the
+  first control). Admin mints codes: `gabkeep admin invite`; `open`/`closed` remain
   config choices.
 - **Code execution = bubblewrap jail on this host** — `bubblewrap` 0.11.x is
   installed and unprivileged user namespaces are enabled, so the single §9.9 mode
@@ -1149,7 +1180,10 @@ calls), and a smoke script per milestone.
 - **Brave Search API key — provided** (2026-10-26, env `GABKEEP_SEARCH_API_KEY`, kept
   operator-local); `tools.web_search` live in dev and production.
 - **Password reset without SMTP — resolved as admin CLI:** `gabkeep admin reset-password`
-  is the v1 answer; no SMTP/email sending was added (§1.2).
+  was the v1 answer. **Superseded 2026-10-28:** the `email:` feature set (§2.2, §5.1,
+  §9.17) added SMTP sending, in-app forgot-password and sign-up confirmation; the CLI
+  command stays for operators and mails a reset link instead of prompting whenever
+  `email.enabled`.
 
 ### 14.2 Awaiting input
 
