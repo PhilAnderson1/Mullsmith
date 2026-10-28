@@ -191,7 +191,7 @@ func TestConversationCrossUserIsolation(t *testing.T) {
 	if _, err := a.db.ConversationForUser(ctx, b.ID, c.ID); err != store.ErrConversationNotFound {
 		t.Errorf("isolation: got %v, want ErrConversationNotFound", err)
 	}
-	if err := a.db.SoftDeleteConversation(ctx, b.ID, c.ID); err != store.ErrConversationNotFound {
+	if err := a.db.DeleteConversation(ctx, b.ID, c.ID); err != store.ErrConversationNotFound {
 		t.Errorf("isolation delete: got %v", err)
 	}
 }

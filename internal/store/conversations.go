@@ -11,9 +11,9 @@ import (
 	"gabkeep/internal/id"
 )
 
-// ErrConversationNotFound covers "does not exist", "not yours" and
-// "soft-deleted" alike — the API answers 404 in all cases so conversation
-// ids cannot be probed across users (spec §9.2).
+// ErrConversationNotFound covers "does not exist" and "not yours" alike —
+// the API answers 404 in both cases so conversation ids cannot be probed
+// across users (spec §9.2).
 var ErrConversationNotFound = errors.New("conversation not found")
 
 // Conversation is a conversations-table row.
@@ -84,7 +84,7 @@ func (d *DB) CreateConversation(ctx context.Context, c *Conversation) error {
 	return err
 }
 
-// ConversationForUser returns the live conversation owned by userID, or
+// ConversationForUser returns the conversation owned by userID, or
 // ErrConversationNotFound.
 func (d *DB) ConversationForUser(ctx context.Context, userID, convID string) (*Conversation, error) {
 	var (
@@ -93,7 +93,7 @@ func (d *DB) ConversationForUser(ctx context.Context, userID, convID string) (*C
 	)
 	err := d.sqlDB.QueryRowContext(ctx,
 		`SELECT id, user_id, title, model, system_prompt, created_at, updated_at
-		 FROM conversations WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+		 FROM conversations WHERE id = ? AND user_id = ?`,
 		convID, userID).
 		Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt, &created, &updated)
 	if errors.Is(err, ErrNoRows) {
@@ -137,7 +137,7 @@ func (d *DB) UpdateConversation(ctx context.Context, userID, convID string, p Co
 	// #nosec G202 -- sets holds only hardcoded "col = ?" fragments; the join
 	// just wires them together, values bind as parameters.
 	q := `UPDATE conversations SET ` + strings.Join(sets, ", ") +
-		` WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+		` WHERE id = ? AND user_id = ?`
 	res, err := d.sqlDB.ExecContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -148,15 +148,13 @@ func (d *DB) UpdateConversation(ctx context.Context, userID, convID string, p Co
 	return d.ConversationForUser(ctx, userID, convID)
 }
 
-// SoftDeleteConversation stamps deleted_at; returns ErrConversationNotFound
-// when there is nothing live to delete.
 // SetTitleIfDefault names a conversation that is still unnamed. The guard
 // runs inside the UPDATE so a title the user typed (rename) can never be
 // overwritten by the concurrent auto-titler. Reports whether it wrote.
 func (d *DB) SetTitleIfDefault(ctx context.Context, convID, title string) (bool, error) {
 	res, err := d.sqlDB.ExecContext(ctx,
 		`UPDATE conversations SET title = ?, updated_at = ?
-		 WHERE id = ? AND deleted_at IS NULL AND (title = '' OR title = ?)`,
+		 WHERE id = ? AND (title = '' OR title = ?)`,
 		title, time.Now().Unix(), convID, DefaultTitle)
 	if err != nil {
 		return false, err
@@ -165,10 +163,15 @@ func (d *DB) SetTitleIfDefault(ctx context.Context, convID, title string) (bool,
 	return n > 0, err
 }
 
-func (d *DB) SoftDeleteConversation(ctx context.Context, userID, convID string) error {
+// DeleteConversation removes a conversation outright. The FK cascades take
+// its messages — and through them the tool calls and attachment links —
+// in the same statement (spec §6); the scratchpad FILES any of those
+// messages referenced deliberately survive, the disk is not chat-owned
+// and joins the TTL sweep instead. Returns ErrConversationNotFound when
+// it does not exist or is not the caller's.
+func (d *DB) DeleteConversation(ctx context.Context, userID, convID string) error {
 	res, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE conversations SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
-		time.Now().Unix(), convID, userID)
+		`DELETE FROM conversations WHERE id = ? AND user_id = ?`, convID, userID)
 	if err != nil {
 		return err
 	}
@@ -178,9 +181,9 @@ func (d *DB) SoftDeleteConversation(ctx context.Context, userID, convID string) 
 	return nil
 }
 
-// ListConversations returns live conversations, most recently updated first.
-// cursor is the opaque value from a previous page ("" for the first). The
-// returned next cursor is "" when exhausted.
+// ListConversations returns the user's conversations, most recently
+// updated first. cursor is the opaque value from a previous page ("" for
+// the first). The returned next cursor is "" when exhausted.
 func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, limit int) (items []Conversation, next string, err error) {
 	if limit < 1 {
 		limit = 30
@@ -190,7 +193,7 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 	}
 	sb := strings.Builder{}
 	sb.WriteString(`SELECT id, user_id, title, model, system_prompt, created_at, updated_at
-	                 FROM conversations WHERE user_id = ? AND deleted_at IS NULL`)
+	                 FROM conversations WHERE user_id = ?`)
 	args := []any{userID}
 	if q != "" {
 		sb.WriteString(` AND title LIKE ? ESCAPE '\'`)

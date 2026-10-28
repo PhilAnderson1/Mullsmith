@@ -67,18 +67,18 @@ func TestConversationCRUD(t *testing.T) {
 	if _, err := db.UpdateConversation(ctx, other.ID, c.ID, ConversationPatch{Title: &newTitle}); !errors.Is(err, ErrConversationNotFound) {
 		t.Errorf("cross-user update: %v", err)
 	}
-	if err := db.SoftDeleteConversation(ctx, other.ID, c.ID); !errors.Is(err, ErrConversationNotFound) {
+	if err := db.DeleteConversation(ctx, other.ID, c.ID); !errors.Is(err, ErrConversationNotFound) {
 		t.Errorf("cross-user delete: %v", err)
 	}
 
-	// Soft delete removes from reads and lists; second delete is not-found.
-	if err := db.SoftDeleteConversation(ctx, u.ID, c.ID); err != nil {
+	// Delete removes from reads and lists; second delete is not-found.
+	if err := db.DeleteConversation(ctx, u.ID, c.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ConversationForUser(ctx, u.ID, c.ID); !errors.Is(err, ErrConversationNotFound) {
 		t.Errorf("get after delete: %v", err)
 	}
-	if err := db.SoftDeleteConversation(ctx, u.ID, c.ID); !errors.Is(err, ErrConversationNotFound) {
+	if err := db.DeleteConversation(ctx, u.ID, c.ID); !errors.Is(err, ErrConversationNotFound) {
 		t.Errorf("double delete: %v", err)
 	}
 	items, _, err := db.ListConversations(ctx, u.ID, "", "", 10)
@@ -226,11 +226,17 @@ func TestMessagesPaginationAndTouch(t *testing.T) {
 		t.Errorf("cross-user append: %v", err)
 	}
 
-	// Soft-deleted conversations reject appends.
-	if err := db.SoftDeleteConversation(ctx, u.ID, c.ID); err != nil {
+	// Deleted conversations reject appends, and the FK cascade took their
+	// messages with the conversation (spec §6).
+	if err := db.DeleteConversation(ctx, u.ID, c.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.AddMessage(ctx, u.ID, &Message{ConversationID: c.ID, Role: "user", Content: "x"}); !errors.Is(err, ErrConversationNotFound) {
 		t.Errorf("append to deleted: %v", err)
+	}
+	var left int
+	if err := db.sqlDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM messages WHERE conversation_id = ?`, c.ID).Scan(&left); err != nil || left != 0 {
+		t.Errorf("cascade: %d messages survived their conversation (err %v)", left, err)
 	}
 }

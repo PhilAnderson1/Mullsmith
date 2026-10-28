@@ -50,7 +50,7 @@ func (d *DB) AddMessage(ctx context.Context, userID string, m *Message) error {
 
 	var one int
 	err = tx.QueryRowContext(ctx,
-		`SELECT 1 FROM conversations WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+		`SELECT 1 FROM conversations WHERE id = ? AND user_id = ?`,
 		m.ConversationID, userID).Scan(&one)
 	if errors.Is(err, ErrNoRows) {
 		return ErrConversationNotFound
@@ -88,7 +88,7 @@ func (d *DB) GetMessageForUser(ctx context.Context, userID, msgID string) (*Mess
 	err := d.sqlDB.QueryRowContext(ctx,
 		`SELECT m.id, m.conversation_id, m.role, m.content, m.status, m.token_count, m.created_at
 		 FROM messages m JOIN conversations c ON c.id = m.conversation_id
-		 WHERE m.id = ? AND c.user_id = ? AND c.deleted_at IS NULL`,
+		 WHERE m.id = ? AND c.user_id = ?`,
 		msgID, userID).
 		Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created)
 	if errors.Is(err, ErrNoRows) {

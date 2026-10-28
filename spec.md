@@ -292,8 +292,7 @@ conversations (
   model        TEXT NOT NULL,            -- model override; empty = server default
   system_prompt TEXT NOT NULL DEFAULT '',
   created_at   INTEGER NOT NULL,
-  updated_at   INTEGER NOT NULL,         -- bumped on new message
-  deleted_at   INTEGER                   -- soft delete
+  updated_at   INTEGER NOT NULL         -- bumped on new message
 )
 
 messages (
@@ -352,12 +351,20 @@ the file's only identity everywhere: API, attachments, tool results, UI.
 `attachments` is a small join table recording the conversation fact "this
 message was sent with this upload"; it makes no claim about the filesystem.
 
-Indexes on: `conversations(user_id, deleted_at, updated_at DESC)`,
+Indexes on: `conversations(user_id, updated_at DESC)`,
 `messages(conversation_id, created_at)`.
 
-Deletion policy: deleting a conversation soft-deletes rows; the message content is retained
-for the same TTL as artifacts unless the user requests hard delete (§12 file manager also
-offers "delete all data"). Deleting a user — by the admin CLI or self-service from Settings
+Deletion policy: deleting a conversation is a **hard delete** — the row goes
+immediately and the FK cascades take its messages, tool calls and attachment links
+(spec §9.2 guard: same 404 for "not yours"). Files any of those messages referenced
+stay in the scratchpad on their own TTL sweep: the disk is deliberately not chat-owned,
+so a deleted chat never silently destroys artifacts the user kept using. The UI confirms
+every delete click and abandons in-flight generations before sending it; an unparseable
+race (delete arriving while another tab streams) can only ever make the worker's next
+write hit the FK constraint and fail — orphaned message rows are structurally impossible
+(`foreign_keys=1`). Soft-delete tombstones existed until migration 0009 and were removed
+as pure cost: hidden rows confused every count while buying a recovery no flow used.
+Deleting a user — by the admin CLI or self-service from Settings
 (§5.1 `POST /auth/me/delete`) — cascades: DB rows (sessions, conversations → messages → tool
 calls & attachment links, auth_tokens, all `ON DELETE CASCADE`) + scratchpad directory.
 
@@ -400,7 +407,7 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 | POST | `/api/v1/conversations` | `{title?, model?, system_prompt?}` → create. A missing `system_prompt` inherits the user's `default_system_prompt` (the row stores the copy; later default edits never rewrite existing chats). |
 | GET | `/api/v1/conversations/{id}` | Metadata + pinned files. |
 | PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt. |
-| DELETE | `/api/v1/conversations/{id}` | Soft delete. |
+| DELETE | `/api/v1/conversations/{id}` | Hard delete; FK cascades to messages → tool calls & attachment links. |
 | GET | `/api/v1/conversations/{id}/messages?cursor=` | Full history (incl. tool-call cards). |
 | POST | `/api/v1/conversations/{id}/messages` | **The core endpoint.** Body `{content, attachment_paths?}`. Responds with an **SSE stream** (§6). Disconnecting aborts generation server-side. |
 | POST | `/api/v1/toolcalls/{id}/approval` | `{decision: "allow" | "deny", remember?: "conversation"}` for tools in `confirm` mode. |
@@ -557,7 +564,7 @@ output is data, never instructions; approval gates bound the blast radius).
 
 **Background jobs** (single ticker goroutine, hourly; once at startup):
 - Expire sessions; purge expired one-shot mail tokens from `auth_tokens`; sweep
-  never-confirmed sign-ups past 24 h (§9.17); soft-delete purging;
+  never-confirmed sign-ups past 24 h (§9.17);
 - scratchpad TTL sweep — **the disk is the single source of truth, so the
   sweep is pure mtime arithmetic**: there is no registry to consult and the
   old "bytes without a row" orphan definition cannot even be expressed.

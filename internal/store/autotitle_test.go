@@ -40,9 +40,9 @@ func TestSetTitleIfDefault(t *testing.T) {
 		t.Fatalf("retry naming: ok=%v err=%v", ok, err)
 	}
 
-	// Soft-deleted conversations are out of reach.
+	// Deleted conversations are out of reach.
 	d := mkConv(t, db, u.ID, "")
-	if err := db.SoftDeleteConversation(ctx, u.ID, d.ID); err != nil {
+	if err := db.DeleteConversation(ctx, u.ID, d.ID); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := db.SetTitleIfDefault(ctx, d.ID, "Ghost Title"); err != nil || ok {

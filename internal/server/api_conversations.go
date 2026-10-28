@@ -257,7 +257,7 @@ func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleConversationDelete(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
-	if err := s.store.SoftDeleteConversation(r.Context(), user.ID, r.PathValue("id")); err != nil {
+	if err := s.store.DeleteConversation(r.Context(), user.ID, r.PathValue("id")); err != nil {
 		s.writeConvErr(w, r, err)
 		return
 	}
