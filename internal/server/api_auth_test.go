@@ -214,8 +214,7 @@ func TestOpenSignupGlobalBudget(t *testing.T) {
 	t.Run("caps at the limit", func(t *testing.T) {
 		cfg := authCfg(t)
 		cfg.Auth.Registration = "open"
-		limit := 2
-		cfg.Auth.MaxSignupsPerHour = &limit
+		cfg.Auth.MaxSignupsPerHour = 2
 		a := newAuthTest(t, cfg)
 
 		// A malformed attempt (weak password) is refused upstream of the
@@ -246,12 +245,12 @@ func TestOpenSignupGlobalBudget(t *testing.T) {
 		}
 	})
 
-	// The regression this pins: explicit 0 must mean "no limit", not "zero
-	// sign-ups" — the absent-vs-zero distinction the pointer field exists for.
-	t.Run("zero disables the limit", func(t *testing.T) {
+	// The regression this pins: the -1 sentinel must mean "no limit", not
+	// "zero sign-ups" and not "fall through to the default of 5".
+	t.Run("minus-one disables the limit", func(t *testing.T) {
 		cfg := authCfg(t)
 		cfg.Auth.Registration = "open"
-		cfg.Auth.MaxSignupsPerHour = new(int) // explicit 0
+		cfg.Auth.MaxSignupsPerHour = -1 // the off sentinel
 		a := newAuthTest(t, cfg)
 		for i, email := range []string{"u1@b.io", "u2@b.io", "u3@b.io"} {
 			if resp := registerOpen(a, email, fmt.Sprintf("passphrase-%d-x9z", i+1)); resp.StatusCode != http.StatusCreated {
@@ -265,8 +264,7 @@ func TestOpenSignupGlobalBudget(t *testing.T) {
 	// invites at a normal pace.
 	t.Run("invite-only ignores budget", func(t *testing.T) {
 		cfg := authCfg(t) // invite-only
-		limit := 1
-		cfg.Auth.MaxSignupsPerHour = &limit
+		cfg.Auth.MaxSignupsPerHour = 1
 		a := newAuthTest(t, cfg)
 		a.invite("gk-code-1") // register() replays exactly this code
 		a.invite("gk-code-2")

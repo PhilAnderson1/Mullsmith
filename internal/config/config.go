@@ -104,6 +104,11 @@ type Config struct {
 	Path string `yaml:"-"`
 	// TrustedNets is the parsed form of Server.TrustedProxies (spec §9.10).
 	TrustedNets []netip.Prefix `yaml:"-"`
+	// rawDoc is the decoded document as written, kept for Validate: after
+	// setDefaults an absent cap and a spelled-out 0 are the same int, and
+	// only the raw keys can tell them apart (cap syntax, §9.11).
+	// Unexported — invisible to yaml in both directions.
+	rawDoc map[string]any
 }
 
 type Server struct {
@@ -126,35 +131,36 @@ type Limits struct {
 	MaxBodyBytes    Size `yaml:"max_body_bytes"`
 	MaxMessageChars int  `yaml:"max_message_chars"`
 	MaxAttachments  int  `yaml:"max_attachments"`
-	// The four caps below are optional pointers so an explicit 0 (disable)
-	// is distinguishable from "unset" (take the hardcoded default):
-	// unset → default, 0 → unlimited/disabled, negative → config error
-	// (§9.11). requests_per_minute and chat_messages_per_hour moved here
-	// from the retired rate_limit block.
-	ConcurrentStreamsPerUser *int `yaml:"concurrent_streams_per_user"`
+	// The caps below share the house syntax for optional limits (§9.11):
+	// positive → that value; -1 → disables the control; absent → the code
+	// default; 0 and any other negative → startup error. Plain ints — the
+	// sentinel frees absent (Go zero) to mean "take the default".
+	// requests_per_minute and chat_messages_per_hour moved here from the
+	// retired rate_limit block.
+	ConcurrentStreamsPerUser int `yaml:"concurrent_streams_per_user"`
 	// ConcurrentStreamsTotal caps generations running at once across ALL
 	// users; the global backstop behind the per-user cap (§9.11). One
 	// shared LLM endpoint saturates long before a handful of users each
 	// hit their personal cap.
-	ConcurrentStreamsTotal *int `yaml:"concurrent_streams_total"`
+	ConcurrentStreamsTotal int `yaml:"concurrent_streams_total"`
 	// Per-user API token bucket over non-chat endpoints (§9.11).
-	RequestsPerMinute *int `yaml:"requests_per_minute"`
+	RequestsPerMinute int `yaml:"requests_per_minute"`
 	// Per-user hourly chat-message bucket (§9.11).
-	ChatMessagesPerHour *int `yaml:"chat_messages_per_hour"`
+	ChatMessagesPerHour int `yaml:"chat_messages_per_hour"`
 	// HashConcurrency bounds concurrent Argon2 computations across ALL
 	// users — the global admission gate behind the per-IP login/register
 	// buckets (audit finding 4). Default 1: the parameters are heavy
 	// (64 MiB, 4 threads) and hashing is sub-second, so serialising costs
 	// honest users nothing while a flood can never exceed one hash's worth
-	// of memory and CPU. 0 disables the gate (queue stays bounded).
-	HashConcurrency *int `yaml:"hash_concurrency"`
+	// of memory and CPU. -1 disables the gate (queue stays bounded).
+	HashConcurrency int `yaml:"hash_concurrency"`
 	// ConcurrentUploads bounds simultaneous in-flight uploads across ALL
 	// users — temp files plus the atomic quota commit together (audit
 	// finding 5). Default 8: a browser tops out around 6 parallel uploads
 	// per host, so honest sessions never touch it, while the per-minute
 	// request bucket alone would let a script wave unbounded
-	// max_file_size temporaries through. 0 disables (unbounded).
-	ConcurrentUploads *int `yaml:"concurrent_uploads"`
+	// max_file_size temporaries through. -1 disables (unbounded).
+	ConcurrentUploads int `yaml:"concurrent_uploads"`
 }
 
 type Database struct {
@@ -256,10 +262,10 @@ type Auth struct {
 	// MaxSignupsPerHour is the GLOBAL account-creation budget, enforced only
 	// in registration: open (audit1 M-2 — per-IP buckets are worthless to a
 	// proxy pool, and with email on each flood request is a mail sent from
-	// the operator's SMTP host). A pointer because absent ≠ 0: absent means
-	// the default (5/hour), an explicit 0 disables the limit — sensible for
-	// LAN-only operators. Invite-only needs no budget: the codes are it.
-	MaxSignupsPerHour *int   `yaml:"max_signups_per_hour"`
+	// the operator's SMTP host). House cap syntax: positive → that value,
+	// -1 disables (LAN operators), absent → 5/hour, 0/other negatives are a
+	// startup error. Invite-only needs no budget: the codes are it.
+	MaxSignupsPerHour int    `yaml:"max_signups_per_hour"`
 	Argon2            Argon2 `yaml:"argon2"`
 }
 
@@ -267,14 +273,18 @@ type Auth struct {
 // max_signups_per_hour is absent from the config file.
 const defaultMaxSignupsPerHour = 5
 
-// SignupsPerHour resolves the global open-mode creation budget: absent means
-// the default of 5/hour, an explicit 0 means unlimited. Reads through the
-// pointer so struct-literal configs (tests) behave like Load'ed ones.
+// SignupsPerHour resolves the raw cap the way the handler needs it: absent
+// (0) means the default, -1 ("off") reads as 0 = no budget, positive is
+// itself. Struct-literal configs (tests) behave like Load'ed ones.
 func (a Auth) SignupsPerHour() int {
-	if a.MaxSignupsPerHour == nil {
+	switch {
+	case a.MaxSignupsPerHour == 0:
 		return defaultMaxSignupsPerHour
+	case a.MaxSignupsPerHour < 0:
+		return 0
+	default:
+		return a.MaxSignupsPerHour
 	}
-	return *a.MaxSignupsPerHour
 }
 
 type Argon2 struct {
@@ -320,9 +330,10 @@ type RateLimit struct {
 	ChatMessagesPerHour *int `yaml:"chat_messages_per_hour"`
 }
 
-// Shipped defaults for the optional caps under limits. Sample and
-// production configs spell these same values out; 0 on any of them turns
-// that single control off (operator's explicit choice, §9.11).
+// Shipped defaults for the optional caps (limits.* and
+// auth.max_signups_per_hour). The sample config spells these same values
+// out; -1 on any of them turns that single control off, absent takes the
+// default, 0 and other negatives are a startup error (§9.11).
 const (
 	DefaultRequestsPerMinute      = 120
 	DefaultChatMessagesPerHour    = 120
@@ -332,19 +343,33 @@ const (
 	DefaultConcurrentUploads      = 8
 )
 
-// Ptr returns &v — for assigning the optional (pointer) knobs in configs
-// built as struct literals, e.g. tests.
-func Ptr(v int) *int { return &v }
+// capKnobs lists every optional cap for validation: full key path plus a
+// reader for the raw (post-decode) value. -1 is the sentinel that disables
+// the control; everything else negative — including 0, which would read as
+// "allow nothing" on knobs phrased as maxima — is refused at startup.
+var capKnobs = []struct {
+	name string
+	read func(*Config) int
+}{
+	{"limits.concurrent_streams_per_user", func(c *Config) int { return c.Limits.ConcurrentStreamsPerUser }},
+	{"limits.concurrent_streams_total", func(c *Config) int { return c.Limits.ConcurrentStreamsTotal }},
+	{"limits.requests_per_minute", func(c *Config) int { return c.Limits.RequestsPerMinute }},
+	{"limits.chat_messages_per_hour", func(c *Config) int { return c.Limits.ChatMessagesPerHour }},
+	{"limits.hash_concurrency", func(c *Config) int { return c.Limits.HashConcurrency }},
+	{"limits.concurrent_uploads", func(c *Config) int { return c.Limits.ConcurrentUploads }},
+	{"auth.max_signups_per_hour", func(c *Config) int { return c.Auth.MaxSignupsPerHour }},
+}
 
-// Deref reads an optional limit knob; nil behaves like 0. After config.Load
-// every knob is non-nil; struct-literal configs (tests) may leave them nil,
-// which then reads as "disabled" — matching the zero-value behaviour these
-// tests were written against.
-func Deref(p *int) int {
-	if p == nil {
-		return 0
+// capNumber reads an integer out of the untyped YAML document (yaml.v3
+// hands back int for values that fit).
+func capNumber(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
 	}
-	return *p
+	return 0, false
 }
 
 type Logging struct {
@@ -407,6 +432,12 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	// Second, untyped pass for Validate's cap-syntax check: it sees which
+	// keys were actually spelled out before defaults touched anything.
+	var rawDoc map[string]any
+	if err := yaml.Unmarshal([]byte(expanded), &rawDoc); err == nil {
+		c.rawDoc = rawDoc
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -459,26 +490,30 @@ func (c *Config) setDefaults() {
 	if c.Limits.MaxAttachments == 0 {
 		c.Limits.MaxAttachments = 8
 	}
-	if c.Limits.ConcurrentStreamsPerUser == nil {
-		c.Limits.ConcurrentStreamsPerUser = Ptr(DefaultConcurrentStreamsUser)
+	// Optional caps (house syntax): absent (0) takes the code default; -1
+	// is the off sentinel and passes through; validation rejects 0 spelled
+	// out plus every other negative. Shipped configs spell the defaults out
+	// so the effective policy is visible at a glance.
+	if c.Limits.ConcurrentStreamsPerUser == 0 {
+		c.Limits.ConcurrentStreamsPerUser = DefaultConcurrentStreamsUser
 	}
-	if c.Limits.ConcurrentStreamsTotal == nil {
-		c.Limits.ConcurrentStreamsTotal = Ptr(DefaultConcurrentStreamsTotal)
+	if c.Limits.ConcurrentStreamsTotal == 0 {
+		c.Limits.ConcurrentStreamsTotal = DefaultConcurrentStreamsTotal
 	}
-	// Unset keys fall back to defaults; an explicit 0 stays 0 and disables
-	// that control (validation rejects negatives). Shipped configs spell the
-	// defaults out so the effective policy is visible at a glance.
-	if c.Limits.RequestsPerMinute == nil {
-		c.Limits.RequestsPerMinute = Ptr(DefaultRequestsPerMinute)
+	if c.Limits.RequestsPerMinute == 0 {
+		c.Limits.RequestsPerMinute = DefaultRequestsPerMinute
 	}
-	if c.Limits.ChatMessagesPerHour == nil {
-		c.Limits.ChatMessagesPerHour = Ptr(DefaultChatMessagesPerHour)
+	if c.Limits.ChatMessagesPerHour == 0 {
+		c.Limits.ChatMessagesPerHour = DefaultChatMessagesPerHour
 	}
-	if c.Limits.HashConcurrency == nil {
-		c.Limits.HashConcurrency = Ptr(DefaultHashConcurrency)
+	if c.Limits.HashConcurrency == 0 {
+		c.Limits.HashConcurrency = DefaultHashConcurrency
 	}
-	if c.Limits.ConcurrentUploads == nil {
-		c.Limits.ConcurrentUploads = Ptr(DefaultConcurrentUploads)
+	if c.Limits.ConcurrentUploads == 0 {
+		c.Limits.ConcurrentUploads = DefaultConcurrentUploads
+	}
+	if c.Auth.MaxSignupsPerHour == 0 {
+		c.Auth.MaxSignupsPerHour = defaultMaxSignupsPerHour
 	}
 	if c.Scratchpad.MaxFileSize == 0 {
 		c.Scratchpad.MaxFileSize = 25 << 20
@@ -519,7 +554,7 @@ func (c *Config) setDefaults() {
 		c.Scratchpad.CodeExec.MaxOutput = 32 << 10
 	}
 	if c.Scratchpad.CodeExec.MaxMemory == 0 {
-		c.Scratchpad.CodeExec.MaxMemory = 512 << 20
+		c.Scratchpad.CodeExec.MaxMemory = 256 << 20 // matches configs/config.yaml
 	}
 	if c.LLM.MaxContextTokens == 0 {
 		c.LLM.MaxContextTokens = 32768
@@ -583,10 +618,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Auth.Registration == "" {
 		c.Auth.Registration = "invite-only"
-	}
-	if c.Auth.MaxSignupsPerHour == nil {
-		v := defaultMaxSignupsPerHour
-		c.Auth.MaxSignupsPerHour = &v // explicit 0 = unlimited, kept as-is
 	}
 	if c.Auth.SessionTTL == 0 {
 		c.Auth.SessionTTL = Duration(24 * time.Hour)
@@ -661,20 +692,23 @@ func (c *Config) Validate() error {
 	if c.Limits.MaxBodyBytes <= 0 || c.Limits.MaxMessageChars <= 0 || c.Limits.MaxAttachments <= 0 {
 		f.bad("limits: max_body_bytes, max_message_chars and max_attachments must be > 0")
 	}
-	// Optional caps: 0 disables, anything negative is a typo worth failing on.
-	for _, k := range []struct {
-		name string
-		v    *int
-	}{
-		{"limits.concurrent_streams_per_user", c.Limits.ConcurrentStreamsPerUser},
-		{"limits.concurrent_streams_total", c.Limits.ConcurrentStreamsTotal},
-		{"limits.requests_per_minute", c.Limits.RequestsPerMinute},
-		{"limits.chat_messages_per_hour", c.Limits.ChatMessagesPerHour},
-		{"limits.hash_concurrency", c.Limits.HashConcurrency},
-		{"limits.concurrent_uploads", c.Limits.ConcurrentUploads},
-	} {
-		if k.v != nil && *k.v < 0 {
-			f.bad("%s: must be >= 0 (0 disables the limit)", k.name)
+	// Cap syntax (§9.11): positive limits the control, -1 disables it,
+	// absent took the default in setDefaults — 0 spelled out (which would
+	// read as "allow nothing" on knobs phrased as maxima) and every other
+	// negative are startup errors naming the syntax. The typed pass cannot
+	// see an explicit 0 (defaults already collapsed it), hence rawDoc.
+	for _, k := range capKnobs {
+		if v := k.read(c); v < -1 {
+			f.bad("%s: must be a positive limit, or -1 to disable the control", k.name)
+			continue
+		}
+		section, key, _ := strings.Cut(k.name, ".")
+		if sec, ok := c.rawDoc[section].(map[string]any); ok {
+			if raw, ok := sec[key]; ok {
+				if n, isNum := capNumber(raw); isNum && n == 0 {
+					f.bad("%s: must be a positive limit, or -1 to disable the control", k.name)
+				}
+			}
 		}
 	}
 	// rate_limit: retired — the two knobs moved into limits:. Name the
@@ -783,9 +817,6 @@ func (c *Config) Validate() error {
 	case "open", "invite-only", "closed":
 	default:
 		f.bad("auth.registration: must be open, invite-only or closed")
-	}
-	if c.Auth.MaxSignupsPerHour != nil && *c.Auth.MaxSignupsPerHour < 0 {
-		f.bad("auth.max_signups_per_hour: must be >= 0 (0 disables the limit)")
 	}
 	if c.Auth.SessionTTL <= 0 || c.Auth.RememberTTL <= 0 || c.Auth.RememberAbsoluteTTL <= 0 {
 		f.bad("auth: session TTLs must be > 0")

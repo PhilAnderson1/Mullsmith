@@ -417,7 +417,7 @@ func TestChatPerUserStreamLimit(t *testing.T) {
 	defer open()
 
 	cfg := chatCfg(t, fake.URL)
-	cfg.Limits.ConcurrentStreamsPerUser = config.Ptr(1)
+	cfg.Limits.ConcurrentStreamsPerUser = 1
 	a := signedInChat(t, cfg)
 	c1 := createConv(t, a, map[string]any{"title": "A"})
 	c2 := createConv(t, a, map[string]any{"title": "B"})

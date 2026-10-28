@@ -183,7 +183,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// before the hash: one unit spent equals one row actually created, so
 	// garbage or duplicate attempts cannot burn the budget and lock out
 	// legitimate sign-ups. Invite-only mode needs no budget — the codes are
-	// the budget. 0 disables the check.
+	// the budget. -1 disables the check.
 	if s.cfg.Auth.Registration == "open" {
 		if limit := s.cfg.Auth.SignupsPerHour(); limit > 0 &&
 			!s.limiter.Allow("signup:global", limit, time.Hour) {

@@ -59,33 +59,34 @@ type Server struct {
 // queue drains in a blink and a deep one means a flood worth refusing.
 const hashQueue = 32
 
-// buildHashGate maps limits.hash_concurrency (three-state: unset→default,
-// 0→disabled, negative→rejected by config validation) onto a gate. Reading
-// the pointer directly matters: nil (struct-literal test configs, never
-// passed through Load) selects the safe default, while an explicit 0 is a
-// disabled — unbounded — gate, so unrelated tests never meet a surprise 429.
+// buildHashGate maps limits.hash_concurrency (house cap syntax:
+// absent→default, -1→disabled, 0/other negatives rejected at load) onto a
+// gate. Reading the raw field matters: 0 (struct-literal test configs,
+// never passed through Load) selects the safe default, while a negative is
+// a disabled — unbounded — gate, so unrelated tests never meet a surprise
+// 429.
 func buildHashGate(cfg *config.Config) *auth.HashGate {
-	if cfg.Limits.HashConcurrency == nil {
-		return auth.NewHashGate(config.DefaultHashConcurrency, hashQueue)
-	}
-	n := *cfg.Limits.HashConcurrency
+	n := cfg.Limits.HashConcurrency
 	if n == 0 {
+		n = config.DefaultHashConcurrency
+	}
+	if n < 0 {
 		return nil
 	}
 	return auth.NewHashGate(n, hashQueue)
 }
 
-// buildUploadGate maps limits.concurrent_uploads (three-state like the
-// other knobs; default 8) onto a channel gate. 8 comfortably exceeds what
-// a browser fires in parallel per host (~6), so honest sessions never see
-// it, while in-flight upload temp bytes stay bounded at 8 × max_file_size
-// no matter what the per-minute request bucket allows.
+// buildUploadGate maps limits.concurrent_uploads (house cap syntax like the
+// other knobs; default 8) onto a channel gate. 8 comfortably exceeds what a
+// browser fires in parallel per host (~6), so honest sessions never see it,
+// while in-flight upload temp bytes stay bounded at 8 × max_file_size no
+// matter what the per-minute request bucket allows.
 func buildUploadGate(cfg *config.Config) chan struct{} {
-	if cfg.Limits.ConcurrentUploads == nil {
-		return make(chan struct{}, config.DefaultConcurrentUploads)
-	}
-	n := *cfg.Limits.ConcurrentUploads
+	n := cfg.Limits.ConcurrentUploads
 	if n == 0 {
+		n = config.DefaultConcurrentUploads
+	}
+	if n < 0 {
 		return nil
 	}
 	return make(chan struct{}, n)

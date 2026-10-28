@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -59,29 +61,76 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	}
 }
 
-// The global open-mode sign-up budget distinguishes "absent" (default 5) from
-// an explicit 0 ("disable the limit" — the LAN operator's escape). That is
-// why the field is a pointer; this test pins the three-way semantics.
-func TestLoadMaxSignupsPerHour(t *testing.T) {
-	cfg, err := Load(writeCfg(t, minimalYAML+"auth:\n  max_signups_per_hour: 0\n"))
+// TestCapSyntax pins the house syntax for every optional cap, wherever it
+// lives: positive → that value; -1 → disables the control (stored verbatim,
+// consumers read "off"); absent → the code default; 0 spelled out (which
+// would read as "allow nothing" on knobs phrased as maxima) and every other
+// negative → startup error naming the syntax.
+func TestCapSyntax(t *testing.T) {
+	knobs := []struct {
+		name string // full key path, exactly as the error must name it
+		yaml string // one-key block, %d for the value under test
+		read func(*Config) int
+		def  int
+	}{
+		{"limits.concurrent_streams_per_user", "limits:\n  concurrent_streams_per_user: %d\n",
+			func(c *Config) int { return c.Limits.ConcurrentStreamsPerUser }, DefaultConcurrentStreamsUser},
+		{"limits.concurrent_streams_total", "limits:\n  concurrent_streams_total: %d\n",
+			func(c *Config) int { return c.Limits.ConcurrentStreamsTotal }, DefaultConcurrentStreamsTotal},
+		{"limits.requests_per_minute", "limits:\n  requests_per_minute: %d\n",
+			func(c *Config) int { return c.Limits.RequestsPerMinute }, DefaultRequestsPerMinute},
+		{"limits.chat_messages_per_hour", "limits:\n  chat_messages_per_hour: %d\n",
+			func(c *Config) int { return c.Limits.ChatMessagesPerHour }, DefaultChatMessagesPerHour},
+		{"limits.hash_concurrency", "limits:\n  hash_concurrency: %d\n",
+			func(c *Config) int { return c.Limits.HashConcurrency }, DefaultHashConcurrency},
+		{"limits.concurrent_uploads", "limits:\n  concurrent_uploads: %d\n",
+			func(c *Config) int { return c.Limits.ConcurrentUploads }, DefaultConcurrentUploads},
+		{"auth.max_signups_per_hour", "auth:\n  max_signups_per_hour: %d\n",
+			func(c *Config) int { return c.Auth.MaxSignupsPerHour }, defaultMaxSignupsPerHour},
+	}
+	for _, k := range knobs {
+		t.Run(k.name, func(t *testing.T) {
+			load := func(v int) (*Config, error) {
+				return Load(writeCfg(t, minimalYAML+fmt.Sprintf(k.yaml, v)))
+			}
+			// absent → code default
+			cfg, err := Load(writeCfg(t, minimalYAML))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := k.read(cfg); got != k.def {
+				t.Errorf("absent: %d, want default %d", got, k.def)
+			}
+			// positive → the value
+			if cfg, err := load(7); err != nil || k.read(cfg) != 7 {
+				t.Errorf("positive 7: %v, %v", k.read(cfg), err)
+			}
+			// -1 → off sentinel, stored verbatim
+			if cfg, err := load(-1); err != nil || k.read(cfg) != -1 {
+				t.Errorf("off sentinel -1: %v, %v", k.read(cfg), err)
+			}
+			// 0 spelled out → startup error naming the syntax
+			_, err = load(0)
+			if err == nil || !strings.Contains(err.Error(), k.name) ||
+				!strings.Contains(err.Error(), "-1 to disable") {
+				t.Errorf("explicit 0: err = %v, want rejection naming %q and the -1 syntax", err, k.name)
+			}
+			// other negatives → same
+			_, err = load(-2)
+			if err == nil || !strings.Contains(err.Error(), k.name) {
+				t.Errorf("negative -2: err = %v, want rejection naming %q", err, k.name)
+			}
+		})
+	}
+
+	// The sign-up budget's consumer-side read of the sentinel: -1 (off)
+	// resolves to 0 so the handler skips the check entirely.
+	cfg, err := Load(writeCfg(t, minimalYAML+"auth:\n  max_signups_per_hour: -1\n"))
 	if err != nil {
-		t.Fatalf("Load(0): %v", err)
+		t.Fatal(err)
 	}
 	if got := cfg.Auth.SignupsPerHour(); got != 0 {
-		t.Errorf("explicit 0: SignupsPerHour() = %d, want 0 (limit disabled)", got)
-	}
-
-	cfg, err = Load(writeCfg(t, minimalYAML+"auth:\n  max_signups_per_hour: 40\n"))
-	if err != nil {
-		t.Fatalf("Load(40): %v", err)
-	}
-	if got := cfg.Auth.SignupsPerHour(); got != 40 {
-		t.Errorf("explicit 40: SignupsPerHour() = %d, want 40", got)
-	}
-
-	_, err = Load(writeCfg(t, minimalYAML+"auth:\n  max_signups_per_hour: -1\n"))
-	if err == nil || !strings.Contains(err.Error(), "max_signups_per_hour") {
-		t.Errorf("negative budget: err = %v, want rejection naming the key", err)
+		t.Errorf("SignupsPerHour() with -1 = %d, want 0 (no budget)", got)
 	}
 }
 
@@ -175,100 +224,120 @@ llm:
 	}
 }
 
-// TestOptionalLimitKnobs pins the three-state semantics of the caps:
-// unset → hardcoded default, explicit 0 → disabled, negative → rejected.
-func TestOptionalLimitKnobs(t *testing.T) {
-	load := func(t *testing.T, extra string) *Config {
-		t.Helper()
-		cfg, err := Load(writeCfg(t, minimalYAML+"\n"+extra))
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		return cfg
-	}
-
-	t.Run("unset takes defaults", func(t *testing.T) {
-		cfg := load(t, "")
-		if got := Deref(cfg.Limits.RequestsPerMinute); got != DefaultRequestsPerMinute {
-			t.Errorf("requests_per_minute = %d, want %d", got, DefaultRequestsPerMinute)
-		}
-		if got := Deref(cfg.Limits.ChatMessagesPerHour); got != DefaultChatMessagesPerHour {
-			t.Errorf("chat_messages_per_hour = %d, want %d", got, DefaultChatMessagesPerHour)
-		}
-		if got := Deref(cfg.Limits.ConcurrentStreamsPerUser); got != DefaultConcurrentStreamsUser {
-			t.Errorf("concurrent_streams_per_user = %d, want %d", got, DefaultConcurrentStreamsUser)
-		}
-		if got := Deref(cfg.Limits.ConcurrentStreamsTotal); got != DefaultConcurrentStreamsTotal {
-			t.Errorf("concurrent_streams_total = %d, want %d", got, DefaultConcurrentStreamsTotal)
-		}
-		if got := Deref(cfg.Limits.HashConcurrency); got != DefaultHashConcurrency {
-			t.Errorf("hash_concurrency = %d, want %d", got, DefaultHashConcurrency)
-		}
-		if got := Deref(cfg.Limits.ConcurrentUploads); got != DefaultConcurrentUploads {
-			t.Errorf("concurrent_uploads = %d, want %d", got, DefaultConcurrentUploads)
-		}
-	})
-
-	t.Run("explicit zero disables", func(t *testing.T) {
-		cfg := load(t, `
-limits:
-  concurrent_streams_per_user: 0
-  concurrent_streams_total: 0
-  requests_per_minute: 0
-  chat_messages_per_hour: 0
-  hash_concurrency: 0
-  concurrent_uploads: 0
-`)
-		for name, p := range map[string]*int{
-			"concurrent_streams_per_user": cfg.Limits.ConcurrentStreamsPerUser,
-			"concurrent_streams_total":    cfg.Limits.ConcurrentStreamsTotal,
-			"requests_per_minute":         cfg.Limits.RequestsPerMinute,
-			"chat_messages_per_hour":      cfg.Limits.ChatMessagesPerHour,
-			"hash_concurrency":            cfg.Limits.HashConcurrency,
-			"concurrent_uploads":          cfg.Limits.ConcurrentUploads,
-		} {
-			if p == nil || *p != 0 {
-				t.Errorf("%s = %v, want explicit 0 (disabled)", name, p)
-			}
-		}
-	})
-
-	negatives := []struct{ key, wantErr string }{
-		{"limits:\n  concurrent_streams_per_user: -1\n", "limits.concurrent_streams_per_user"},
-		{"limits:\n  concurrent_streams_total: -3\n", "limits.concurrent_streams_total"},
-		{"limits:\n  requests_per_minute: -1\n", "limits.requests_per_minute"},
-		{"limits:\n  chat_messages_per_hour: -1\n", "limits.chat_messages_per_hour"},
-		{"limits:\n  hash_concurrency: -2\n", "limits.hash_concurrency"},
-		{"limits:\n  concurrent_uploads: -1\n", "limits.concurrent_uploads"},
-	}
-	for _, tc := range negatives {
-		t.Run("negative rejected: "+tc.key, func(t *testing.T) {
-			_, err := Load(writeCfg(t, minimalYAML+"\n"+tc.key))
-			if err == nil {
-				t.Fatal("negative limit accepted, want error")
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) ||
-				!strings.Contains(err.Error(), "0 disables") {
-				t.Errorf("error = %v, want mention of %q and \"0 disables\"", err, tc.wantErr)
-			}
-		})
-	}
-
-	// The retired rate_limit: block must fail with a message naming the
-	// move, never silently win over or override limits:.
-	t.Run("retired rate_limit names the move", func(t *testing.T) {
-		_, err := Load(writeCfg(t, minimalYAML+`
+// The retired rate_limit: block must fail with a message naming the
+// move, never silently win over or override limits:. (The caps' own
+// syntax lives in TestCapSyntax.)
+func TestRetiredRateLimitBlock(t *testing.T) {
+	_, err := Load(writeCfg(t, minimalYAML+`
 rate_limit:
   requests_per_minute: 300
 `))
-		if err == nil {
-			t.Fatal("retired rate_limit accepted, want error")
+	if err == nil {
+		t.Fatal("retired rate_limit accepted, want error")
+	}
+	if !strings.Contains(err.Error(), "rate_limit") ||
+		!strings.Contains(err.Error(), "limits:") {
+		t.Errorf("error = %v, want it to point at the limits: block", err)
+	}
+}
+
+// TestShippedTemplateMirrorsCodeDefaults keeps configs/config.yaml honest:
+// every policy value it spells out must equal the default the program
+// applies when that key is absent (measured by Loading the minimal config).
+// Only reasoned exceptions may differ — per-deployment values and the rare
+// knob whose template value is an opt-in the zero-collapse cannot encode.
+// Change a default? The template must follow in the same commit, or the
+// path gets an explicit exception with a reason.
+func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
+	tmpl, err := Load(filepath.Join("..", "..", "configs", "config.yaml"))
+	if err != nil {
+		t.Fatalf("Load template: %v", err)
+	}
+	mini, err := Load(writeCfg(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load minimal: %v", err)
+	}
+
+	exceptions := map[string]string{
+		"server.listen":                              "deployment choice — template ships the production port",
+		"server.tls.cert_file":                       "deployment paths — template stages certbot's cert",
+		"server.tls.key_file":                        "deployment paths — template stages certbot's cert",
+		"server.hsts_max_age":                        "0 (code default) means no HSTS header; the template ships one year as the TLS-era default",
+		"database.dir":                               "required; per-machine path",
+		"scratchpad.root":                            "required; per-machine path",
+		"scratchpad.code_execution.allowed_runtimes": "host-specific interpreter paths — code default is the empty list",
+		"llm.model":                                  "required; the template holds a placeholder",
+		"llm.models":                                 "derived from llm.model (the default model is always pickable)",
+		"llm.api_key":                                "secret via ${ENV} expansion — environment-dependent at test time",
+		"llm.default_temperature":                    "zero is a meaningful LLM value, so zero-collapse cannot carry 0.7; code default is 0",
+		"auth.remember_login":                        "bool zero-collapse — template opts in; code default keeps the checkbox off",
+		"tools.web_search.api_key":                   "secret via ${ENV} expansion — environment-dependent at test time",
+		"tools.web_fetch.enabled":                    "bool zero-collapse — template opts into guarded egress; code default is off",
+		"email.smtp.password":                        "secret via ${ENV} expansion — environment-dependent at test time",
+		"email.smtp.from":                            "sender identity is operator- and domain-specific; the template shows the shape",
+	}
+
+	tmplLeaf, miniLeaf := map[string]any{}, map[string]any{}
+	flattenLeaves("", reflect.ValueOf(*tmpl), tmplLeaf)
+	flattenLeaves("", reflect.ValueOf(*mini), miniLeaf)
+	if len(tmplLeaf) != len(miniLeaf) {
+		t.Fatalf("leaf count mismatch %d vs %d — flattenLeaves out of date?", len(tmplLeaf), len(miniLeaf))
+	}
+	for path, codeDefault := range miniLeaf {
+		if _, ok := exceptions[path]; ok {
+			continue
 		}
-		if !strings.Contains(err.Error(), "rate_limit") ||
-			!strings.Contains(err.Error(), "limits:") {
-			t.Errorf("error = %v, want it to point at the limits: block", err)
+		if !leafEqual(codeDefault, tmplLeaf[path]) {
+			t.Errorf("%s: template = %v, code default = %v — match them or list the path as a reasoned exception",
+				path, tmplLeaf[path], codeDefault)
 		}
-	})
+	}
+}
+
+// flattenLeaves maps every yaml-tagged scalar (including slices and maps)
+// to its value by dotted path; nested structs recurse. Unexported fields
+// and `yaml:"-"` are skipped.
+func flattenLeaves(prefix string, v reflect.Value, out map[string]any) {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		name := strings.Split(f.Tag.Get("yaml"), ",")[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(f.Name)
+		}
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		fv := v.Field(i)
+		if fv.Kind() == reflect.Struct { // Duration/Size are integer KINDS, not structs
+			flattenLeaves(path, fv, out)
+			continue
+		}
+		out[path] = fv.Interface()
+	}
+}
+
+// leafEqual compares two config leaves; an absent (nil) and an empty
+// list/map are the same policy.
+func leafEqual(a, b any) bool {
+	na, nb := 0, 0
+	if s := reflect.ValueOf(a); s.Kind() == reflect.Slice || s.Kind() == reflect.Map {
+		na = s.Len()
+	}
+	if s := reflect.ValueOf(b); s.Kind() == reflect.Slice || s.Kind() == reflect.Map {
+		nb = s.Len()
+	}
+	if na == 0 && nb == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 func TestValidationCases(t *testing.T) {

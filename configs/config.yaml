@@ -104,7 +104,7 @@ auth:
   registration: invite-only       # open | invite-only | closed (admin CLI users)
   max_signups_per_hour: 5         # global cap, enforced only when registration
                                   # is open (per-IP limits don't stop a proxy
-                                  # pool); 0 disables it — fine on a LAN
+                                  # pool); -1 disables it — fine on a LAN
   remember_login: true            # shows the "Stay logged in" checkbox
   session_ttl: 24h
   remember_ttl: 720h              # with the checkbox ticked
@@ -136,9 +136,10 @@ limits:
   max_body_bytes: 1MiB
   max_message_chars: 32000
   max_attachments: 8
-  # Caps below: values are the program defaults spelled out; 0 disables
-  # the control, negatives are a config error, omitting a key takes the
-  # default. (rate_limit: is retired — these knobs all live here now.)
+  # Caps below: values are the program defaults spelled out. -1 disables
+  # the control; omitting a key takes the default; 0 and any other
+  # negative are a config error. (rate_limit: is retired — these knobs
+  # all live here now.)
   concurrent_streams_per_user: 2  # parallel SSE generations per user
   concurrent_streams_total: 8     # all users combined (global backstop)
   requests_per_minute: 120        # per authenticated user, non-chat endpoints

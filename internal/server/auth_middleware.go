@@ -115,7 +115,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		// hostage to NAT and proxy topology. Chat streaming routes are the
 		// documented exception ("non-chat endpoints") — they answer to the
 		// hourly chat bucket and the generation caps instead.
-		if max := config.Deref(s.cfg.Limits.RequestsPerMinute); max > 0 && !isChatStreamRoute(r) &&
+		if max := s.cfg.Limits.RequestsPerMinute; max > 0 && !isChatStreamRoute(r) &&
 			!s.limiter.Allow("api:"+user.ID, max, time.Minute) {
 			w.Header().Set("Retry-After", "1")
 			writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited",

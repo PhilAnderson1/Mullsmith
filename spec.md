@@ -81,6 +81,19 @@ migrations → provisions scratchpad root → starts HTTP(S) server → serves.
 YAML. Unknown keys are an error (typos caught early). Any string value supports environment
 variable expansion `${GABKEEP_SECRET}` so secrets need not live in the file.
 
+Optional cap knobs (`limits.*` except the sizing trio, and
+`auth.max_signups_per_hour`) share one syntax: **positive** → that value,
+**-1** → disables the control, **absent** → the code default, **0 or any
+other negative** → startup error naming the syntax. (0 is deliberately not
+"off": on knobs phrased as maxima — max requests per minute, max sign-ups —
+0 reads as "allow nothing", so the sentinel is -1.) Security-directional
+settings take no sentinel: expiry durations keep `0 → default, negative →
+error`, and required settings (`database.dir`, `llm.endpoint`, …) refuse
+empty. The shipped `configs/config.yaml` spells every default out so the
+effective policy is visible at a glance, and a test pins each template
+value to the code default it represents (reasoned exceptions only:
+per-deployment paths and the rare opt-in a bool zero-value cannot encode).
+
 Example, which doubles as the documented reference:
 
 ```yaml
@@ -106,9 +119,11 @@ limits:
   chat_messages_per_hour: 120     # per user
   hash_concurrency: 1             # simultaneous Argon2 computations (§9.11)
   concurrent_uploads: 8           # in-flight uploads, all users (§9.11)
-  # the caps above: values shown are the program defaults; set a knob
-  # to 0 to disable that control, negatives are a config error; the old
-  # rate_limit: block is retired — everything lives under limits: now
+  # Cap syntax for the knobs above (§9.11): values shown are the program
+  # defaults spelled out; positive limits the control, -1 disables it,
+  # omitting the key takes the default, and 0 or any other negative is a
+  # config error; the old rate_limit: block is retired — everything lives
+  # under limits: now
 
 database:
   dir: "/var/lib/gabkeep/db"      # gabkeep.db (WAL mode) lives here
@@ -128,7 +143,7 @@ scratchpad:
       - { id: sh,      binary: /bin/sh }
     timeout: 30s
     max_output: 32KiB
-    max_memory: 512MiB
+    max_memory: 256MiB
     allow_network: false
 
 llm:
@@ -171,7 +186,7 @@ auth:
   registration: invite-only        # open | invite-only | closed (invite-only recommended
                                    # for internet-facing; see §9.12)
   max_signups_per_hour: 5         # GLOBAL creation cap, enforced only when registration
-                                  # is open; absent = 5, explicit 0 disables (audit1 M-2)
+                                  # is open; absent = 5, -1 disables (audit1 M-2)
   remember_login: true            # show the "Stay logged in" checkbox at login (§9.1)
   session_ttl: 24h                # login WITHOUT "stay logged in"
   remember_ttl: 720h              # login WITH checkbox: sliding idle window (30 days)
@@ -513,7 +528,7 @@ output is data, never instructions; approval gates bound the blast radius).
 1. Validate email format, uniqueness, password policy. With `registration: open` the
    global creation budget `auth.max_signups_per_hour` is consumed here — after all
    pre-flights, before the hash, so one unit spent equals one row actually created
-   (absent = 5/hour, 0 disables; see §9.11, audit1 M-2).
+   (absent = 5/hour, -1 disables; see §9.11, audit1 M-2).
 2. Insert `users` row (argon2id hash; hashing deliberately done outside the DB transaction)
    and, in that transaction, one placeholder `New chat` conversation: a fresh login lands
    on the newest conversation with the composer ready, so a new user never has to click
@@ -922,7 +937,7 @@ open registration (startup warns).
 | Request body cap | `http.MaxBytesReader` on every route (`limits.max_body_bytes` = 1 MiB default); multipart streams to a spooled temp file with its own `max_file_size` cap and `defer os.Remove` on abort — never buffered whole in memory |
 | Field caps | message ≤ `max_message_chars`; titles/names/emails length-bounded; `attachment_paths` ≤ `limits.max_attachments`; pagination `limit` ≤ 200; unknown JSON fields → 400 (§9.3) |
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
-| Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded; **global sign-up budget** `auth.max_signups_per_hour` (default 5, 0 = off) applies only in `registration: open` — the per-IP register bucket is worthless to a proxy pool, and with `email.enabled` every flood account is a mail from the operator's SMTP host (audit1 M-2). Both auth maps hard-capped at 16,384 entries with lockout-preserving saturation; lock keys SHA-256-digested; login rejects emails over `auth.MaxEmailLen` (254 B) up front (audit2 finding 1) |
+| Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded; **global sign-up budget** `auth.max_signups_per_hour` (default 5, -1 = off) applies only in `registration: open` — the per-IP register bucket is worthless to a proxy pool, and with `email.enabled` every flood account is a mail from the operator's SMTP host (audit1 M-2). Both auth maps hard-capped at 16,384 entries with lockout-preserving saturation; lock keys SHA-256-digested; login rejects emails over `auth.MaxEmailLen` (254 B) up front (audit2 finding 1) |
 | Password hashing | **global gate** (`limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
 | Upload capacity | `limits.concurrent_uploads` (default 8) gates in-flight uploads server-wide — full ⇒ instant `429 server_busy` + `Retry-After`, bounding temp bytes to N × `max_file_size` regardless of the request bucket. The quota decision itself is **atomic**: fresh usage re-read and rename under one mutex, so concurrent uploads can never share a stale "used" figure (audit finding 5). The whole upload request is capped by `http.MaxBytesReader` at `max_file_size` + 64 KiB framing allowance, part count at 64: ignored multipart fields and no-file bodies can no longer drain unboundedly past both body limits (audit finding 6) |
 | Runaway script | a 1 s **storage watchdog** wraps every `code_run`: user bytes past `user_quota`, or the host past the 5 % free-space floor, cancels the run context — the runner kills the whole jail (process-group SIGKILL, §9.9). Partial output stays on disk; the over-quota user is blocked by the ordinary pre-checks until cleanup. Overrun per run ≈ one poll interval of writing, itself capped by the jail's memory budget (§9.9), versus unbounded before (audit finding 5). Sub-second runs cannot slip past: every run ends with a **final weigh-in** that reports an overrun truthfully, and staging sizes are pre-checked under the shared quota lock so the copies gabkeep makes can never overrun (audit2 finding 3) |
