@@ -131,6 +131,15 @@ and installs a systemd unit. It does not enable or start the service. Edit
 expansion, for example `GABKEEP_SEARCH_API_KEY=...` (mode 0640,
 root:gabkeep).
 
+Password reset & email confirmation are optional and off by default. To turn
+them on, set `email.enabled: true` in `/etc/gabkeep/config.yaml`, point
+`email.base_url` at the URL your users see, and put the SMTP password in
+`/etc/gabkeep/env` as `GABKEEP_SMTP_PASSWORD` (the shipped config references
+it through `${ENV}` — nothing else to change). `-check-config` below then also
+dials the mail server; that probe warns but never fails, so a mail outage
+cannot block restarts. See the README section "Password reset & email
+confirmation" for relay options including unauthenticated LAN relays.
+
 TLS: OFF by default — gabkeep starts on plain HTTP bound to loopback, which
 is acceptable on a private network only. To serve HTTPS with certbot
 certificates, un-comment the `ExecStartPre` staging line in the unit

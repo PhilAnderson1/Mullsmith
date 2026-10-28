@@ -59,7 +59,7 @@ gabkeep -config /path/to/config.yaml
 |---|---|
 | `-config <path>` | Path to YAML config file. **Required.** Program exits with a clear error if missing or invalid. |
 | `-version` | Print version, commit, build date; exit. |
-| `-check-config` | Load and validate config (connectivity to DB dir, scratchpad writability, LLM endpoint reachability); print report; exit non-zero on failure. |
+| `-check-config` | Load and validate config (connectivity to DB dir, scratchpad writability, LLM endpoint reachability); print report; exit non-zero on failure. With `email.enabled` also dials the SMTP server and reports the result — warn-only, never counts toward the exit code (§9.17). |
 
 Subcommand for administration (no email dependency):
 
@@ -172,6 +172,20 @@ auth:
   remember_absolute_ttl: 2160h    # ...but force re-auth after 90 days regardless
   argon2: { time: 1, memory: 65536, threads: 4 }   # pass parameters if needed
   max_failed_logins: 10           # per account per 15 min, then lockout 15 min
+
+email:                            # password reset + email confirmation (§5.1, §9.17)
+  enabled: false                  # master switch; turning it on later never touches
+                                  # existing accounts (no retroactive confirming)
+  base_url: ""                    # absolute origin for links in mails — REQUIRED when
+                                  # enabled; never taken from request headers (§9.17)
+  smtp:
+    host: ""                      # submission server hostname or address
+    port: 587                     # 587 = STARTTLS, 465 = implicit TLS
+    authenticated_smtp: true      # AUTH LOGIN (only over TLS); false = unauthenticated
+                                  # send through a trusted LAN relay
+    username: ""
+    password: "${GABKEEP_SMTP_PASSWORD:-}"   # secret in the EnvironmentFile (§9.12)
+    from: "gabkeep@localhost"     # envelope sender + From header
 
 logging:
   level: info                     # debug | info | warn | error
@@ -320,12 +334,17 @@ with no internals leaked (§9.12).
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). 409 on duplicate email. Respects `registration` mode. |
-| POST | `/api/v1/auth/login` | `{email, password, remember_me}` → sets session cookie; `remember_me` (from the login checkbox) selects persistent vs browser-session cookie (§9.1). Rate limited + lockout. |
+| POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). 409 on duplicate email. Respects `registration` mode. With `email.enabled` (§9.17): the address waits in `unconfirmed_email`, the row is `disabled`, no session cookie, and the answer is `201 {email, email_confirmation_required}` + a confirmation mail. |
+| POST | `/api/v1/auth/login` | `{email, password, remember_me}` → sets session cookie; `remember_me` (from the login checkbox) selects persistent vs browser-session cookie (§9.1). Rate limited + lockout. Never matches a pending (unconfirmed) account. |
 | POST | `/api/v1/auth/logout` | Destroys session. |
-| GET  | `/api/v1/auth/me` | `{id, email, name, created_at, default_system_prompt, quota: {used_bytes, total_bytes}}` |
-| PATCH | `/api/v1/auth/me` | Settings page: any subset of `{name, email, default_system_prompt}`; email rules mirror registration; taken email → 409. |
+| GET  | `/api/v1/auth/me` | `{id, email, unconfirmed_email, name, created_at, default_system_prompt, quota: {used_bytes, total_bytes}}` |
+| PATCH | `/api/v1/auth/me` | Settings page: any subset of `{name, email, default_system_prompt}`; email rules mirror registration; taken email → 409. With `email.enabled` a changed address is never written directly: it becomes `unconfirmed_email` + a bound confirm mail (old mailbox gets a notice); the confirmed address keeps working until the click (§9.17). |
 | POST | `/api/v1/auth/password` | `{current, new}` change password; revokes other sessions. |
+| POST | `/api/v1/auth/forgot-password` | `{email}` — public, `email.enabled` only (404 otherwise). Mails a one-shot reset link (30 min) to a confirmed, active account. Answers one byte-identical generic 200 for every outcome (§9.17). Rate limited per IP and per address. |
+| POST | `/api/v1/auth/reset-password` | `{token, password}` — public. Policy checked before the token burns; sets the new hash, activates, revokes every session, consumes the token in one transaction. Dead links (any flavour) → one generic 400 `invalid_token`. |
+| POST | `/api/v1/auth/confirm-email` | `{token}` — public. The one copy `unconfirmed_email` → `email`, flips a pending sign-up to `active`. Address re-pointed / token spent → 400; claimed by someone else in the meantime → 409 `email_taken`. |
+| POST | `/api/v1/auth/resend-confirm` | `{email}` — public. Re-mails a never-confirmed sign-up (old link dies, 24 h window is not extended). Same generic-200 answer as forgot-password. |
+| POST | `/api/v1/auth/me/cancel-email` | Authenticated. Clears a pending address change (`unconfirmed_email` → null, confirm tokens deleted). Returns the fresh `me` payload. |
 
 Password policy: ≥ 10 characters, checked against a small embedded common-password list.
 
@@ -365,7 +384,8 @@ the chip behind as a historical record whose download 404s (by design).
 ### 5.4 Misc
 
 `GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
-`registration` mode, `remember_login`/`show_reasoning` flags, message char limit, tools
+`registration` mode, `remember_login`/`show_reasoning` flags, `email_features`
+(§9.17), message char limit, tools
 map — `web_search`/`web_fetch`/`code_run` — and file caps: max size, max attachments,
 `blocked_extensions` — used by the login/register screens, composer and upload UI),
 everything else behind auth.
@@ -944,7 +964,7 @@ mitigations are structural, not vibes:
 | A04 Insecure Design | §1.1 principles; approval gates §6.1/§9.13; opt-in code exec §9.9; invite-only option §8 |
 | A05 Security Misconfiguration | strict config validation §2.2/§9.3; secure headers by default §9.8; startup warnings §9.10; no debug endpoints §9.2 |
 | A06 Vulnerable & Outdated Components | §9.15 (govulncheck gate, pinned deps, zero third-party JS, shipped licence set) |
-| A07 Identification & Authentication Failures | §9.1 (lockout, fixation, enumeration, timing), §9.11 (throttles), §8 (invite mode) |
+| A07 Identification & Authentication Failures | §9.1 (lockout, fixation, enumeration, timing), §9.11 (throttles), §8 (invite mode), §9.17 (reset/confirm tokens, mailbox-verification doctrine) |
 | A08 Software & Data Integrity Failures | §9.15 (checksums, no auto-update), §9.3 (strict YAML/JSON), §9.9 (allowlisted runtimes only) |
 | A09 Security Logging & Monitoring Failures | §9.14 |
 | A10 Server-Side Request Forgery | §9.6 |
@@ -952,6 +972,42 @@ mitigations are structural, not vibes:
 Not in the Top 10 but explicitly covered here: clickjacking & caching (§9.8), open
 redirect (§9.2), DoS/resource exhaustion (§9.11), MIME confusion & upload serving (§9.4),
 session management (§9.1), and LLM prompt injection/exfiltration (§9.13).
+
+### 9.17 Email delivery (password reset & address confirmation)
+
+The `email:` switch (§2.2) adds outbound mail — the only channel where gabkeep
+initiates a connection carrying credentials. Doctrine:
+
+- **No enumeration.** `forgot-password` and `resend-confirm` answer one
+  byte-identical generic 200 for every outcome (found, unknown, disabled,
+  mail-queue-full), and their per-address rate buckets are consumed for every
+  *syntactically valid* address whether or not an account exists — bucket state
+  must not be an oracle either (§9.1 doctrine extended to mail). Dead links of
+  any flavour (absent, expired, used, re-pointed, cancelled) collapse to a
+  single generic 400. Post-existence errors never surface as 500 — that would
+  itself be an existence oracle.
+- **Tokens**: minted with `crypto/rand`, stored only as SHA-256 hashes in
+  `auth_tokens`, one-shot consumption, bound to the address they were minted
+  for (constant-time compared against the pending target), reissue of a kind
+  invalidates the prior unconsumed token. TTLs: 30 min reset, 24 h confirm.
+  Completing a reset also revokes every session of the account.
+- **Pending sign-ups own nothing**: the address lives in `unconfirmed_email`
+  with `email IS NULL` and `status = 'disabled'`, invisible to login,
+  forgot-password and every address-keyed lookup; older than 24 h the row is
+  swept away hourly (admin CLI `list-users` names them, `delete-user` by id).
+- **Transport**: SMTP AUTH only ever after STARTTLS or over implicit TLS (465);
+  authenticated send on bare port 25 is a config error, and the client refuses
+  cleartext AUTH even if coaxed. Addresses and subjects are CRLF-injection
+  checked. `base_url` for links comes exclusively from the config — never from
+  `Host`/`Forwarded` headers, so a spoofed host cannot inject an attacker
+  domain into a reset link.
+- **Mail is best-effort**: sends run on an async outbox (retries, then drop
+  with a log line); a mail problem never blocks or fails an API request.
+  `-check-config` probes SMTP reachability warn-only — a transient relay blip
+  must not gate the standard deploy pattern.
+- **Enabling later is safe**: turning `email.enabled` on never rewrites or
+  retroactively confirms existing accounts; the features-off sign-up path keeps
+  writing `email` directly, byte-for-byte unchanged.
 
 ---
 

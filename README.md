@@ -9,6 +9,9 @@ of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
   UI (vanilla ES modules embedded via `go:embed`), pure-Go SQLite.
 * **Accounts** — email + password (argon2id), sessions with an optional
   "Stay logged in" cookie, invite-only or closed registration, login lockout.
+  Optionally (off by default): "Forgot password?" links and
+  confirm-before-login sign-ups over your own SMTP relay
+  ([details](#password-reset--email-confirmation)).
 * **Streaming chat** — SSE token streaming, stop/regenerate, markdown answers,
   dark/light theme, responsive from 320 px phones to ultrawide.
 * **Vision** — with `llm.vision: true`, images you attach to a message
@@ -112,12 +115,63 @@ gabkeep -config CFG -check-config            validate config + probe LLM endpoin
 gabkeep -version                             version/commit/build date
 gabkeep -config CFG admin invite [n]         mint invite codes (invite-only mode)
 gabkeep -config CFG admin create-user -email E -name N -password P
-gabkeep -config CFG admin reset-password <email>   (prompts; revokes all sessions)
+gabkeep -config CFG admin reset-password <email>   (prompts, or mails a reset
+                                             link when email.enabled; revokes all sessions)
+gabkeep -config CFG admin list-users         every account incl. pending sign-ups
+gabkeep -config CFG admin delete-user <id-or-email>
 ```
 
 Relative paths in the config resolve against the config file's directory, so
 the binary can run from anywhere. `${VAR}` / `${VAR:-default}` expansion keeps
 secrets out of the YAML.
+
+## Password reset & email confirmation
+
+Off by default. Turning `email.enabled: true` on switches on two user-facing
+flows, each reachable only through links sent to a mailbox you control:
+
+* **"Forgot password?"** on the login page — a one-shot link (30 min) sets a
+  new password and signs every device out. Only accounts with a *confirmed*
+  address can use it.
+* **Confirm before login** for new sign-ups — the account stays pending
+  (invisible to login) until the 24 h confirmation link is clicked; the login
+  page offers a resend, and pending sign-ups expire automatically after a day.
+
+An address change in Settings follows the same rule: the new address waits
+for its own confirm click (the old mailbox is notified), and cancelling is
+one click. Turning the switch on later never touches existing accounts —
+nothing is backfilled, nobody is retroactively un-confirmed.
+
+You need an SMTP submission server; the password belongs in the service's
+`EnvironmentFile` (`GABKEEP_SMTP_PASSWORD`), not in the YAML. Any server
+speaking STARTTLS on 587 or implicit TLS on 465 works — for Gmail, an app
+password plus `smtp.gmail.com:587`. A LAN relay that doesn't accept logins
+(most local `postfix`/`ssmtp` setups) is just as valid:
+
+```yaml
+email:
+  enabled: true
+  base_url: "https://gabkeep.example:3210"   # where users reach you — links
+                                             # are built from this, never from
+                                             # request headers
+  smtp:
+    host: "192.168.0.10"
+    port: 25
+    authenticated_smtp: false   # unauthenticated send through a trusted relay;
+                                # AUTH is never sent over a cleartext connection
+    from: "gabkeep@example.org"
+```
+
+`-check-config` dials the relay when the feature is on — a failure warns but
+never fails the check, so a mail outage can't block restarts. If a user is
+locked out anyway, `admin reset-password <email>` mails a real reset link
+when the feature is enabled (or prompts for a password directly, which works
+with mail down). Pending sign-ups have no email column to match — list them
+with `admin list-users` and name them by id to `admin delete-user`.
+
+Mail is best-effort: sends are queued and retried asynchronously, and a mail
+problem never turns into a failed request. See spec §9.17 for the full
+security doctrine (no-enumeration answers, hashed one-shot tokens).
 
 ## Backups
 
