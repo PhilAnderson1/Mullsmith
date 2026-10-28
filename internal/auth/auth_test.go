@@ -67,6 +67,29 @@ func TestValidEmail(t *testing.T) {
 	}
 }
 
+// --- audit1 L-3: canonical form, not just a verdict ----------------------
+
+func TestNormalizeEmail(t *testing.T) {
+	for in, want := range map[string]string{
+		"a@b.co":                            "a@b.co",
+		"Phil@Example.COM":                  "phil@example.com",               // domain AND local fold
+		"PayPal Support <PHil@ExAmPlE.COM>": "phil@example.com",               // display-name junk stripped
+		"first.last+tag@sub.example.com":    "first.last+tag@sub.example.com", // +detail survives
+	} {
+		got, ok := NormalizeEmail(in)
+		if !ok || got != want {
+			t.Errorf("NormalizeEmail(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	// Same verdict table as ValidEmail — and the variants above now prove
+	// the round trip: valid AND already canonical.
+	for _, bad := range []string{"", "no-at", "a@b", "a@b.", "a b@c.de", "@b.co", strings.Repeat("x", 300) + "@b.co"} {
+		if got, ok := NormalizeEmail(bad); ok {
+			t.Errorf("should be invalid: %q -> %q", bad, got)
+		}
+	}
+}
+
 func TestSessionTokens(t *testing.T) {
 	raw, hash, err := NewSessionToken()
 	if err != nil {

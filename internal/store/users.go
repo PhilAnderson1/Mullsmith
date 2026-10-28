@@ -290,10 +290,13 @@ func (d *DB) SetUnconfirmedEmail(ctx context.Context, userID, email string, now 
 // it must match neither any confirmed email nor any pending unconfirmed
 // one. Without the second column a typo'd pending sign-up's address could
 // be registered by someone else, stranding both parties (plan §3).
+// Comparisons are plain binary: every stored address and every caller
+// passes auth.NormalizeEmail's canonical form, so NOCASE collation would
+// only paper over callers that skip it (audit1 L-3).
 func (d *DB) EmailAvailable(ctx context.Context, email string) (bool, error) {
 	var one int
 	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT 1 FROM users WHERE email = ? OR unconfirmed_email = ? COLLATE NOCASE LIMIT 1`,
+		`SELECT 1 FROM users WHERE email = ? OR unconfirmed_email = ? LIMIT 1`,
 		email, email).Scan(&one)
 	switch {
 	case errors.Is(err, ErrNoRows):
@@ -309,9 +312,10 @@ func (d *DB) EmailAvailable(ctx context.Context, email string) (bool, error) {
 // email), which is all resend-confirm may match. Active accounts
 // mid-Settings-change are deliberately NOT matched: that flow lives behind
 // an authenticated session, where a second PATCH re-points the target.
+// Binary comparison per the normalization doctrine above (audit1 L-3).
 func (d *DB) UserByPendingEmail(ctx context.Context, email string) (*User, error) {
 	return scanUser(d.sqlDB.QueryRowContext(ctx,
 		`SELECT `+userCols+` FROM users
-		 WHERE email IS NULL AND status = 'disabled' AND unconfirmed_email = ? COLLATE NOCASE`,
+		 WHERE email IS NULL AND status = 'disabled' AND unconfirmed_email = ?`,
 		email))
 }

@@ -530,7 +530,8 @@ output is data, never instructions; approval gates bound the blast radius).
 ## 8. Account lifecycle & scratchpad provisioning
 
 **Register** (single transaction + filesystem step):
-1. Validate email format, uniqueness, password policy. With `registration: open` the
+1. Validate email format, uniqueness, password policy. The address is stored in
+   canonical form (`auth.NormalizeEmail`, §9.17). With `registration: open` the
    global creation budget `auth.max_signups_per_hour` is consumed here — after all
    pre-flights, before the hash, so one unit spent equals one row actually created
    (absent = 5/hour, -1 disables; see §9.11, audit1 M-2).
@@ -1052,6 +1053,19 @@ session management (§9.1), and LLM prompt injection/exfiltration (§9.13).
 The `email:` switch (§2.2) adds outbound mail — the only channel where gabkeep
 initiates a connection carrying credentials. Doctrine:
 
+- **Canonical addresses.** Every email write and every address-keyed lookup —
+  register, login, forgot/resend, profile change, admin CLI — passes
+  `auth.NormalizeEmail` (`mail.ParseAddress` → bare addr-spec, lowercased;
+  input capped at 254 bytes before parsing). One mailbox is therefore one
+  account however spelled: `PayPal Support <A@B.COM>` and `a@b.com` are the
+  same row, and the login-lockout key cannot be split by variant (audit1
+  L-3). Local-part case folds too — RFC-legal but ignored by every real
+  provider, and case-split accounts are the bypass being closed. `+detail`
+  tags are NOT folded: plus-aliasing is deliberate mailbox separation.
+  With canonical writes, column comparisons are plain binary (the stray
+  `COLLATE NOCASE` guards are gone). Login never reveals parseability: an
+  unparseable string matches no row and answers exactly like an unknown
+  address (§9.1 equal-cost paths).
 - **No enumeration.** `forgot-password` and `resend-confirm` answer one
   byte-identical generic 200 for every outcome (found, unknown, disabled,
   mail-queue-full), and their per-address rate buckets are consumed for every

@@ -54,22 +54,46 @@ func isCommon(lowered string) bool { return commonList[lowered] }
 // account-lock keys).
 const MaxEmailLen = 254
 
-// ValidEmail does a pragmatic address check (syntax + domain dot + length).
-func ValidEmail(email string) bool {
-	if len(email) > MaxEmailLen {
-		return false
+// NormalizeEmail parses an address and returns its canonical form: the
+// bare addr-spec with display names and comments stripped, lowercased
+// (audit1 L-3 — previously ValidEmail checked addr.Address but callers
+// stored the raw string, so "PayPal Support <a@b.com>" and "A@B.COM"
+// became separate accounts for one mailbox). Doctrine:
+//
+//   - every email WRITE and every email LOOKUP passes through here;
+//     equality is plain binary once both sides are canonical (audit1 L-3);
+//   - case is folded in the local part too. RFC 5321 says it MAY be
+//     significant; every large provider ignores it, and case-split
+//     accounts are the very bypass being closed;
+//   - "+detail" tags are NOT folded: people who plus-alias use them
+//     deliberately as distinct mailboxes;
+//   - input longer than MaxEmailLen is refused BEFORE parsing, so the
+//     parser never eats attacker-sized strings (audit2 finding 1).
+//
+// Valid things that are NOT already canonical (display names, capitals)
+// normalize instead of failing; genuinely broken input reports ok=false.
+func NormalizeEmail(raw string) (string, bool) {
+	if len(raw) > MaxEmailLen {
+		return "", false
 	}
-	addr, err := mail.ParseAddress(email)
+	addr, err := mail.ParseAddress(raw)
 	if err != nil {
-		return false
+		return "", false
 	}
-	at := strings.LastIndex(addr.Address, "@")
+	norm := strings.ToLower(addr.Address)
+	at := strings.LastIndex(norm, "@")
 	if at < 0 {
-		return false
+		return "", false
 	}
-	domain := addr.Address[at+1:]
+	domain := norm[at+1:]
 	if !strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
-		return false
+		return "", false
 	}
-	return true
+	return norm, true
+}
+
+// ValidEmail is the verdict-only form of NormalizeEmail.
+func ValidEmail(raw string) bool {
+	_, ok := NormalizeEmail(raw)
+	return ok
 }

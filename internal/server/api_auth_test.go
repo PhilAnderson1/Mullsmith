@@ -187,6 +187,57 @@ func TestCSRFTokenRotatesAtAuthTransitions(t *testing.T) {
 	}
 }
 
+// --- audit1 L-3: one mailbox, one account, however spelled ----------------
+
+func TestEmailNormalizedAtBoundary(t *testing.T) {
+	a := newAuthTest(t, authCfg(t))
+	a.invite("gk-code-1")
+	resp := a.register("PayPal Support <PHil@ExAmPlE.COM>", "uncommon-password-9", false)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register with display-name variant = %d, want 201", resp.StatusCode)
+	}
+	u, err := a.db.UserByEmail(context.Background(), "phil@example.com")
+	if err != nil || u == nil {
+		t.Fatalf("no row under the canonical phil@example.com (err=%v)", err)
+	}
+	if u.Email != "phil@example.com" {
+		t.Errorf("stored email = %q, want canonical form", u.Email)
+	}
+
+	// One mailbox, one account: the plain spelling now hits the duplicate
+	// pre-flight that used to be blind to the variant.
+	a.invite("gk-code-2")
+	resp = a.do(http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email": "phil@example.com", "name": "Second", "password": "uncommon-password-9",
+		"invite": "gk-code-2",
+	})
+	if resp.StatusCode != http.StatusConflict || apiErrCode(t, resp) != "duplicate_email" {
+		t.Errorf("plain re-register of a variant-registered mailbox = %d, want 409", resp.StatusCode)
+	}
+
+	// Login reaches the account through any valid spelling.
+	resp = a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email": "PHIL@EXAMPLE.COM", "password": "uncommon-password-9",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("uppercase login = %d, want 200", resp.StatusCode)
+	}
+
+	// "+detail" is deliberately NOT folded — plus-aliasing is separation
+	// by intent, and folding it would merge distinct mailboxes.
+	a.invite("gk-code-3")
+	resp = a.do(http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email": "phil+news@example.com", "name": "Plus", "password": "uncommon-password-9",
+		"invite": "gk-code-3",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("plus-tag address = %d, want 201 (distinct mailbox by design)", resp.StatusCode)
+	}
+}
+
 func sessionCookieFrom(t *testing.T, resp *http.Response) *http.Cookie {
 	t.Helper()
 	for _, c := range resp.Cookies() {

@@ -103,10 +103,12 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "email is too long")
 		return
 	}
-	if !auth.ValidEmail(email) {
+	norm, ok := auth.NormalizeEmail(email)
+	if !ok {
 		mailQueued(w)
 		return
 	}
+	email = norm // lookups and limiter keys use the canonical form (L-3)
 	// Per-email bucket consumed for EVERY valid address, existing or not:
 	// were it touched only for real accounts, a rotated-IP attacker could
 	// read existence off the 4th request's 429.
@@ -265,10 +267,12 @@ func (s *Server) handleResendConfirm(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "email is too long")
 		return
 	}
-	if !auth.ValidEmail(email) {
+	norm, ok := auth.NormalizeEmail(email)
+	if !ok {
 		mailQueued(w)
 		return
 	}
+	email = norm // canonical form for the lookup and limiter key (L-3)
 	if !s.limiter.Allow("resendmail:"+email, 3, time.Hour) {
 		w.Header().Set("Retry-After", "3600")
 		writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited", "too many attempts, try later")

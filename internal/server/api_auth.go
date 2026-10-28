@@ -135,9 +135,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	email := strings.ToLower(strings.TrimSpace(body.Email))
+	email, ok := auth.NormalizeEmail(body.Email)
 	name := strings.TrimSpace(body.Name)
-	if !auth.ValidEmail(email) {
+	if !ok {
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_email", "invalid email address")
 		return
 	}
@@ -301,12 +301,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Length gate BEFORE the lock check, DB lookup, hashing and lock-key
 	// construction: the retained lock key is built from this string, and
 	// unbounded inputs accumulated attacker-sized entries in the lockout
-	// map (audit2 finding 1). Length only, not full ValidEmail — a syntax
-	// verdict here would be an "is-that-an-address" oracle beside the
-	// §9.1 equal-cost failure paths.
+	// map (audit2 finding 1). Length only at this stage — a syntax verdict
+	// here would be an "is-that-an-address" oracle beside the §9.1
+	// equal-cost failure paths.
 	if len(email) > auth.MaxEmailLen {
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "email is too long")
 		return
+	}
+	// Canonicalize for the lookup (audit1 L-3): stored addresses are
+	// normalized, so a variant spelling must find the same row AND feed the
+	// same "acct:" lockout key. An unparseable string keeps its raw form:
+	// no stored row can match it (rows are always normalized), so it
+	// answers exactly like an unknown address — no oracle, and the lock key
+	// stays length-capped by the gate above.
+	if norm, normOK := auth.NormalizeEmail(email); normOK {
+		email = norm
 	}
 	lockKey := "acct:" + email
 
@@ -428,11 +437,12 @@ func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Email != nil {
-		email = strings.ToLower(strings.TrimSpace(*body.Email))
-		if !auth.ValidEmail(email) {
+		norm, ok := auth.NormalizeEmail(*body.Email)
+		if !ok {
 			writeAPIError(w, r, http.StatusBadRequest, "invalid_email", "invalid email address")
 			return
 		}
+		email = norm
 	}
 	if body.DefaultSystemPrompt != nil {
 		prompt = strings.TrimSpace(*body.DefaultSystemPrompt)

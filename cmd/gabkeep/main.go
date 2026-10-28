@@ -333,7 +333,8 @@ func adminCreateUser(ctx context.Context, cfg *config.Config, db *store.DB, args
 		fmt.Fprintln(os.Stderr, "usage: admin create-user -email E -name N -password P")
 		return 2
 	}
-	if !auth.ValidEmail(*email) {
+	emailNorm, ok := auth.NormalizeEmail(*email)
+	if !ok {
 		fmt.Fprintln(os.Stderr, "gabkeep: invalid email address")
 		return 1
 	}
@@ -349,7 +350,7 @@ func adminCreateUser(ctx context.Context, cfg *config.Config, db *store.DB, args
 	now := time.Now()
 	u := &store.User{
 		ID:           id.New(),
-		Email:        strings.ToLower(*email),
+		Email:        emailNorm, // canonical form, like every other write (L-3)
 		Name:         *name,
 		PasswordHash: hash,
 		Status:       "active",
@@ -393,7 +394,12 @@ func adminResetPassword(ctx context.Context, cfg *config.Config, db *store.DB, a
 		fmt.Fprintln(os.Stderr, "usage: admin reset-password <email> [-password P]")
 		return 2
 	}
-	u, err := db.UserByEmail(ctx, strings.ToLower(rest[0]))
+	lookup, ok := auth.NormalizeEmail(rest[0])
+	if !ok {
+		fmt.Fprintln(os.Stderr, "gabkeep: invalid email address")
+		return 1
+	}
+	u, err := db.UserByEmail(ctx, lookup)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gabkeep:", err)
 		return 1
@@ -528,10 +534,14 @@ func adminDeleteUser(ctx context.Context, db *store.DB, out io.Writer, args []st
 		return 1
 	}
 	if u == nil && strings.Contains(target, "@") {
-		u, err = db.UserByEmail(ctx, strings.ToLower(target))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "gabkeep:", err)
-			return 1
+		// Canonical form, or no match is possible (L-3); an unparseable
+		// target simply keeps the "not found" answer below.
+		if lookup, ok := auth.NormalizeEmail(target); ok {
+			u, err = db.UserByEmail(ctx, lookup)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "gabkeep:", err)
+				return 1
+			}
 		}
 	}
 	if u == nil {

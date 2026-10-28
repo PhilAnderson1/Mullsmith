@@ -323,7 +323,8 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 	if err != nil || !avail {
 		t.Fatalf("free address reported taken (avail=%v err=%v)", avail, err)
 	}
-	taken := mkUser("Taken@X.io") // handler stores lowercased; NOCASE guards anyway
+	taken := mkUser("taken@x.io") // writes are canonical (auth.NormalizeEmail);
+	// the store compares exactly — case folding is the caller's job now (audit1 L-3)
 	if err := db.CreateUser(ctx, taken); err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +332,7 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 		t.Error("confirmed email must not be available")
 	}
 	pend := mkUser("")
-	pend.UnconfirmedEmail, pend.Status = "pend@X.io", "disabled"
+	pend.UnconfirmedEmail, pend.Status = "pend@x.io", "disabled"
 	if err := db.CreateUser(ctx, pend); err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +342,7 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 
 	// --- token expiry sweep ---
 	soon, _ := db.CreateToken(ctx, TokenResetPassword, taken.ID, "taken@x.io", now.Add(time.Minute))
-	if _, err := db.CreateToken(ctx, TokenConfirmEmail, pend.ID, "pend@X.io", now.Add(time.Hour)); err != nil {
+	if _, err := db.CreateToken(ctx, TokenConfirmEmail, pend.ID, "pend@x.io", now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	_ = soon
