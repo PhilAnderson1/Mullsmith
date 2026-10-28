@@ -102,6 +102,9 @@ tools:
 
 auth:
   registration: invite-only       # open | invite-only | closed (admin CLI users)
+  max_signups_per_hour: 5         # global cap, enforced only when registration
+                                  # is open (per-IP limits don't stop a proxy
+                                  # pool); 0 disables it — fine on a LAN
   remember_login: true            # shows the "Stay logged in" checkbox
   session_ttl: 24h
   remember_ttl: 720h              # with the checkbox ticked

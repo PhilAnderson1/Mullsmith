@@ -253,7 +253,28 @@ type Auth struct {
 	RememberTTL         Duration `yaml:"remember_ttl"`
 	RememberAbsoluteTTL Duration `yaml:"remember_absolute_ttl"`
 	MaxFailedLogins     int      `yaml:"max_failed_logins"`
-	Argon2              Argon2   `yaml:"argon2"`
+	// MaxSignupsPerHour is the GLOBAL account-creation budget, enforced only
+	// in registration: open (audit1 M-2 — per-IP buckets are worthless to a
+	// proxy pool, and with email on each flood request is a mail sent from
+	// the operator's SMTP host). A pointer because absent ≠ 0: absent means
+	// the default (5/hour), an explicit 0 disables the limit — sensible for
+	// LAN-only operators. Invite-only needs no budget: the codes are it.
+	MaxSignupsPerHour *int   `yaml:"max_signups_per_hour"`
+	Argon2            Argon2 `yaml:"argon2"`
+}
+
+// defaultMaxSignupsPerHour is the global creation budget applied when
+// max_signups_per_hour is absent from the config file.
+const defaultMaxSignupsPerHour = 5
+
+// SignupsPerHour resolves the global open-mode creation budget: absent means
+// the default of 5/hour, an explicit 0 means unlimited. Reads through the
+// pointer so struct-literal configs (tests) behave like Load'ed ones.
+func (a Auth) SignupsPerHour() int {
+	if a.MaxSignupsPerHour == nil {
+		return defaultMaxSignupsPerHour
+	}
+	return *a.MaxSignupsPerHour
 }
 
 type Argon2 struct {
@@ -563,6 +584,10 @@ func (c *Config) setDefaults() {
 	if c.Auth.Registration == "" {
 		c.Auth.Registration = "invite-only"
 	}
+	if c.Auth.MaxSignupsPerHour == nil {
+		v := defaultMaxSignupsPerHour
+		c.Auth.MaxSignupsPerHour = &v // explicit 0 = unlimited, kept as-is
+	}
 	if c.Auth.SessionTTL == 0 {
 		c.Auth.SessionTTL = Duration(24 * time.Hour)
 	}
@@ -758,6 +783,9 @@ func (c *Config) Validate() error {
 	case "open", "invite-only", "closed":
 	default:
 		f.bad("auth.registration: must be open, invite-only or closed")
+	}
+	if c.Auth.MaxSignupsPerHour != nil && *c.Auth.MaxSignupsPerHour < 0 {
+		f.bad("auth.max_signups_per_hour: must be >= 0 (0 disables the limit)")
 	}
 	if c.Auth.SessionTTL <= 0 || c.Auth.RememberTTL <= 0 || c.Auth.RememberAbsoluteTTL <= 0 {
 		f.bad("auth: session TTLs must be > 0")

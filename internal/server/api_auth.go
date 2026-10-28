@@ -158,19 +158,38 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Availability pre-flight for the confirm flow (plan §5): with the
-	// feature on the address lands in unconfirmed_email, which carries no
-	// UNIQUE index — EmailAvailable's both-column check is the arbiter,
-	// mirroring the invite pre-flight's "don't burn a hash on a loser".
-	if s.cfg.Email.Enabled {
-		avail, err := s.store.EmailAvailable(r.Context(), email)
-		if err != nil {
-			s.logger.Error("email availability check failed", "error", err, "rid", RequestIDFrom(r.Context()))
-			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-			return
-		}
-		if !avail {
-			writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
+	// Availability pre-flight: with email on, the address lands in
+	// unconfirmed_email, which carries no UNIQUE index — EmailAvailable's
+	// both-column check is the arbiter (plan §5). It runs in both modes so
+	// the global budget below and the hash can never be spent on a request
+	// whose row is certain to lose to the duplicate constraint; the store's
+	// UNIQUE index stays the final arbiter for the racing-identical-email
+	// case either way.
+	avail, err := s.store.EmailAvailable(r.Context(), email)
+	if err != nil {
+		s.logger.Error("email availability check failed", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	if !avail {
+		writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
+		return
+	}
+
+	// Global creation budget (audit1 M-2), open mode only: the per-IP bucket
+	// above is worthless to a proxy pool, and every accepted request means a
+	// DB row plus — with email on — a confirmation mail from the operator's
+	// SMTP host. Consumed HERE, after every validation and pre-flight and
+	// before the hash: one unit spent equals one row actually created, so
+	// garbage or duplicate attempts cannot burn the budget and lock out
+	// legitimate sign-ups. Invite-only mode needs no budget — the codes are
+	// the budget. 0 disables the check.
+	if s.cfg.Auth.Registration == "open" {
+		if limit := s.cfg.Auth.SignupsPerHour(); limit > 0 &&
+			!s.limiter.Allow("signup:global", limit, time.Hour) {
+			s.logger.Warn("global sign-up budget exhausted", "limit", limit, "ip", ip)
+			writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited",
+				"sign-ups are temporarily rate limited, try again later")
 			return
 		}
 	}

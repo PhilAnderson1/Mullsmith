@@ -44,6 +44,10 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Auth.Argon2.Memory != 65536 {
 		t.Errorf("argon2 memory default = %d", cfg.Auth.Argon2.Memory)
 	}
+	// The global open-mode sign-up budget (audit1 M-2): absent means 5.
+	if got := cfg.Auth.SignupsPerHour(); got != 5 {
+		t.Errorf("max_signups_per_hour default = %d, want 5", got)
+	}
 	if cfg.Tools.Agent.Approval["code_run"] != "confirm" {
 		t.Errorf("code_run approval default = %q, want confirm", cfg.Tools.Agent.Approval["code_run"])
 	}
@@ -52,6 +56,32 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	}
 	if len(cfg.LLM.Models) != 1 || cfg.LLM.Models[0] != "test-model" {
 		t.Errorf("models default = %v", cfg.LLM.Models)
+	}
+}
+
+// The global open-mode sign-up budget distinguishes "absent" (default 5) from
+// an explicit 0 ("disable the limit" — the LAN operator's escape). That is
+// why the field is a pointer; this test pins the three-way semantics.
+func TestLoadMaxSignupsPerHour(t *testing.T) {
+	cfg, err := Load(writeCfg(t, minimalYAML+"auth:\n  max_signups_per_hour: 0\n"))
+	if err != nil {
+		t.Fatalf("Load(0): %v", err)
+	}
+	if got := cfg.Auth.SignupsPerHour(); got != 0 {
+		t.Errorf("explicit 0: SignupsPerHour() = %d, want 0 (limit disabled)", got)
+	}
+
+	cfg, err = Load(writeCfg(t, minimalYAML+"auth:\n  max_signups_per_hour: 40\n"))
+	if err != nil {
+		t.Fatalf("Load(40): %v", err)
+	}
+	if got := cfg.Auth.SignupsPerHour(); got != 40 {
+		t.Errorf("explicit 40: SignupsPerHour() = %d, want 40", got)
+	}
+
+	_, err = Load(writeCfg(t, minimalYAML+"auth:\n  max_signups_per_hour: -1\n"))
+	if err == nil || !strings.Contains(err.Error(), "max_signups_per_hour") {
+		t.Errorf("negative budget: err = %v, want rejection naming the key", err)
 	}
 }
 

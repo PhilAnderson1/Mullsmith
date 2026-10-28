@@ -199,6 +199,90 @@ func TestRegisterClosed(t *testing.T) {
 	}
 }
 
+// Global creation budget, open mode only (audit1 M-2). Consumption sits after
+// every validation and pre-flight and before the hash, so one spent unit
+// equals one row actually attempted — garbage and duplicates bounce off the
+// bucket instead of burning it and locking out legitimate sign-ups.
+func TestOpenSignupGlobalBudget(t *testing.T) {
+	// registerOpen posts without an invite field — the shared register()
+	// helper always replays a code, which open mode would reject as unknown.
+	registerOpen := func(a *authTest, email, password string) *http.Response {
+		return a.do(http.MethodPost, "/api/v1/auth/register", map[string]any{
+			"email": email, "name": "Test User", "password": password,
+		})
+	}
+	t.Run("caps at the limit", func(t *testing.T) {
+		cfg := authCfg(t)
+		cfg.Auth.Registration = "open"
+		limit := 2
+		cfg.Auth.MaxSignupsPerHour = &limit
+		a := newAuthTest(t, cfg)
+
+		// A malformed attempt (weak password) is refused upstream of the
+		// bucket: the two slots below must still be intact.
+		if resp := registerOpen(a, "weak@b.io", "short9"); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("weak password: %d", resp.StatusCode)
+		}
+		if resp := registerOpen(a, "one@b.io", "uncommon-password-9"); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("signup 1: %d", resp.StatusCode)
+		}
+		if resp := registerOpen(a, "two@b.io", "another-passphrase-9"); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("signup 2: %d", resp.StatusCode)
+		}
+		// Budget spent: the third valid attempt is refused and creates no row.
+		resp := registerOpen(a, "three@b.io", "third-passphrase-9")
+		if resp.StatusCode != http.StatusTooManyRequests || apiErrCode(t, resp) != "rate_limited" {
+			t.Fatalf("over budget: %d", resp.StatusCode)
+		}
+		if users, err := a.db.ListUsers(context.Background()); err != nil || len(users) != 2 {
+			t.Errorf("users after refusal = %v, %v, want only the two sign-ups", users, err)
+		}
+		// The duplicate 409 is answered by the pre-flight before the bucket,
+		// so a taken address never consumes (or needs) budget: this stays a
+		// 409 even with the global bucket empty.
+		if resp := registerOpen(a, "one@b.io", "uncommon-password-9"); resp.StatusCode != http.StatusConflict ||
+			apiErrCode(t, resp) != "duplicate_email" {
+			t.Errorf("duplicate with empty budget: %d", resp.StatusCode)
+		}
+	})
+
+	// The regression this pins: explicit 0 must mean "no limit", not "zero
+	// sign-ups" — the absent-vs-zero distinction the pointer field exists for.
+	t.Run("zero disables the limit", func(t *testing.T) {
+		cfg := authCfg(t)
+		cfg.Auth.Registration = "open"
+		cfg.Auth.MaxSignupsPerHour = new(int) // explicit 0
+		a := newAuthTest(t, cfg)
+		for i, email := range []string{"u1@b.io", "u2@b.io", "u3@b.io"} {
+			if resp := registerOpen(a, email, fmt.Sprintf("passphrase-%d-x9z", i+1)); resp.StatusCode != http.StatusCreated {
+				t.Fatalf("signup %d with limit disabled: %d", i+1, resp.StatusCode)
+			}
+		}
+	})
+
+	// invite-only mode ignores the budget entirely — the codes are the
+	// budget there, and capping again would only punish operators minting
+	// invites at a normal pace.
+	t.Run("invite-only ignores budget", func(t *testing.T) {
+		cfg := authCfg(t) // invite-only
+		limit := 1
+		cfg.Auth.MaxSignupsPerHour = &limit
+		a := newAuthTest(t, cfg)
+		a.invite("gk-code-1") // register() replays exactly this code
+		a.invite("gk-code-2")
+		if resp := a.register("inv1@b.io", "uncommon-password-9", false); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("invite signup 1: %d", resp.StatusCode)
+		}
+		resp := a.do(http.MethodPost, "/api/v1/auth/register", map[string]any{
+			"email": "inv2@b.io", "name": "Second", "password": "another-passphrase-9",
+			"invite": "gk-code-2",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Errorf("invite signup 2 over budget=1: %d", resp.StatusCode)
+		}
+	})
+}
+
 func TestRegisterInvalidInvite(t *testing.T) {
 	a := newAuthTest(t, authCfg(t)) // no invite minted
 	resp := a.register("a@b.io", "uncommon-password-9", false)
