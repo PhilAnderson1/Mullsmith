@@ -288,3 +288,15 @@ func (d *DB) EmailAvailable(ctx context.Context, email string) (bool, error) {
 	}
 	return false, nil
 }
+
+// UserByPendingEmail finds a never-confirmed sign-up by its pending
+// address — exactly the pending invariant's shape (disabled + NULL
+// email), which is all resend-confirm may match. Active accounts
+// mid-Settings-change are deliberately NOT matched: that flow lives behind
+// an authenticated session, where a second PATCH re-points the target.
+func (d *DB) UserByPendingEmail(ctx context.Context, email string) (*User, error) {
+	return scanUser(d.sqlDB.QueryRowContext(ctx,
+		`SELECT `+userCols+` FROM users
+		 WHERE email IS NULL AND status = 'disabled' AND unconfirmed_email = ? COLLATE NOCASE`,
+		email))
+}

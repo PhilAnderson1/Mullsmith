@@ -11,6 +11,7 @@ import (
 
 	"gabkeep/internal/auth"
 	"gabkeep/internal/id"
+	"gabkeep/internal/mail"
 	"gabkeep/internal/scratch"
 	"gabkeep/internal/store"
 )
@@ -157,6 +158,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Availability pre-flight for the confirm flow (plan §5): with the
+	// feature on the address lands in unconfirmed_email, which carries no
+	// UNIQUE index — EmailAvailable's both-column check is the arbiter,
+	// mirroring the invite pre-flight's "don't burn a hash on a loser".
+	if s.cfg.Email.Enabled {
+		avail, err := s.store.EmailAvailable(r.Context(), email)
+		if err != nil {
+			s.logger.Error("email availability check failed", "error", err, "rid", RequestIDFrom(r.Context()))
+			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		if !avail {
+			writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
+			return
+		}
+	}
+
 	var hash string
 	if !s.hashRun(w, r, func() error {
 		var err error
@@ -169,12 +187,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	user := &store.User{
 		ID:           id.New(),
-		Email:        email,
 		Name:         name,
 		PasswordHash: hash,
-		Status:       "active",
 		CreatedAt:    now,
 		UpdatedAt:    now,
+	}
+	if s.cfg.Email.Enabled {
+		// Pending sign-up (plan §5): the address lives ONLY in
+		// unconfirmed_email until the confirm click; nothing
+		// credential-facing can see this account yet.
+		user.UnconfirmedEmail = email
+		user.Status = "disabled"
+	} else {
+		user.Email = email
+		user.Status = "active"
 	}
 	if err := s.store.Register(r.Context(), user, strings.TrimSpace(body.Invite)); err != nil {
 		switch {
@@ -195,6 +221,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("scratchpad provisioning failed", "error", err, "user", user.ID)
 		// best-effort rollback; M6 adds a periodic reconciler
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+
+	// Confirm-before-login (plan §5): mail goes out only after the row and
+	// its workspace exist; no session, no cookie — the account has proven
+	// nothing about its mailbox yet. A token-mint failure here is logged,
+	// not fatal: resend-confirm from the login screen is the escape hatch.
+	if s.cfg.Email.Enabled {
+		s.sendConfirmMail(r.Context(), user.ID, email)
+		s.logger.Info("user registered, confirmation pending", "user", user.ID, "ip", ip)
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"email":                       email, // echoed from the request
+			"email_confirmation_required": true,
+		})
 		return
 	}
 
@@ -310,6 +350,7 @@ func (s *Server) mePayload(user *store.User) map[string]any {
 	return map[string]any{
 		"id":                    user.ID,
 		"email":                 user.Email,
+		"unconfirmed_email":     user.UnconfirmedEmail, // "" = nothing pending
 		"name":                  user.Name,
 		"created_at":            user.CreatedAt.UTC().Format(time.RFC3339),
 		"default_system_prompt": user.DefaultSystemPrompt,
@@ -361,6 +402,35 @@ func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Email-change routing (plan §5). Features ON: a changed address never
+	// writes the email column — it becomes the pending target plus a bound
+	// confirm mail, and the OLD (confirmed) mailbox gets a courtesy notice,
+	// so a stolen cookie cannot quietly reroute the account. Features OFF:
+	// the direct write also clears any stale pending target a previous
+	// enabled run left behind.
+	pendingAddr := ""
+	if email != user.Email {
+		if s.cfg.Email.Enabled {
+			if !s.limiter.Allow("confirmset:"+ClientIP(r), 3, emailRateWindow) {
+				writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited", "too many attempts, try later")
+				return
+			}
+			avail, err := s.store.EmailAvailable(r.Context(), email)
+			if err != nil {
+				s.logger.Error("email availability check failed", "error", err, "rid", RequestIDFrom(r.Context()))
+				writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+				return
+			}
+			if !avail {
+				writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
+				return
+			}
+			pendingAddr = email
+			email = user.Email // the confirmed address is not moved until the click
+		}
+	}
+
 	if err := s.store.UpdateProfile(r.Context(), user.ID, name, email, prompt, time.Now()); err != nil {
 		if errors.Is(err, store.ErrUserExists) {
 			writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
@@ -370,12 +440,30 @@ func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
+	switch {
+	case pendingAddr != "":
+		if err := s.store.SetUnconfirmedEmail(r.Context(), user.ID, pendingAddr, time.Now()); err != nil {
+			s.logger.Error("pending email set failed", "error", err, "user", user.ID)
+			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		s.sendConfirmMail(r.Context(), user.ID, pendingAddr)
+		if user.Email != "" {
+			subject, msg := mail.AddressChangedMail()
+			s.mailer.Send(user.Email, subject, msg)
+		}
+	case email != user.Email: // features off, address rewritten directly
+		if err := s.store.SetUnconfirmedEmail(r.Context(), user.ID, "", time.Now()); err != nil {
+			s.logger.Warn("stale pending email clear failed", "error", err, "user", user.ID)
+		}
+	}
 	fresh, err := s.store.UserByID(r.Context(), user.ID)
 	if err != nil || fresh == nil {
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	s.logger.Info("profile updated", "user", user.ID, "email_changed", email != user.Email)
+	s.logger.Info("profile updated", "user", user.ID,
+		"email_changed", fresh.Email != user.Email, "email_pending", pendingAddr != "")
 	writeJSON(w, http.StatusOK, s.mePayload(fresh))
 }
 

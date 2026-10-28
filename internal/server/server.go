@@ -16,6 +16,7 @@ import (
 	"gabkeep/internal/auth"
 	"gabkeep/internal/config"
 	"gabkeep/internal/llm"
+	"gabkeep/internal/mail"
 	"gabkeep/internal/runner"
 	"gabkeep/internal/store"
 	"gabkeep/internal/tools"
@@ -46,6 +47,11 @@ type Server struct {
 	// the same bytes twice (audit finding 5, extended by audit2 finding 3).
 	uploadSem chan struct{}
 	commitMu  sync.Mutex
+	// mailer is the async SMTP outbox for confirmation/reset mail; nil
+	// when email.enabled is false. Every email handler gates on the config
+	// switch first, so the nil mailer is unreachable; sendConfirmMail and
+	// friends lean on Outbox.Send's nil-receiver safety anyway.
+	mailer *mail.Outbox
 }
 
 // hashQueue is how many callers may wait behind the hash gate before new
@@ -87,9 +93,9 @@ func buildUploadGate(cfg *config.Config) chan struct{} {
 
 // New builds the full handler chain. Middleware order (outermost first):
 // requestID → logRequests → recoverPanics → securityHeaders → csrfProtect →
-// bodyLimit → mux.
+// bodyLimit → mux. mailer may be nil (email features disabled).
 func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
-	code runner.Runner,
+	code runner.Runner, mailer *mail.Outbox,
 ) *Server {
 	s := &Server{
 		cfg:        cfg,
@@ -104,6 +110,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		hashGate:   buildHashGate(cfg),
 		uploadSem:  buildUploadGate(cfg),
 		indexHTML:  versionedIndex(appVer),
+		mailer:     mailer,
 	}
 	// Built after s so the tool layer shares commitMu: upload commits,
 	// fs_write, files_share copies and code_run staging make their quota
@@ -119,6 +126,13 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	mux.Handle("GET /api/v1/auth/me", s.authRequired(s.handleMe))
 	mux.Handle("PATCH /api/v1/auth/me", s.authRequired(s.handleMeUpdate))
 	mux.Handle("POST /api/v1/auth/password", s.authRequired(s.handleChangePassword))
+	// email_features routes (plan §5): always registered; the handlers 404
+	// while email.enabled is false.
+	mux.HandleFunc("POST /api/v1/auth/forgot-password", s.handleForgotPassword)
+	mux.HandleFunc("POST /api/v1/auth/reset-password", s.handleResetPassword)
+	mux.HandleFunc("POST /api/v1/auth/confirm-email", s.handleConfirmEmail)
+	mux.HandleFunc("POST /api/v1/auth/resend-confirm", s.handleResendConfirm)
+	mux.Handle("POST /api/v1/auth/me/cancel-email", s.authRequired(s.handleCancelEmail))
 	mux.Handle("GET /api/v1/conversations", s.authRequired(s.handleConversationsList))
 	mux.Handle("POST /api/v1/conversations", s.authRequired(s.handleConversationCreate))
 	mux.Handle("GET /api/v1/conversations/{id}", s.authRequired(s.handleConversationGet))
@@ -218,6 +232,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"default_model":  s.cfg.LLM.Model,
 		"registration":   s.cfg.Auth.Registration,
 		"remember_login": s.cfg.Auth.RememberLogin,
+		// email_features drives the SPA's forgot-link / confirmation copy
+		// exactly like remember_login and registration drive theirs.
+		"email_features": s.cfg.Email.Enabled,
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
 		"limits": map[string]any{
 			"max_message_chars": s.cfg.Limits.MaxMessageChars,

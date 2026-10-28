@@ -30,6 +30,7 @@ import (
 	"gabkeep/internal/config"
 	"gabkeep/internal/id"
 	"gabkeep/internal/llm"
+	"gabkeep/internal/mail"
 	"gabkeep/internal/runner"
 	"gabkeep/internal/scratch"
 	"gabkeep/internal/server"
@@ -164,7 +165,17 @@ func run(args []string) int {
 			"could execute code unattended (§9.9) — use confirm approval or invite-only")
 	}
 
-	srv := server.New(cfg, db, logger, version, codeRunner)
+	// Email features (§ email_features plan): the async outbox exists only
+	// while the switch is on; handlers 404 with it off, so a nil mailer
+	// is never exercised.
+	var mailer *mail.Outbox
+	if cfg.Email.Enabled {
+		mailer = mail.NewForConfig(cfg.Email, logger)
+		logger.Info("email features enabled", "smtp", cfg.Email.SMTP.Addr(),
+			"authenticated", cfg.Email.SMTP.AuthenticatedSMTP)
+	}
+
+	srv := server.New(cfg, db, logger, version, codeRunner, mailer)
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("listening",

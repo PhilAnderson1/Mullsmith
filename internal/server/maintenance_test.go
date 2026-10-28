@@ -18,7 +18,7 @@ func maintServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	cfg := scratchCfg(t)
 	db := testStore(t)
-	s := New(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)), "test", nil)
+	s := New(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)), "test", nil, nil)
 	return s, cfg.Scratchpad.Root
 }
 

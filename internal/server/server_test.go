@@ -48,7 +48,7 @@ func newTestServerWithDB(t *testing.T, cfg *config.Config) (*httptest.Server, *s
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	return httptest.NewServer(New(cfg, db, logger, "test", nil).Handler()), db
+	return httptest.NewServer(New(cfg, db, logger, "test", nil, nil).Handler()), db
 }
 
 func TestHealthz(t *testing.T) {
@@ -362,7 +362,7 @@ func TestBodyLimit(t *testing.T) {
 // the accepted lag window.
 func TestIndexAssetURLsAreVersioned(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := New(testCfg(), testStore(t), logger, "abc123", nil)
+	s := New(testCfg(), testStore(t), logger, "abc123", nil, nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {

@@ -56,8 +56,13 @@ func NewForConfig(cfg config.Email, logger *slog.Logger) *Outbox {
 }
 
 // Send queues a message; a full queue drops with a warning (the request
-// path must never block or 500 on a mail problem).
+// path must never block or 500 on a mail problem). A nil *Outbox (email
+// features disabled) accepts and discards: handlers gate on config, and
+// the mail layer refuses to be a panic path anyway.
 func (o *Outbox) Send(to, subject, body string) {
+	if o == nil {
+		return
+	}
 	select {
 	case o.ch <- Job{To: to, Subject: subject, Body: body}:
 	default:

@@ -38,7 +38,7 @@ func TestAbortGenerationsLetsShutdownFinish(t *testing.T) {
 	cfg.Tools.Agent.MaxToolRounds = 2
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil)
+	s := New(cfg, db, logger, "test", nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	a := newAuthTestOn(t, ts, db)
 	a.invite("gk-code-1") // register() replays exactly this code
