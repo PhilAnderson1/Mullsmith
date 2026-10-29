@@ -1794,8 +1794,13 @@ function renderConversation() {
 
   const input = $("#composer-input");
   input.disabled = !state.currentId;
+  // The Enter/Shift+Enter hint is desktop-only furniture: phones have no
+  // Shift key to spare, and the long string wraps the composer to two
+  // lines on narrow screens.
   input.placeholder = state.currentId
-    ? "Message Gabkeep… (Enter sends, Shift+Enter newline)"
+    ? (isPhone()
+        ? "Message Gabkeep…"
+        : "Message Gabkeep… (Enter sends, Shift+Enter newline)")
     : "Start or pick a chat first";
   if (!state.currentId) input.value = "";
   syncComposerButtons();
