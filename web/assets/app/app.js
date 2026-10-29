@@ -2135,6 +2135,9 @@ async function boot() {
   const pruneLabels = { "1d": "1 day", "1w": "1 week", "1mo": "1 month", "1y": "1 year", all: "ALL" };
   $("#conv-prune-select").addEventListener("change", async (ev) => {
     const choice = ev.target.value;
+    // Safari reopens the native popup when the value changes under a
+    // focused select, so let go of the focus before resetting to the prompt.
+    ev.target.blur();
     ev.target.value = "";
     if (!choice) return;
     const what =
