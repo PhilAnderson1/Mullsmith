@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,87 @@ func mkConv(t *testing.T, db *DB, userID, title string) *Conversation {
 		t.Fatal(err)
 	}
 	return c
+}
+
+func TestPruneConversations(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ana, bo := mkUser("ana-prune@x.io"), mkUser("bo-prune@x.io")
+	if err := db.CreateUser(ctx, ana); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateUser(ctx, bo); err != nil {
+		t.Fatal(err)
+	}
+	aged := func(userID, title string, days int) *Conversation {
+		c := &Conversation{UserID: userID, Title: title}
+		if days > 0 {
+			c.CreatedAt = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		}
+		if err := db.CreateConversation(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	ancient := aged(ana.ID, "ancient", 400) // older than every option
+	lastMonth := aged(ana.ID, "last-month", 40)
+	recent := aged(ana.ID, "recent", 3)
+	foreign := aged(bo.ID, "bo-ancient", 400) // someone else's agelessness
+
+	// Proof of cascade: a message (and its FK children) on a doomed chat.
+	// Placed after the month cut, because AddMessage bumps the
+	// conversation's updated_at — bumping lastMonth is harmless, the
+	// cutoff-less prune below takes it regardless.
+	msg := &Message{ConversationID: lastMonth.ID, Role: "user", Content: "old words"}
+
+	twoMonths := time.Now().Add(-60 * 24 * time.Hour).Unix()
+	ids, err := db.PruneConversations(ctx, ana.ID, twoMonths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != ancient.ID {
+		t.Fatalf("two-month cutoff: ids = %v, want just the ancient one", ids)
+	}
+
+	if err := db.AddMessage(ctx, ana.ID, msg); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.PruneConversations(ctx, ana.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 { // last-month + recent; the cutoff-less rule spares nothing
+		t.Fatalf("cutoff 0: ids = %v, want the two survivors", all)
+	}
+	if !slices.Contains(all, lastMonth.ID) || !slices.Contains(all, recent.ID) {
+		t.Errorf("cutoff 0 missed a survivor: %v want %s and %s", all, lastMonth.ID, recent.ID)
+	}
+	if _, _, err := db.ListMessages(ctx, ana.ID, lastMonth.ID, "", 10); err != ErrConversationNotFound {
+		t.Errorf("cascade: gone conversation readable: %v", err)
+	}
+
+	// Isolation and the empty case: Bo keeps the foreign chat, and an
+	// unmatched user prunes quietly.
+	if len(boSurvivors(t, db, bo.ID)) != 1 {
+		t.Errorf("foreign conversation pruned")
+	}
+	if ids, err := db.PruneConversations(ctx, bo.ID, time.Now().Add(time.Hour).Unix()); err != nil || len(ids) != 1 || ids[0] != foreign.ID {
+		t.Errorf("second prune: ids = %v, err = %v, want the foreign chat", ids, err)
+	}
+	if ids, err := db.PruneConversations(ctx, bo.ID, 0); err != nil || len(ids) != 0 {
+		t.Errorf("pruning nothing: ids = %v, err = %v", ids, err)
+	}
+}
+
+func boSurvivors(t *testing.T, db *DB, userID string) []Conversation {
+	t.Helper()
+	items, _, err := db.ListConversations(context.Background(), userID, "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return items
 }
 
 func TestConversationCRUD(t *testing.T) {

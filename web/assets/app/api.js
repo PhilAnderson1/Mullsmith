@@ -99,6 +99,8 @@ export const api = {
   patchConversation: (id, patch) =>
     request("PATCH", `/api/v1/conversations/${encodeURIComponent(id)}`, patch),
   deleteConversation: (id) => request("DELETE", `/api/v1/conversations/${encodeURIComponent(id)}`),
+  pruneConversations: (olderThan) =>
+    request("DELETE", `/api/v1/conversations?older_than=${encodeURIComponent(olderThan)}`),
   listMessages: (id, cursor) => {
     const p = new URLSearchParams();
     if (cursor) p.set("cursor", cursor);

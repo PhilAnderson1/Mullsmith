@@ -132,6 +132,92 @@ func TestConversationLifecycle(t *testing.T) {
 	}
 }
 
+// DELETE /api/v1/conversations?older_than= — the sidebar's bulk prune.
+// Fresh rows prove the time rule from the safe side, rows aged straight
+// through the store prove it from the dangerous side, and a second user's
+// chat must survive every cut.
+func TestConversationsPruneAPI(t *testing.T) {
+	a := signedIn(t) // carries the seeded "New chat"
+	ctx := context.Background()
+	owner, err := a.db.UserByEmail(ctx, "owner@b.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := mkStoreUser(t, a, "prune-victim@b.io")
+	boOld := &store.Conversation{UserID: victim.ID, Title: "Bo ancient",
+		CreatedAt: time.Now().Add(-400 * 24 * time.Hour)}
+	if err := a.db.CreateConversation(ctx, boOld); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the four documented tokens; missing counts as none of them.
+	for _, q := range []string{"", "?older_than=", "?older_than=2days", "?older_than=ALL"} {
+		resp := a.do(http.MethodDelete, "/api/v1/conversations"+q, nil)
+		if resp.StatusCode != http.StatusBadRequest || apiErrCode(t, resp) != "invalid_older_than" {
+			t.Errorf("older_than %q: %d", q, resp.StatusCode)
+		}
+	}
+
+	// A week ago everything here was still the future: nothing goes.
+	young := createConv(t, a, map[string]any{"title": "Just typed"})
+	resp := a.do(http.MethodDelete, "/api/v1/conversations?older_than=1w", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("1w prune: %d", resp.StatusCode)
+	}
+	fresh := decodeBody(t, resp)
+	if fresh["deleted"] != float64(0) {
+		t.Fatalf("fresh prune deleted %v rows, want 0", fresh["deleted"])
+	}
+	if _, ok := fresh["ids"].([]any); !ok {
+		t.Errorf("empty prune must answer ids as [], not %T", fresh["ids"])
+	}
+
+	// Now age a chat, and the month cut takes exactly it — and reports
+	// its id.
+	myOld := &store.Conversation{UserID: owner.ID, Title: "My ancient",
+		CreatedAt: time.Now().Add(-40 * 24 * time.Hour)}
+	if err := a.db.CreateConversation(ctx, myOld); err != nil {
+		t.Fatal(err)
+	}
+	resp = a.do(http.MethodDelete, "/api/v1/conversations?older_than=1mo", nil)
+	body := decodeBody(t, resp)
+	if body["deleted"] != float64(1) {
+		t.Fatalf("1mo prune = %v, want exactly the aged chat", body)
+	}
+	ids, _ := body["ids"].([]any)
+	if len(ids) != 1 || ids[0] != myOld.ID {
+		t.Errorf("1mo ids = %v, want [%s]", body["ids"], myOld.ID)
+	}
+
+	// "all" clears every remaining chat of THIS account …
+	resp = a.do(http.MethodDelete, "/api/v1/conversations?older_than=all", nil)
+	body = decodeBody(t, resp)
+	if body["deleted"] != float64(2) { // the fresh one plus seeded New chat
+		t.Fatalf("all prune = %v, want the two survivors", body)
+	}
+	ids2, _ := body["ids"].([]any)
+	var found bool
+	for _, v := range ids2 {
+		if v == young.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("all-prune ids = %v, want %s among them", body["ids"], young.ID)
+	}
+	var list struct {
+		Items []convResp `json:"items"`
+	}
+	getJSON(t, a, "/api/v1/conversations", &list)
+	if len(list.Items) != 0 {
+		t.Errorf("list after prune-all = %+v, want empty", list.Items)
+	}
+	// … and never a stranger's.
+	if items, _, err := a.db.ListConversations(ctx, victim.ID, "", "", 10); err != nil || len(items) != 1 {
+		t.Errorf("other user's chats = %v (%v), want untouched", items, err)
+	}
+}
+
 func TestConversationValidation(t *testing.T) {
 	a := signedIn(t)
 

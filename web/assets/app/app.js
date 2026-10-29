@@ -1970,6 +1970,32 @@ async function boot() {
   $("#btn-logout").addEventListener("click", onLogout);
   $("#btn-new-chat").addEventListener("click", newChat);
   $("#btn-more").addEventListener("click", () => loadMoreConversations().catch((e) => handleErr(e, "more chats")));
+  // "Delete older than…" is a command dropdown: the choice fires a prune,
+  // then the select falls back to its prompt (it holds no setting). The
+  // server answers with the deleted ids, so we know precisely whether the
+  // open thread was among them.
+  const pruneLabels = { "1w": "1 week", "1mo": "1 month", "1y": "1 year", all: "ALL" };
+  $("#conv-prune-select").addEventListener("change", async (ev) => {
+    const choice = ev.target.value;
+    ev.target.value = "";
+    if (!choice) return;
+    const what =
+      choice === "all" ? "ALL conversations" : `conversations older than ${pruneLabels[choice]}`;
+    if (!(await confirmDialog(`Delete ${what}? This cannot be undone.`))) return;
+    await abandonInflight(); // the open thread may be one of the doomed
+    try {
+      const res = await api.pruneConversations(choice);
+      await loadConversations();
+      if (state.currentId && res.ids.includes(state.currentId)) {
+        state.currentId = "";
+        location.hash = "";
+        renderConversation();
+      }
+      toast(res.deleted ? `${res.deleted} conversation${res.deleted === 1 ? "" : "s"} deleted` : "Nothing to delete", false);
+    } catch (err) {
+      handleErr(err, "delete older conversations");
+    }
+  });
   $("#model-picker").addEventListener("change", onModelChange);
   $("#btn-menu").addEventListener("click", () =>
     document.body.classList.contains("drawer-open") ? closeDrawer() : openDrawer()

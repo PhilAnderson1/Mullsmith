@@ -245,6 +245,32 @@ body.drawer-open #sidebar { transform: translateX(0); }
 .sidebar-head { display: flex; gap: 0.4rem; }
 .sidebar-search { margin: 0.6rem 0; }
 
+/* "Delete older than…" command row, docked under the conversation list
+   and above the settings foot. Muted on purpose: housekeeping should not
+   compete with the chats (app.js: the select resets to its prompt after
+   every choice). */
+.conv-prune {
+  display: flex;
+  margin: 0.4rem 0 0;
+  padding: 0.15rem 0.35rem;
+  color: var(--fg-muted);
+  font-size: 0.85em;
+}
+.conv-prune select {
+  width: 100%;
+  font: inherit;
+  /* Opaque theme tokens, not transparent: the native popup paints its
+     list from the control's colours, and transparency there means the
+     OS default (white) with muted grey text on top. */
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.25rem 0.4rem;
+  min-height: 2rem;
+}
+.conv-prune option { color: var(--fg); background: var(--bg-raised); }
+
 .conv-list {
   list-style: none;
   margin: 0;

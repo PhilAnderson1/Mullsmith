@@ -181,6 +181,59 @@ func (d *DB) DeleteConversation(ctx context.Context, userID, convID string) erro
 	return nil
 }
 
+// PruneConversations hard-deletes every conversation the user has not
+// updated at or after cutoff (unix seconds), newest rule per the sidebar's
+// own ordering column. The FK cascades take messages, tool calls and
+// attachment links, exactly like a single delete. The deleted ids come
+// back so the caller can drop per-conversation state that outlives SQL —
+// approval memory (§9.9). Select and delete share one transaction, so the
+// ids are exactly the rows that went.
+func (d *DB) PruneConversations(ctx context.Context, userID string, cutoff int64) ([]string, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	q := `SELECT id FROM conversations WHERE user_id = ?`
+	args := []any{userID}
+	if cutoff > 0 {
+		q += ` AND updated_at < ?`
+		args = append(args, cutoff)
+	}
+	rows, err := tx.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, s)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close() // must close before Exec on the single shared connection
+
+	if len(ids) > 0 {
+		dq := `DELETE FROM conversations WHERE user_id = ?`
+		dargs := []any{userID}
+		if cutoff > 0 {
+			dq += ` AND updated_at < ?`
+			dargs = append(dargs, cutoff)
+		}
+		if _, err := tx.ExecContext(ctx, dq, dargs...); err != nil {
+			return nil, err
+		}
+	}
+	return ids, tx.Commit()
+}
+
 // ListConversations returns the user's conversations, most recently
 // updated first. cursor is the opaque value from a previous page ("" for
 // the first). The returned next cursor is "" when exhausted.

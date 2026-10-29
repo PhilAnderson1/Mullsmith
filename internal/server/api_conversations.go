@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gabkeep/internal/id"
@@ -279,6 +280,45 @@ func (s *Server) handleConversationDelete(w http.ResponseWriter, r *http.Request
 	}
 	s.remembered.forget(r.PathValue("id")) // consent dies with the conversation (§9.9)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- DELETE /api/v1/conversations?older_than= ---------------------------------------
+
+// pruneAges are the sidebar's "Delete older than" choices and the tokens
+// that carry them. Months and years are deliberate calendar approximations
+// (30/365 days): a housekeeping threshold, not a billing period. "all"
+// maps to zero so the store applies no age condition at all.
+var pruneAges = map[string]time.Duration{
+	"1w":  7 * 24 * time.Hour,
+	"1mo": 30 * 24 * time.Hour,
+	"1y":  365 * 24 * time.Hour,
+	"all": 0,
+}
+
+func (s *Server) handleConversationsPrune(w http.ResponseWriter, r *http.Request) {
+	user := UserFrom(r.Context())
+	age, ok := pruneAges[r.URL.Query().Get("older_than")]
+	if !ok {
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_older_than",
+			"older_than must be one of 1w, 1mo, 1y, all")
+		return
+	}
+	var cutoff int64
+	if age > 0 {
+		cutoff = time.Now().Add(-age).Unix()
+	}
+	ids, err := s.store.PruneConversations(r.Context(), user.ID, cutoff)
+	if err != nil {
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "prune failed")
+		return
+	}
+	for _, convID := range ids {
+		s.remembered.forget(convID) // consent dies with the conversation (§9.9)
+	}
+	if ids == nil {
+		ids = []string{} // a JSON contract: ids is always an array, never null
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": len(ids), "ids": ids})
 }
 
 // --- GET /api/v1/conversations/{id}/messages --------------------------------------------
