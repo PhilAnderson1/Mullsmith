@@ -836,6 +836,18 @@ function refreshLastAssistant() {
   }
 }
 
+// The Enter/Shift+Enter hint is desktop-only furniture: phones have no
+// Shift key to spare, and the long string wraps the composer to two
+// lines on narrow screens. Width is re-checked whenever mqPhone flips,
+// not just at render — a resized window should behave like CSS does.
+function syncPlaceholder() {
+  $("#composer-input").placeholder = state.currentId
+    ? (isPhone()
+        ? "Message Gabkeep…"
+        : "Message Gabkeep… (Enter sends, Shift+Enter newline)")
+    : "Start or pick a chat first";
+}
+
 function syncComposerButtons() {
   const busy = Boolean(state.inflight);
   const send = $("#btn-send");
@@ -1794,14 +1806,7 @@ function renderConversation() {
 
   const input = $("#composer-input");
   input.disabled = !state.currentId;
-  // The Enter/Shift+Enter hint is desktop-only furniture: phones have no
-  // Shift key to spare, and the long string wraps the composer to two
-  // lines on narrow screens.
-  input.placeholder = state.currentId
-    ? (isPhone()
-        ? "Message Gabkeep…"
-        : "Message Gabkeep… (Enter sends, Shift+Enter newline)")
-    : "Start or pick a chat first";
+  syncPlaceholder();
   if (!state.currentId) input.value = "";
   syncComposerButtons();
 
@@ -1882,6 +1887,7 @@ function confirmDialog(text) {
 
 const mqPhone = window.matchMedia("(max-width: 1023.98px)");
 const isPhone = () => mqPhone.matches;
+mqPhone.addEventListener("change", syncPlaceholder); // live, like a CSS media query
 
 function openDrawer() {
   document.body.classList.add("drawer-open");
