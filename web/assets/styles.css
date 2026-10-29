@@ -364,7 +364,6 @@ body.drawer-open #sidebar { transform: translateX(0); }
   cursor: pointer;
 }
 .row-menu-item svg { flex: none; width: 1.05em; height: 1.05em; fill: currentColor; }
-.row-menu-item[data-action="delete"] svg { fill: var(--danger); }
 .row-menu-item:hover, .row-menu-item:focus-visible { background: var(--bg-sunken); }
 
 /* ---------- thread & composer ---------- */
