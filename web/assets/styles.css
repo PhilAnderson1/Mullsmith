@@ -288,6 +288,17 @@ body.drawer-open #sidebar { transform: translateX(0); }
   align-items: center;
   border-radius: var(--radius);
   min-height: var(--tap);
+  /* The row's own long-press menu (app.js) replaces the OS selection /
+     copy bubble, which would otherwise swallow the gesture on iOS. */
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* the inline rename box still needs selecting and pasting */
+.conv-item input {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 .conv-item:hover { background: var(--bg-sunken); }
 .conv-item.active { background: var(--bg-sunken); }

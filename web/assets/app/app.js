@@ -542,18 +542,49 @@ function convRow(c) {
     if (rowMenuTarget && rowMenuTarget.li === li && !$("#conv-row-menu").hidden) closeConvRowMenu();
     else openConvRowMenu({ li, rename: startRename, del: confirmDelete });
   });
-  // One gesture covers both worlds: right-click on desktop, long press on
-  // Android/iOS — preventDefault keeps the browser's own callout away.
-  li.addEventListener("contextmenu", (ev) => {
-    ev.preventDefault();
-    openConvRowMenu({ li, rename: startRename, del: confirmDelete }, ev);
+  // Long press summons the row menu on touch devices. iOS browsers never
+  // fire contextmenu (Android's does, inconsistently), so a touch timer
+  // covers every phone and tablet; CSS callout suppression (styles.css)
+  // keeps the OS copy-bubble away. Desktop keeps the "…" button.
+  let pressTimer = null;
+  let pressFired = false;
+  let pressPos = null;
+  li.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length !== 1 || ev.target.closest("button, form")) return;
+    const t = ev.touches[0];
+    pressPos = { clientX: t.clientX, clientY: t.clientY };
+    pressFired = false;
+    clearTimeout(pressTimer);
+    pressTimer = setTimeout(() => {
+      pressFired = true;
+      openConvRowMenu({ li, rename: startRename, del: confirmDelete }, pressPos);
+    }, 500);
+  }, { passive: true });
+  li.addEventListener("touchmove", (ev) => {
+    const t = ev.touches[0];
+    if (!t || !pressPos) return;
+    // A sliding finger means scrolling, not summoning.
+    if (Math.abs(t.clientX - pressPos.clientX) > 10 || Math.abs(t.clientY - pressPos.clientY) > 10) {
+      clearTimeout(pressTimer);
+    }
+  }, { passive: true });
+  li.addEventListener("touchend", (ev) => {
+    clearTimeout(pressTimer);
+    if (pressFired) {
+      ev.preventDefault(); // swallow the tap the held finger would also send
+      pressFired = false;
+    }
+  });
+  li.addEventListener("touchcancel", () => {
+    clearTimeout(pressTimer);
+    pressFired = false;
   });
 
   return li;
 }
 
 // The sidebar row's action menu: the "…" button summons it at the row,
-// contextmenu (right-click / long press) at the pointer. One row at a
+// long press at the finger. One row at a
 // time; the row hands over its own action closures, so the menu knows
 // nothing about titles or the delete flow.
 let rowMenuTarget = null;
