@@ -1,0 +1,929 @@
+/* Gabkeep — mobile-first responsive styles (spec §10.1).
+   Bands: phone <640 implicit, drawer <1024, desktop grid ≥1024,
+   readability cap ~72ch always, app max 1800px. */
+
+:root {
+  --bg: #f7f8fa;
+  --bg-raised: #ffffff;
+  --bg-sunken: #eceef2;
+  --fg: #1a1d23;
+  --fg-muted: #656d7b;
+  --accent: #3b6cf5;
+  --accent-press: #2f57c4;
+  --danger: #c62f2f;
+  --border: #d8dce3;
+  --bubble-user: #dce7ff;
+  --bubble-assistant: #ffffff;
+  --shadow: 0 1px 3px rgba(15, 20, 30, 0.12);
+  --radius: 10px;
+  --thread-max: 72ch;
+  --tap: 44px;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #14161b;
+  --bg-raised: #1e2128;
+  --bg-sunken: #0e1013;
+  --fg: #e7eaf0;
+  --fg-muted: #99a1af;
+  --accent: #6c8cff;
+  --accent-press: #5677e6;
+  --danger: #e06060;
+  --border: #333843;
+  --bubble-user: #2a3550;
+  --bubble-assistant: #1e2128;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14161b;
+    --bg-raised: #1e2128;
+    --bg-sunken: #0e1013;
+    --fg: #e7eaf0;
+    --fg-muted: #99a1af;
+    --accent: #6c8cff;
+    --accent-press: #5677e6;
+    --danger: #e06060;
+    --border: #333843;
+    --bubble-user: #2a3550;
+    --bubble-assistant: #1e2128;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+/* The `hidden` attribute must beat every display rule above it (the auth and
+   chat views set display via higher-specificity selectors). */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font: clamp(15px, 0.6vw + 13px, 17px)/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.muted { color: var(--fg-muted); }
+
+/* ---------- shared controls ---------- */
+
+.btn {
+  min-height: var(--tap);
+  padding: 0.4rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:active:not(:disabled) { background: var(--accent-press); }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.ghost { background: transparent; }
+.btn.wide { width: 100%; }
+.btn svg { width: 1.1em; height: 1.1em; }
+
+.icon-btn {
+  min-width: var(--tap);
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.icon-btn:hover, .icon-btn:focus-visible { background: var(--bg-sunken); }
+.icon-btn svg { width: 22px; height: 22px; }
+.icon-btn.tiny { min-width: 36px; min-height: 36px; }
+.icon-btn.tiny svg { width: 17px; height: 17px; }
+
+input, textarea, select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.7rem;
+  width: 100%;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--accent); outline: none; }
+
+label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
+
+/* ---------- views ---------- */
+
+.view[hidden] { display: none; }
+
+/* ---------- auth ---------- */
+
+#view-auth {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.auth-card {
+  width: min(400px, 100%);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.6);
+  box-shadow: var(--shadow);
+  padding: clamp(1.2rem, 4vw, 2rem);
+}
+
+.auth-card .brand { margin: 0 0 0.2rem; font-size: 1.6rem; }
+.auth-mode { color: var(--fg-muted); margin: 0.2rem 0 0.6rem; }
+.auth-card h2 { margin: 0.8rem 0 0.2rem; font-size: 1.15rem; }
+.form-error {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+}
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 400;
+  margin-top: 1rem;
+}
+.checkbox-row input { width: auto; }
+.auth-card .btn.primary { margin-top: 1.2rem; width: 100%; }
+.switch-line { margin: 1rem 0 0; color: var(--fg-muted); }
+.switch-line a { color: var(--accent); }
+
+/* ---------- chat shell ---------- */
+
+#view-chat {
+  height: 100dvh;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas: "topbar" "main";
+}
+
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  padding-top: calc(0.35rem + env(safe-area-inset-top));
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  min-width: 0; /* grid items default to min-width:auto: the nowrap topbar
+                   children used to stretch the whole app past 320 px (§10.1) */
+}
+.topbar-title {
+  font-weight: 700;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* the chat title runs up against the model picker without this */
+  margin-inline-end: 14px;
+}
+.model-picker { width: auto; min-width: 0; max-width: 34vw; padding: 0.35rem 0.5rem; }
+.topbar > :nth-child(4) { margin-left: auto; }
+.user-chip {
+  color: var(--fg-muted);
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* sidebar: slide-over drawer on phone/tablet (<1024) */
+
+#sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: min(320px, 85vw);
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+  transform: translateX(-105%);
+  transition: transform 180ms ease-out;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  padding: 0.7rem;
+  padding-top: calc(0.7rem + env(safe-area-inset-top));
+  padding-bottom: calc(0.7rem + env(safe-area-inset-bottom));
+}
+body.drawer-open #sidebar { transform: translateX(0); }
+
+#backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.45);
+  z-index: 20;
+}
+
+.sidebar-head { display: flex; gap: 0.4rem; }
+.sidebar-search { margin: 0.6rem 0; }
+
+.conv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius);
+  min-height: var(--tap);
+}
+.conv-item:hover { background: var(--bg-sunken); }
+.conv-item.active { background: var(--bg-sunken); }
+.conv-open {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0.55rem 0.6rem;
+  cursor: pointer;
+}
+.conv-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-rename { flex: 1; min-width: 0; }
+.conv-rename input { padding: 0.4rem 0.5rem; }
+.conv-item .icon-btn { opacity: 0.75; flex: none; }
+.conv-item .icon-btn:hover { opacity: 1; }
+
+/* ---------- thread & composer ---------- */
+
+.chat-main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0; /* same grid auto-min-size trap as .topbar (§10.1) */
+}
+
+.thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  scrollbar-gutter: stable;
+}
+
+.msg {
+  width: 100%;
+  max-width: var(--thread-max);
+  margin-inline: auto;
+}
+.msg-body {
+  background: var(--bubble-assistant);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow);
+}
+.msg.from-user .msg-body { background: var(--bubble-user); }
+.msg-meta {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  margin-bottom: 0.25rem;
+  color: var(--fg-muted);
+  font-size: 0.82em;
+}
+.msg-role { font-weight: 700; }
+/* Footnote row under the answer: the regenerate button on the left, the
+   round's tok/s pinned right. Hidden until it has something to show — a
+   tok/s figure (app.js adds .on) or the regenerate button, which only the
+   last assistant reply carries. Both live on one line: they are footnotes
+   on the same answer, and tok/s keeps its place when the button comes and
+   goes. */
+.msg-foot {
+  display: none;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.15rem;
+  color: var(--fg-muted);
+  font-size: 0.78em;
+}
+.msg-foot.on, .msg.last-assistant .msg-foot { display: flex; }
+.msg-tps { font-variant-numeric: tabular-nums; margin-left: auto; }
+.msg-status { margin: 0.3rem 0 0; font-size: 0.82em; }
+.load-earlier { max-width: var(--thread-max); margin: 0 auto; }
+
+.empty-state {
+  margin: auto;
+  text-align: center;
+  color: var(--fg-muted);
+  max-width: 40ch;
+}
+.empty-state h2 { color: var(--fg); margin-bottom: 0.2rem; }
+
+/* Context-fullness line docked above the composer (app.js: updateCtxMeter). */
+.ctx-meter {
+  margin: 0;
+  padding: 0.35rem clamp(0.6rem, 3vw, 1.5rem) 0.4rem;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 0.78em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* The pinned "conversation is full" refusal — same line, louder colour. */
+.ctx-meter-full { color: var(--danger); }
+.composer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 0.6rem clamp(0.6rem, 3vw, 1.5rem);
+  padding-bottom: calc(0.6rem + env(safe-area-inset-bottom));
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+}
+.composer textarea {
+  flex: 1;
+  min-width: 0; /* allow shrinking below the placeholder's intrinsic width */
+  resize: none;
+  max-height: 30vh;
+  min-height: var(--tap);
+}
+.composer .btn { flex: none; }
+
+/* ---------- dialog ---------- */
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.4);
+  background: var(--bg-raised);
+  color: var(--fg);
+  padding: 1.1rem;
+  width: min(380px, calc(100vw - 2rem));
+}
+dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* modals become bottom sheets on short viewports */
+@media (max-height: 500px) {
+  dialog {
+    margin: auto auto 0 auto;
+    width: 100vw;
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+}
+
+/* ---------- toast ---------- */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.9rem;
+  box-shadow: var(--shadow);
+  z-index: 50;
+  max-width: min(90vw, 60ch);
+}
+#toast.toast-error { border-color: var(--danger); color: var(--danger); }
+
+/* ---------- tablet & desktop ≥640: topbar tidier ---------- */
+
+@media (min-width: 640px) {
+  .model-picker { max-width: 24vw; }
+}
+
+/* Phone: the identity chip and title compete for the same 320 px; the
+   sidebar (drawer) shows the user, so the chip yields. */
+@media (max-width: 639px) {
+  .user-chip { display: none; }
+  .model-picker { max-width: 30vw; }
+}
+
+/* ---------- desktop ≥1024: persistent sidebar grid ---------- */
+
+@media (min-width: 1024px) {
+  #view-chat {
+    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    /* Row 1 holds only the topbar, so its height is always just the
+       topbar's content. An earlier design spanned #sidebar across both
+       rows; with a long chat list the sidebar's intrinsic height fed the
+       `auto` row and stretched the topbar down the whole window,
+       crushing the chat column to 0px. Do not make any item span row 1
+       again without neutralising its size contribution. */
+    grid-template-areas:
+      "topbar topbar"
+      "sidebar main";
+    max-width: 1800px;
+    margin-inline: auto;
+  }
+  #btn-menu { display: none; }
+  #sidebar {
+    position: static;
+    width: auto;
+    transform: none;
+    transition: none;
+    border-right: 1px solid var(--border);
+    z-index: auto;
+    min-height: 0;
+    /* Sits below the topbar here, which already pads for the notch. */
+    padding-top: 0.7rem;
+  }
+  body.drawer-open #backdrop { display: none; }
+  #topbar-title { font-size: 1.05rem; }
+}
+
+/* ---------- ultrawide ≥1600: roomier margins, capped text ---------- */
+
+@media (min-width: 1600px) {
+  :root { --thread-max: 78ch; }
+  #sidebar { padding-inline: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* ---------- markdown in message bodies (spec §9.4) ---------- */
+
+.msg-body.md { white-space: normal; }
+.msg-body.md > :first-child { margin-top: 0; }
+.msg-body.md > :last-child { margin-bottom: 0; }
+.msg-body.md p { margin: 0.45em 0; overflow-wrap: anywhere; }
+.msg-body.md .md-h { margin: 0.9em 0 0.4em; line-height: 1.3; }
+.msg-body.md ul,
+.msg-body.md ol { margin: 0.4em 0; padding-inline-start: 1.5em; }
+.msg-body.md li { margin: 0.15em 0; }
+.msg-body.md blockquote {
+  margin: 0.5em 0;
+  padding: 0.15em 0.9em;
+  border-inline-start: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+.msg-body.md code {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.08em 0.35em;
+  font: 0.9em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.msg-body.md a { color: var(--accent); text-underline-offset: 2px; }
+
+/* fenced code block with language tag + copy button */
+
+.codeblock {
+  margin: 0.6em 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+.codebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.codelang { color: var(--fg-muted); font-size: 0.8em; }
+.copy-btn {
+  min-height: 30px;
+  padding: 0.15rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  font: 0.8em/1.4 inherit;
+  cursor: pointer;
+}
+.copy-btn:hover { background: var(--bg-sunken); }
+.codeblock pre { margin: 0; padding: 0.7rem; overflow-x: auto; }
+.codeblock pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font: 0.88em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+/* ---------- streaming & thinking affordances ---------- */
+
+/* Busy spinner: three dots animated entirely in CSS (app.js builds the
+   node; removing the node stops the animation — no JS timers). Under
+   reduced motion the dots fade gently instead of freezing: a dead-still
+   "waiting" icon reads as broken (the iPad report). The old braille
+   glyph version needed exotic fonts and drew a FROZEN character when
+   prefers-reduced-motion matched, which iOS enables for several
+   accessibility features. */
+.msg-body .spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 0.4em;
+  vertical-align: middle;
+  color: var(--accent);
+}
+.msg-body .spinner i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: spinner-bounce 1s ease-in-out infinite;
+}
+.msg-body .spinner i:nth-child(2) { animation-delay: 0.15s; }
+.msg-body .spinner i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes spinner-bounce {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+@keyframes spinner-fade {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-body .spinner i {
+    animation-name: spinner-fade;
+    animation-duration: 1.6s;
+    transform: none;
+  }
+}
+
+details.thinking {
+  margin: 0 0 0.5rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.7rem;
+  color: var(--fg-muted);
+  background: var(--bg-sunken);
+}
+details.thinking summary { cursor: pointer; font-size: 0.88em; }
+details.thinking pre {
+  margin: 0.4rem 0 0.1rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.85em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* regenerate affordance: only on the newest assistant bubble */
+/* The regenerate control now lives inside .msg-foot, so it is just the
+   button itself — visibility still follows .last-assistant. */
+.msg-actions { display: none; gap: 0.2rem; }
+.msg.last-assistant .msg-actions { display: flex; }
+
+.stop-btn { color: var(--danger); }
+.stop-btn:disabled { opacity: 0.5; }
+
+/* --- tool cards (spec §7, §10.2) ------------------------------------------------
+   One card per tool call inside the assistant article: summary line, raw
+   arguments when expanded, result links, and live approval controls. */
+
+.tool-cards { display: flex; flex-direction: column; gap: 0.4rem; margin: 0 0 0.5rem; }
+
+details.tool-card {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  padding: 0.35rem 0.7rem;
+  color: var(--fg-muted);
+}
+details.tool-card summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.88em;
+  list-style: none;
+}
+details.tool-card summary::-webkit-details-marker { display: none; }
+.tool-card .tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--fg);
+}
+.tool-card .tool-state { white-space: nowrap; }
+.tool-card.st-running { border-left-color: var(--accent); }
+.tool-card.st-running .tool-state { color: var(--accent); }
+.tool-card.st-ok { border-left-color: #2e8b57; }
+.tool-card.st-awaiting { border-left-color: #b8860b; }
+.tool-card.st-awaiting .tool-state { color: #b8860b; font-weight: 600; }
+.tool-card.st-denied { border-left-color: var(--fg-muted); }
+.tool-card.st-error { border-left-color: var(--danger); }
+.tool-card.st-error .tool-state { color: var(--danger); }
+
+.tool-card .tool-args {
+  margin: 0.4rem 0 0.1rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.85em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--bg-sunken);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+.tool-card .tool-summary { margin: 0.35rem 0 0; font-size: 0.85em; }
+.tool-results { display: flex; flex-direction: column; gap: 0.15rem; }
+.tool-card a.tool-link {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85em;
+  color: var(--accent);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  padding: 0.15rem 0;
+}
+.tool-card a.tool-link:hover { text-decoration: underline; }
+.tool-link-host { color: var(--fg-muted); font-size: 0.85em; }
+
+/* approval: 44 px touch targets (§10.1) even inside a compact card */
+.approval-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+}
+.approval-label { flex: 1 1 10rem; font-size: 0.9em; color: var(--fg); }
+.btn.small { padding: 0.2rem 0.9rem; min-height: var(--tap); }
+.approval-row .btn:disabled { opacity: 0.5; }
+
+/* "always allow in this conversation" (§6.1, §9.9 layer 6): own line,
+   smaller than the primary question, 44 px hit area via the label */
+.approval-remember {
+  flex: 1 1 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: var(--tap);
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.approval-remember input { width: 1rem; height: 1rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-card summary { transition: none; }
+}
+
+/* ---------- M5: attachments, artifact cards, files view ---------- */
+
+.pending-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.55rem clamp(0.6rem, 3vw, 1.5rem) 0;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  max-width: 100%;
+}
+.attach-chip.uploading { opacity: 0.65; }
+.attach-chip .chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(220px, 55vw);
+}
+.attach-chip .chip-size { color: var(--fg-muted); flex: none; }
+.attach-chip .chip-remove {
+  border: 0;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+  cursor: pointer;
+}
+.attach-chip .chip-remove:hover { color: var(--danger); }
+
+.msg-files { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.45rem; }
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  color: inherit;
+  text-decoration: none;
+  max-width: 100%;
+}
+.file-chip:hover { border-color: var(--accent); }
+.file-chip .chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: min(240px, 55vw);
+}
+.file-chip .chip-size { color: var(--fg-muted); flex: none; }
+
+.artifact-card {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid var(--accent);
+  background: var(--bg-raised);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+  box-shadow: var(--shadow);
+  margin: 0.35rem 0;
+}
+.artifact-icon { font-size: 1.4rem; flex: none; }
+.artifact-meta { flex: 1; min-width: 0; }
+.artifact-name { font-weight: 600; overflow-wrap: anywhere; }
+.artifact-sub { font-size: 0.8rem; overflow-wrap: anywhere; }
+.artifact-dl { flex: none; }
+
+/* Files view swaps into the chat main column (routing keeps the chat state
+   alive underneath; body class avoids touching each element from JS).
+   The panel is a FULL-BLEED scroll container: centring/max-width belongs to
+   the inner .panel-body, not the scroller itself. When the scroller was the
+   centred 60rem box, its scrollbar floated mid-window on wide screens. */
+.files-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* only the notch inset here; the 1rem bottom spacing lives in .panel-body,
+     so the totals match the old single-box layout exactly */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
+}
+body.files-open .thread,
+body.files-open .composer,
+body.files-open .ctx-meter,
+body.files-open .pending-files { display: none; }
+.files-head { display: flex; align-items: center; justify-content: space-between; }
+.files-head h2 { margin: 0; font-size: 1.25rem; }
+.quota-wrap { display: flex; align-items: center; gap: 0.7rem; }
+.quota-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.quota-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.25s; }
+#quota-text { flex: none; font-size: 0.85rem; }
+.files-filters { display: flex; gap: 0.4rem; }
+.files-filter {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 0.3rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+.files-filter.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ---------- settings view ---------- */
+
+/* ChatGPT-style home for the settings entry: pinned to the bottom of the
+   sidebar (the growing .conv-list pushes it there), so the sidebar head
+   never overflows. */
+.sidebar-foot {
+  display: flex;
+  margin-top: 0.5rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border);
+}
+.settings-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.settings-panel .panel-body { gap: 0.6rem; }
+body.settings-open .thread,
+body.settings-open .composer,
+body.settings-open .pending-files { display: none; }
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+  /* readable measure for inputs inside the full-width panel (inputs are
+     globally width:100%, so the form's max-width governs them) */
+  max-width: 34rem;
+}
+.settings-form h3 { margin: 0.8rem 0 0.2rem; font-size: 1.02rem; }
+.settings-form textarea { resize: vertical; }
+.settings-form .btn { align-self: flex-start; margin-top: 0.3rem; }
+.files-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+}
+.f-main { flex: 1; min-width: 0; }
+.f-name { font-weight: 600; overflow-wrap: anywhere; }
+.f-sub { color: var(--fg-muted); font-size: 0.8rem; margin-top: 0.1rem; overflow-wrap: anywhere; }
+.kind-badge {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.35em;
+  margin-right: 0.4em;
+}
+.kind-badge.artifact { border-color: var(--accent); color: var(--accent); }
+.kind-badge.work { border-style: dashed; color: var(--fg-muted); }
+.kind-badge.dir { border-style: dashed; color: var(--fg-muted); }
+.f-path {
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  margin-top: 0.15rem;
+  overflow-wrap: anywhere;
+  opacity: 0.85;
+}
+.danger-text { color: var(--danger); }
+@media (max-width: 480px) {
+  .file-row { flex-wrap: wrap; }
+  .file-row .btn { flex: 1; }
+}
