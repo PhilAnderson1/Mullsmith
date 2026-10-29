@@ -536,7 +536,9 @@ Event taxonomy (SSE `event:` field): `start`, `token`, `reasoning`, `title`,
 `internal/thinking` owns the feature: two catalogues (endpoints = how one request convention
 expresses a choice as JSON fields; profiles = the ordered choices for the configured model),
 both shipped in the binary and extendable per ID by `llm.endpoints_file`/`llm.profiles_file`
-— a new profile or mapping is a YAML edit plus a restart, never a recompile. `config.Load`
+— a new profile or mapping is a YAML edit plus a restart, never a recompile. `llm.thinking_selector_enable`
+shows or hides the selector outright (enabled it still requires an `endpoint_type`), and omitting the
+switch keeps the legacy rule (a selector exists exactly when one of type/profile is spelled out). `config.Load`
 builds the runtime after `Validate` (which stays pure); an unreadable configured file, an
 unknown `endpoint_type`/`thinking_profile`, or a native (non-`openai_chat`) protocol selection
 refuses startup. Endpoint range misses hide the offending choice with a startup warning; a

@@ -22,6 +22,8 @@ if [ ! -f "$binary" ] && [ -f "$script_dir/../go.mod" ]; then
 fi
 
 config_source="$content_root/configs/config.yaml"
+endpoints_source="$content_root/configs/endpoints.yaml"
+profiles_source="$content_root/configs/thinking-profiles.yaml"
 service_source="$content_root/packaging/systemd/mullsmith.service"
 readme_source="$content_root/README.md"
 spec_source="$content_root/spec.md"
@@ -89,6 +91,10 @@ install_config_if_missing() {
 }
 
 install_config_if_missing "$config_source" /etc/mullsmith/config.yaml
+# The sample config names these thinking catalogues; they overlay the
+# catalogues embedded in the binary and may be edited without a rebuild.
+install_config_if_missing "$endpoints_source" /etc/mullsmith/endpoints.yaml
+install_config_if_missing "$profiles_source" /etc/mullsmith/thinking-profiles.yaml
 
 # The systemd unit reads this EnvironmentFile (optional, referenced by the
 # config's ${ENV_VAR} expansions). Same install-if-missing rule; it may later

@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"mullsmith/internal/thinking"
 	"gopkg.in/yaml.v3"
+	"mullsmith/internal/thinking"
 )
 
 // Duration is a YAML string parsed by time.ParseDuration, e.g. "720h", "30s".
@@ -257,19 +257,23 @@ type LLM struct {
 	Vision              bool `yaml:"vision"`
 	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"` // per-picture cap for view_image (default 4 MiB)
 
-	// Thinking control (thinking-control-specification.md §2). All four
-	// are optional: omitted together, the existing transport is kept and
-	// no thinking selector appears. The two files extend the embedded
-	// catalogues per ID (relative paths resolve against this config
-	// file's directory); endpoint_type selects the request convention
-	// for llm.endpoint's URL, thinking_profile the choices for the
-	// configured model. There is no default_thinking here on purpose:
-	// a conversation starts at the built-in Default and the user's
-	// choice is conversation state, not another global LLM setting.
-	EndpointsFile   string `yaml:"endpoints_file"`
-	ProfilesFile    string `yaml:"profiles_file"`
-	EndpointType    string `yaml:"endpoint_type"`
-	ThinkingProfile string `yaml:"thinking_profile"`
+	// Thinking control (thinking-control-specification.md §2). All five
+	// are optional: with the switch omitted or false, the existing
+	// transport is kept and no thinking selector appears. When enabled
+	// true, endpoint_type must name a catalogue entry (the sample config
+	// shows the usual pair); thinking_profile may stay empty for "none".
+	// The two files extend the embedded catalogues per ID (relative paths
+	// resolve against this config file's directory). Omitting the switch
+	// entirely keeps the legacy rule: a selector exists exactly when an
+	// endpoint type (or non-"none" profile) is spelled out. There is no
+	// default_thinking here on purpose: a conversation starts at the
+	// built-in Default and the user's choice is conversation state, not
+	// another global LLM setting.
+	ThinkingSelectorEnable *bool  `yaml:"thinking_selector_enable"`
+	EndpointsFile          string `yaml:"endpoints_file"`
+	ProfilesFile           string `yaml:"profiles_file"`
+	EndpointType           string `yaml:"endpoint_type"`
+	ThinkingProfile        string `yaml:"thinking_profile"`
 }
 
 type Tools struct {
@@ -543,12 +547,13 @@ func Load(path string) (*Config, error) {
 	// startup error, and the selected endpoint/profile combination must
 	// be cross-checked before the server ever serves a choice list.
 	rt, err := thinking.Build(thinking.Settings{
-		EndpointURL:   c.LLM.Endpoint,
-		EndpointType:  c.LLM.EndpointType,
-		ProfileID:     c.LLM.ThinkingProfile,
-		MaxOutput:     c.LLM.MaxTokensResponse,
-		EndpointsFile: c.LLM.EndpointsFile,
-		ProfilesFile:  c.LLM.ProfilesFile,
+		EndpointURL:    c.LLM.Endpoint,
+		EndpointType:   c.LLM.EndpointType,
+		ProfileID:      c.LLM.ThinkingProfile,
+		MaxOutput:      c.LLM.MaxTokensResponse,
+		EndpointsFile:  c.LLM.EndpointsFile,
+		ProfilesFile:   c.LLM.ProfilesFile,
+		SelectorEnable: c.LLM.ThinkingSelectorEnable,
 	})
 	if err != nil {
 		return nil, err

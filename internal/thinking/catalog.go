@@ -108,6 +108,12 @@ type Settings struct {
 	MaxOutput     int // llm.max_tokens_response; 0 = uncapped
 	EndpointsFile string
 	ProfilesFile  string
+	// SelectorEnable is llm.thinking_selector_enable: nil falls back to
+	// the legacy shape (a selector exists when an endpoint type or a
+	// non-"none" profile is spelled out); true/false decides outright.
+	// A true switch still requires an explicit endpoint_type and profile
+	// to name — the sample config shows the usual pair.
+	SelectorEnable *bool
 }
 
 // Runtime is one validated, resolved selection. A nil *Runtime means the
@@ -122,10 +128,19 @@ type Runtime struct {
 
 // Build parses the catalogues (embedded, then per-ID external
 // replacement/addition) and resolves the configured selection. It returns
-// (nil, nil) when nothing thinking-related is configured — the legacy
-// path, which must keep working untouched.
+// (nil, nil) when the selector is off — explicitly via SelectorEnable,
+// or by the legacy shape of nothing thinking-related configured, which
+// must keep working untouched.
 func Build(set Settings) (*Runtime, error) {
-	if set.EndpointType == "" && (set.ProfileID == "" || set.ProfileID == "none") {
+	// The explicit switch decides outright; without it the selector
+	// exists exactly when the operator spelled out an endpoint type or a
+	// non-"none" profile (the pre-switch behaviour, kept intact).
+	explicit := set.SelectorEnable != nil
+	enabled := set.EndpointType != "" || (set.ProfileID != "" && set.ProfileID != "none")
+	if explicit {
+		enabled = *set.SelectorEnable
+	}
+	if !enabled {
 		// No selector. Configured catalogue files are still parsed and
 		// validated — an operator who spelled them out wants typos caught
 		// at startup even before an endpoint type references them.
@@ -140,14 +155,17 @@ func Build(set Settings) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	if set.EndpointType == "" {
+	epType, profID := set.EndpointType, set.ProfileID
+	if epType == "" {
+		if explicit {
+			return nil, errors.New("llm.thinking_selector_enable requires llm.endpoint_type")
+		}
 		return nil, fmt.Errorf("llm.thinking_profile %q requires llm.endpoint_type", set.ProfileID)
 	}
-	ep, ok := endpoints[set.EndpointType]
+	ep, ok := endpoints[epType]
 	if !ok {
-		return nil, fmt.Errorf("llm.endpoint_type %q: no such entry in the endpoint catalogue", set.EndpointType)
+		return nil, fmt.Errorf("llm.endpoint_type %q: no such entry in the endpoint catalogue", epType)
 	}
-	profID := set.ProfileID
 	if profID == "" {
 		profID = "none"
 	}

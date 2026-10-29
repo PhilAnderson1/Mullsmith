@@ -39,22 +39,24 @@ llm:
   vision: true
   vision_max_image_bytes: 1MiB
 
-  endpoints_file: ./endpoints.yaml
-  profiles_file: ./thinking-profiles.yaml
+  thinking_selector_enable: true
+  endpoints_file: ./endpoints.yaml      # overlay on the embedded endpoint catalogue
+  profiles_file: ./thinking-profiles.yaml # overlay on the embedded profile catalogue
   endpoint_type: gufo
   thinking_profile: qwen3_8
 ```
 
-The four new fields are:
+The five fields are:
 
 | Field | Meaning | When omitted or empty |
 |---|---|---|
-| `llm.endpoints_file` | External endpoint catalogue path | Use embedded endpoint definitions |
-| `llm.profiles_file` | External thinking-profile catalogue path | Use embedded thinking profiles |
-| `llm.endpoint_type` | Exact ID under `endpoints` | Retain the existing transport; no thinking selector |
+| `llm.thinking_selector_enable` | Explicitly shows (`true`) or hides (`false`) the thinking selector | Legacy rule: a selector exists exactly when an `endpoint_type` (or non-`none` `thinking_profile`) is spelled out |
+| `llm.endpoints_file` | Extra endpoint catalogue path, per-ID over the embedded catalogue | Use embedded endpoint definitions |
+| `llm.profiles_file` | Extra thinking-profile catalogue path, per-ID over the embedded catalogue | Use embedded thinking profiles |
+| `llm.endpoint_type` | Exact ID under `endpoints` | Retain the existing transport; no thinking selector. With the switch on, it is required |
 | `llm.thinking_profile` | Exact ID under `profiles` | Use `none`; no thinking selector |
 
-A non-`none` profile requires a valid endpoint type. Unknown explicitly selected endpoint/profile IDs are configuration errors. An explicitly selected endpoint type must use a transport supported by the app, even when its profile is `none`. With all four fields omitted, the existing app configuration must continue working as before.
+The switch set to `false` hides the selector even when the other fields are spelled out; set to `true` it requires an `endpoint_type` (a `thinking_profile` left empty behaves as `none`). A non-`none` profile requires a valid endpoint type. Unknown explicitly selected endpoint/profile IDs are configuration errors. An explicitly selected endpoint type must use a transport supported by the app, even when its profile is `none`. With all five fields omitted, the existing app configuration must continue working as before.
 
 `llm.endpoint` remains the API base URL; `llm.model` remains the model identifier sent to that endpoint. Neither value moves to a catalogue. `endpoint_type` selects a request convention, not another server address. `thinking_profile` selects the controls appropriate to the one configured model.
 

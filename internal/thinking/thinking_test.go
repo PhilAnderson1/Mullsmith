@@ -334,6 +334,33 @@ profiles:
 	}
 }
 
+// The explicit switch (llm.thinking_selector_enable): it outranks the
+// legacy shape both ways, and enabling alone applies the built-in
+// endpoint-type and profile defaults.
+func TestSelectorEnableSwitch(t *testing.T) {
+	yes, no := true, false
+	// The switch alone is not a selection: the endpoint type must still
+	// be named (there is no built-in type default).
+	if _, err := Build(Settings{SelectorEnable: &yes}); err == nil ||
+		!strings.Contains(err.Error(), "endpoint_type") {
+		t.Errorf("bare enable must fail without an endpoint_type: %v", err)
+	}
+	// Type spelled out, profile left empty → "none": runtime exists but
+	// the list stays hidden.
+	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo"}); rt.SelectorVisible() {
+		t.Error(`enabled selection without a profile must behave like "none"`)
+	}
+	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo", ProfileID: "qwen3_8"}); !rt.SelectorVisible() {
+		t.Error("enable with the full pair must show the selector")
+	}
+	if rt, err := Build(Settings{EndpointType: "gufo", ProfileID: "qwen3_8", SelectorEnable: &no}); rt != nil || err != nil {
+		t.Errorf("explicit disable must override a spelled-out selection: %v (%v)", rt, err)
+	}
+	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo", ProfileID: "none"}); rt.SelectorVisible() {
+		t.Error(`thinking_profile "none" must hide the list even when enabled`)
+	}
+}
+
 func mustBuild(t *testing.T, set Settings) *Runtime {
 	t.Helper()
 	rt, err := Build(set)

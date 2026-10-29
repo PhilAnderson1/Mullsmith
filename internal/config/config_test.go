@@ -955,3 +955,34 @@ func TestLoadThinkingFailures(t *testing.T) {
 		}
 	})
 }
+
+// The explicit switch: enabled alone boots the built-in defaults, and
+// disabled outranks a spelled-out selection.
+func TestLoadThinkingSelectorEnable(t *testing.T) {
+	t.Run("bare enable fails without an endpoint type", func(t *testing.T) {
+		if _, err := Load(writeCfg(t, minimalYAML+"  thinking_selector_enable: true\n")); err == nil {
+			t.Error("enable without endpoint_type accepted")
+		}
+	})
+	t.Run("enable with the full pair shows the selector", func(t *testing.T) {
+		cfg, err := Load(writeCfg(t, minimalYAML+"  thinking_selector_enable: true\n  endpoint_type: gufo\n  thinking_profile: qwen3_8\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.LLM.ThinkingSelectorEnable == nil || !*cfg.LLM.ThinkingSelectorEnable {
+			t.Error("switch did not parse")
+		}
+		if cfg.Thinking == nil || !cfg.Thinking.SelectorVisible() {
+			t.Error("selector must appear")
+		}
+	})
+	t.Run("disable overrides a spelled-out selection", func(t *testing.T) {
+		cfg, err := Load(writeCfg(t, minimalYAML+"  thinking_selector_enable: false\n  endpoint_type: gufo\n  thinking_profile: qwen3_8\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Thinking != nil {
+			t.Error("explicit disable must keep the selector off")
+		}
+	})
+}
