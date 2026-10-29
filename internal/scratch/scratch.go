@@ -108,6 +108,49 @@ func EnsureUserDirs(root, userID string) error {
 	return nil
 }
 
+// AdoptOwnership hands a freshly provisioned user tree to the owner a
+// daemon run would have used. It exists for `mullsmith admin create-user`
+// run as root: plain MkdirAll leaves the tree root-owned and the daemon,
+// running unprivileged, cannot write it. A non-root caller is a no-op —
+// its umask already produces the right owner.
+//
+// The daemon's identity is derived from the configured scratchpad root,
+// never from a hardcoded path: serviceOwnerID takes the deepest existing
+// directory at or above it that is not root-owned (for the packaged
+// default, the installer-owned data directory). A root-owned scratchpad
+// root itself — created moments ago, or by an earlier root CLI run — is
+// repaired too, since it would block every later provisioning. The repair
+// is non-recursive: it covers exactly the directories EnsureUserDirs
+// makes. When nothing outside root's grip exists, an error is returned so
+// the caller can warn instead of silently repeating the bug; the
+// directories themselves were still created.
+func AdoptOwnership(root, userID string) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	dir, err := UserRoot(root, userID)
+	if err != nil {
+		return err
+	}
+	uid, gid, ok := serviceOwnerID(root)
+	if !ok {
+		return fmt.Errorf("cannot tell which user runs the daemon: every directory at or above %s is owned by root", root)
+	}
+	targets := []string{dir}
+	for _, sub := range subdirs {
+		targets = append(targets, filepath.Join(dir, sub))
+	}
+	if ownedByRoot(root) {
+		targets = append([]string{root}, targets...)
+	}
+	for _, p := range targets {
+		if err := os.Chown(p, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
 // RemoveUserDirs deletes a user's scratchpad entirely.
 func RemoveUserDirs(root, userID string) error {
 	dir, err := UserRoot(root, userID)

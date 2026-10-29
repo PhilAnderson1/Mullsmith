@@ -366,6 +366,13 @@ func adminCreateUser(ctx context.Context, cfg *config.Config, db *store.DB, args
 		fmt.Fprintln(os.Stderr, "mullsmith: scratchpad:", err)
 		return 1
 	}
+	// Run as root, the tree above belongs to root and the unprivileged
+	// daemon could not write it; hand it to the owner the daemon itself
+	// uses (derived from the scratchpad path). Warn-only: the account is
+	// created either way, and a non-root run never trips this.
+	if err := scratch.AdoptOwnership(cfg.Scratchpad.Root, u.ID); err != nil {
+		fmt.Fprintln(os.Stderr, "mullsmith: warning:", err)
+	}
 	fmt.Printf("created user %s (%s)\n", u.ID, u.Email)
 	return 0
 }
