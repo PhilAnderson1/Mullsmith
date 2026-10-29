@@ -302,14 +302,16 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .conv-item:hover { background: var(--bg-sunken); }
 .conv-item.active { background: var(--bg-sunken); }
-/* The row's actions hide behind "…": revealed on hover, and always there
-   where hover doesn't exist (phones/tablets, §10.2). */
+/* The row's actions hide behind "…": revealed on hover where hover exists;
+   on touch devices the button yields to the long press entirely (below). */
 .conv-menu-btn { opacity: 0; flex: none; }
 .conv-item:hover .conv-menu-btn,
 .conv-menu-btn:focus-visible { opacity: 0.75; }
 .conv-menu-btn:hover { opacity: 1 !important; }
 @media (hover: none) {
-  .conv-menu-btn { opacity: 0.75; }
+  /* Phones and tablets summon the same menu by long press, so the button
+     hides here — pointer-events keeps the invisible target inert. */
+  .conv-menu-btn { opacity: 0; pointer-events: none; }
 }
 .conv-open {
   flex: 1;
