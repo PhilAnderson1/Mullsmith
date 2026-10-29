@@ -2142,7 +2142,18 @@ async function boot() {
     if (!choice) return;
     const what =
       choice === "all" ? "ALL conversations" : `conversations older than ${pruneLabels[choice]}`;
-    if (!(await confirmDialog(`Delete ${what}? This cannot be undone.`))) return;
+    const ok = await confirmDialog(`Delete ${what}? This cannot be undone.`);
+    // When the native dialog closes, WebKit hands focus back to whatever
+    // held it before — this select — and a focused select on iOS opens its
+    // popup. Take it back off: now, on the next task, and whenever WebKit
+    // actually performs the restore (the once-listener expires after a sec
+    // so a later keyboard Tab still focuses the select normally).
+    const kick = () => ev.target.blur();
+    kick();
+    setTimeout(kick, 0);
+    ev.target.addEventListener("focus", kick, { once: true });
+    setTimeout(() => ev.target.removeEventListener("focus", kick), 1000);
+    if (!ok) return;
     await abandonInflight(); // the open thread may be one of the doomed
     try {
       const res = await api.pruneConversations(choice);
