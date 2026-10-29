@@ -244,13 +244,13 @@ type LLM struct {
 	RequestTimeout     Duration `yaml:"request_timeout"`
 	MaxTokensResponse  int      `yaml:"max_tokens_response"`
 	ShowReasoning      bool     `yaml:"show_reasoning"`
-	// Vision sends image attachments to the endpoint inline (OpenAI
-	// image_url content parts) instead of only naming them in the
-	// manifest. OFF by default: a text-only endpoint must never receive a
-	// content-part array it cannot parse.
+	// Vision lets the model see pictures at all: with it on, the
+	// view_image tool is offered (§7.2) and the turns it creates carry
+	// OpenAI image_url content parts. Uploads are never embedded on
+	// their own. OFF by default: a text-only endpoint must never receive
+	// a content-part array it cannot parse.
 	Vision              bool `yaml:"vision"`
-	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"` // per-picture cap (default 4 MiB)
-	VisionMaxImages     int  `yaml:"vision_max_images"`      // inline pictures per message (default 4)
+	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"` // per-picture cap for view_image (default 4 MiB)
 }
 
 type Tools struct {
@@ -664,9 +664,6 @@ func (c *Config) setDefaults() {
 	if c.LLM.VisionMaxImageBytes == 0 {
 		c.LLM.VisionMaxImageBytes = 4 << 20
 	}
-	if c.LLM.VisionMaxImages == 0 {
-		c.LLM.VisionMaxImages = 4
-	}
 	if c.Tools.WebSearch.Provider == "" {
 		c.Tools.WebSearch.Provider = "brave"
 	}
@@ -902,9 +899,6 @@ func (c *Config) Validate() error {
 	}
 	if c.LLM.VisionMaxImageBytes < 0 {
 		f.bad("llm.vision_max_image_bytes: must be >= 0")
-	}
-	if c.LLM.VisionMaxImages < 0 {
-		f.bad("llm.vision_max_images: must be >= 0")
 	}
 
 	switch c.Tools.WebSearch.Provider {

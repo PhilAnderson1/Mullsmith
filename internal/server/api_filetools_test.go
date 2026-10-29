@@ -20,6 +20,15 @@ import (
 // tools and files_share (a pure disk copy into artifacts/ — nothing to
 // configure since the registry died).
 func newRealToolServer(t *testing.T, replies [][]string) (*authTest, *toolLLM, *config.Config) {
+	return newRealToolServerTuned(t, replies, nil)
+}
+
+// newRealToolServerTuned is newRealToolServer with a hook to amend cfg
+// BEFORE server.New — knobs read at construction (llm.vision deciding
+// tool registration) must be set before the registry is built.
+func newRealToolServerTuned(t *testing.T, replies [][]string,
+	tune func(*config.Config),
+) (*authTest, *toolLLM, *config.Config) {
 	t.Helper()
 	script := &toolLLM{replies: replies}
 	fake := newFakeLLM(t, script.handler)
@@ -32,6 +41,9 @@ func newRealToolServer(t *testing.T, replies [][]string) (*authTest, *toolLLM, *
 	cfg.Tools.Agent.Approval = map[string]string{
 		"fs_list": "auto", "fs_read": "auto", "fs_write": "auto",
 		"fs_delete": "auto", "files_share": "auto",
+	}
+	if tune != nil {
+		tune(cfg)
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

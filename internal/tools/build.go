@@ -26,6 +26,13 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {
 			return p
 		}
+		if name == ViewImageName {
+			// Seeing the user's own picture is no more exposure than the
+			// automatic upload embedding llm.vision already performs;
+			// an approval prompt per look would only train reflexive
+			// clicking. Config can still downgrade to confirm.
+			return ApprovalAuto
+		}
 		return ApprovalConfirm // unknown key ⇒ fail closed
 	})
 
@@ -62,6 +69,11 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	reg.Register(FsWrite{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
 	reg.Register(FsDelete{})
 	reg.Register(FilesShare{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
+	// Seeing pictures is only a capability when the endpoint can take
+	// them (llm.vision): without the flag the tool is not offered at all.
+	if cfg.LLM.Vision {
+		reg.Register(ViewImage{MaxImageBytes: int64(cfg.LLM.VisionMaxImageBytes)})
+	}
 	if cfg.Scratchpad.CodeExec.Enabled && code != nil {
 		reg.Register(CodeRun{
 			Runner:       code,

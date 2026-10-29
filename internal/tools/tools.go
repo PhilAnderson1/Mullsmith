@@ -32,6 +32,11 @@ type Result struct {
 	// Data is structured payload for the UI card (e.g. search results);
 	// must be JSON-serializable; never contains secrets.
 	Data any
+	// AttachPath, when non-empty, is a canonical uploads/-relative image
+	// path the chat loop turns into a persisted synthetic user message
+	// carrying the picture (view_image): the one way an image can reach
+	// the model, since tool answers themselves are text-only.
+	AttachPath string
 }
 
 // Tool is one registered function (§7.1).

@@ -13,8 +13,13 @@ import (
 )
 
 // Attachment is one attachments-table row. Path is scratchpad-relative
-// ("uploads/report.pdf"), canonical (scratch.ParseRel segments rejoined),
-// and validated to resolve inside the sender's uploads/ BEFORE insertion.
+// ("uploads/report.pdf"), canonical (scratch.ParseRel segments rejoined)
+// and proven to resolve inside the owner's sandbox BEFORE insertion.
+// The HTTP upload edge narrows that further to uploads/ (a user message
+// may only claim what the user sent); a view_image tool turn may point
+// at any sandbox dir, and the row ages with the file's TTL — the chip
+// renders dead and replay degrades to manifest-only, the documented
+// fate of any vanished attachment.
 type Attachment struct {
 	Path string
 }
@@ -25,10 +30,10 @@ func (a Attachment) Name() string { return path.Base(a.Path) }
 
 // AttachFilesToMessage links upload paths to a message in one transaction.
 // Ownership is STRUCTURAL, not a row lookup: the caller has already proven
-// every path resolves to a regular file inside this user's uploads/ (the
-// fd-pinned sandbox makes "another user's file" unaddressable), so there
-// is nothing left to verify — a plain insert batch. userID is kept in the
-// signature because every call site is scoped to one user; it documents
+// every path resolves to a regular file inside this user's sandbox
+// (the fd-pinned sandbox makes "another user's file" unaddressable), so
+// there is nothing left to verify — a plain insert batch. userID is kept in
+// the signature because every call site is scoped to one user; it documents
 // the contract rather than gating it. Duplicate (message, path) pairs are
 // PK violations; callers dedupe up front.
 func (d *DB) AttachFilesToMessage(ctx context.Context, messageID, userID string, paths []string) error {

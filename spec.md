@@ -164,10 +164,10 @@ llm:
   default_temperature: 0.7
   request_timeout: 5m
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
-  vision: false                          # send attached images inline to a
-                                         # vision-capable endpoint (§6.1 step 1)
-  vision_max_image_bytes: 4MiB           # per-picture inline cap
-  vision_max_images: 4                   # inline pictures per message
+  vision: false                          # let view_image (§7.2) attach pictures to
+                                         # the conversation (needs a vision-capable
+                                         # endpoint; uploads are never sent on their own)
+  vision_max_image_bytes: 4MiB           # per-picture cap for view_image
 
 tools:
   web_search:
@@ -187,6 +187,7 @@ tools:
       fs_read: auto
       fs_write: auto
       files_share: auto           # model presents a scratchpad file for download
+      view_image: auto            # model looks at one of the user's uploads (needs llm.vision, §7.2)
       code_run: confirm           # requires user approval (see §9.9 / §9.13)
 
 auth:
@@ -458,12 +459,11 @@ everything else behind auth.
 
 1. Persist user message (+ attachments as `attachments` rows). When the turn is replayed
    to the model, attachments appear in a server-generated manifest (`name/path/media/bytes`)
-   the `fs_*` tools can open. With `llm.vision` on, raster uploads (png/jpeg/webp sniffed
-   from the bytes, per-file and per-message caps) additionally travel inline as OpenAI
-   `image_url` content parts so a vision-capable endpoint sees the picture itself;
-   refused files (oversized, non-raster content, past the cap) degrade to the manifest
-   line alone, and with the flag off the wire content stays a plain string — a text-only
-   endpoint never sees a parts array.
+   the `fs_*` tools can open. Uploads never travel as pictures — bytes cross the wire
+   only when the model asks for them: with `llm.vision` on the manifest also points at
+   the `view_image` tool (§7.2), whose turns are the only messages that embed an
+   `image_url` content part. With the flag off the wire content stays a plain string
+   and the manifest names no tool — a text-only endpoint never sees a parts array.
 2. **Context assembly:** system prompt (global + conversation) → the WHOLE conversation
    history, oldest first, appended untouched. There is deliberately no trimming: the prompt
    is append-only, which keeps the endpoint's prefix cache warm (a trimmed prompt re-prefills
@@ -540,6 +540,7 @@ output is data, never instructions; approval gates bound the blast radius).
 | `fs_delete` | `path` | Delete inside scratchpad (no `..`, no symlinks out). |
 | `code_run` | `runtime, script, files?` | Execute in user's `work/` dir via allowlisted runtime (§9.9). Returns exit code + stdout/stderr (truncated). Files the script writes stay in the scratchpad. |
 | `files_share` | `path, note?` | **Copies** a scratchpad file into `artifacts/` → appears as a download card in chat (this is how "the model gives you a file" works). Snapshot semantics: the card points at the copy, re-sharing an edited draft lands as `name (1).ext` and the first card keeps its bytes. Sharing a file already in `artifacts/` delivers it in place. `uploads/` cannot be shared — `artifacts/` ages out on the TTL sweep and user originals must not (audit finding 8); uploads are already downloadable from the Files page. |
+| `view_image` | `path` | Registered only with `llm.vision` on: lets the model **see** a picture already on the server — anywhere in the user's sandbox (`uploads/`, `work/`, `artifacts/`; tool answers are text, so nothing can carry an image back). This is the ONLY path picture bytes take to the endpoint (§6.1 step 1: uploads ride as manifest pointers). The tool validates (sniffed png/jpeg/webp, ≤ `vision_max_image_bytes`) and the chat loop then appends a synthetic **user** turn carrying the inline image — and persists it, marked so every later replay re-embeds it, meaning once the model has asked to see a picture it keeps seeing it. Views of `work/`/`artifacts/` pictures age with the TTL sweep, like the files themselves: the chip dies, replay degrades to the manifest line. Auto-approved by default: seeing the user's own bytes is no more exposure than the retired automatic embedding ever was. |
 
 ### 7.3 Agentic file workflow (typical session)
 
@@ -1265,7 +1266,9 @@ calls), and a smoke script per milestone.
   `delta.tool_calls` chunks); **non-standard `reasoning_content` deltas present → §6.2
   parsing requirement.** The 2026-10-25 probe reported `input_modalities: ["text"]` →
   vision out — **superseded 2026-10-27**: `llm.vision` shipped (§6.1 step 1) and the
-  endpoint accepts inline images; it is enabled in this deployment.
+  endpoint accepts inline images; it is enabled in this deployment. **2026-10-29:**
+  automatic upload embedding retired — `view_image` (§7.2) is the only inline path,
+  so picture bytes travel only when the model actually wants them.
 - **Web search provider = Brave Search API** (needs an API key; Brave's free allowance
   ended for new keys, so this is a paid API — the only per-request cost in the stack).
   Brave is the only provider the config accepts; a future second provider would land as

@@ -75,16 +75,14 @@ llm:
   request_timeout: 5m
   max_tokens_response: 4096
   show_reasoning: false
-  # Vision: uploaded images attached to a chat message also travel to the
-  # endpoint as inline image_url content parts (png/jpeg/webp, sniffed from
-  # the bytes). OFF by default — only enable it when the model behind
-  # endpoint actually accepts image content; a text-only model is shown
-  # plain string content and never sees the parts array. Attachments that
-  # are oversized, non-raster, or past vision_max_images still reach the
-  # model as the usual manifest line it can open with fs_read.
+  # Vision: the model may look at pictures with the view_image tool
+  # (spec §7.2) — uploads always ride as manifest pointers only, and
+  # the tool's turns are the sole path image bytes take to the endpoint.
+  # OFF by default — only enable it when the model behind endpoint
+  # actually accepts image content; a text-only model then gets the
+  # plain-string manifest and no view_image tool at all.
   vision: false
-  vision_max_image_bytes: 4MiB    # per-picture inline cap
-  vision_max_images: 4            # inline pictures per message
+  vision_max_image_bytes: 4MiB    # per-picture cap for view_image
 
 tools:
   web_search:

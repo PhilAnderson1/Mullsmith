@@ -353,6 +353,10 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 		"scratchpad.code_execution.mode":            true,
 		"scratchpad.code_execution.container_image": true,
 		"scratchpad.code_execution.run_as_user":     true,
+		// Retired with automatic upload embedding (2026-10-29): view
+		// turns carry exactly one picture, so there is no per-message
+		// inline budget left to configure (§7.2).
+		"llm.vision_max_images": true,
 	}
 	for path, codeDefault := range miniLeaf {
 		if _, ok := exceptions[path]; !ok && !leafEqual(codeDefault, tmplLeaf[path]) {

@@ -133,32 +133,49 @@ func (s *Server) validateAttachmentPaths(w http.ResponseWriter, r *http.Request,
 	return out, true
 }
 
-// attachmentManifest tells the model where a turn's uploads live so it can
-// fs_read them (§7.3). The manifest is generated server-side; upload
-// CONTENT remains untrusted data. Size and existence come from the disk —
-// the single source of truth: an upload that vanished since the message
-// was sent is skipped in silence (the historical chat chip stays, the
-// model is simply not told about bytes that are not there).
+// manifestOpts shapes one attachmentManifest build. visionOn advertises
+// view_image in the header (only when the tool can actually be offered);
+// embed carries the bytes as data: URLs (view turns only); maxBytes is
+// the per-picture cap.
+type manifestOpts struct {
+	visionOn bool
+	embed    bool
+	maxBytes int64
+}
+
+// attachmentManifest tells the model where a turn's attachments live so
+// it can fs_read them (§7.3). The manifest is generated server-side;
+// upload CONTENT remains untrusted data. Size and existence come from
+// the disk — the single source of truth: an attachment that vanished
+// since (the file, or a work/ TTL sweep) is skipped in silence (the
+// historical chat chip stays, the model is simply not told about bytes
+// that are not there).
 //
-// With llm.vision on, raster uploads that fit the configured caps are also
-// embedded as data: URLs (returned in order, to ride the message as
-// image_url content parts); their manifest lines are annotated so the
-// model knows the picture below is that file. Anything the embed refuses —
-// missing bytes, oversized, non-raster content, past the per-message cap —
-// degrades to the manifest-only line, exactly the pre-vision pipeline:
-// the fs_read pointer still works.
-func attachmentManifest(root, userID string, atts []store.Attachment, vis visionLimits) (string, []string) {
+// Uploads NEVER travel as pictures: since view_image (§7.2) the model
+// asks for the ones it wants, so image bytes cross the wire only when
+// they matter to the answer. o.embed is that asking made flesh — used
+// for the synthetic view_image turn, whose persisted marker makes
+// historyToLLM re-embed it on every replay. A missing or oversized file
+// simply drops out of urls (and the inline=yes annotation), so the
+// message degrades to manifest-only, a plain string on the wire.
+func attachmentManifest(root, userID string, atts []store.Attachment,
+	o manifestOpts,
+) (string, []string) {
 	var b strings.Builder
 	var urls []string
-	b.WriteString("\n\n[Attached files — stored in your scratchpad; open them with fs_read:]")
+	head := "\n\n[Attached files — stored in your scratchpad; open them with fs_read"
+	if o.visionOn {
+		head += "; to see an image, call view_image with its path"
+	}
+	b.WriteString(head + ":]")
 	for _, a := range atts {
 		fi, err := scratch.Stat(root, userID, a.Path)
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
 		note := ""
-		if vis.enabled && len(urls) < vis.maxImages && fi.Size() <= vis.maxBytes {
-			if url, ok := imageDataURL(root, userID, a.Path, vis.maxBytes); ok {
+		if o.embed {
+			if url, ok := imageDataURL(root, userID, a.Path, o.maxBytes); ok {
 				urls = append(urls, url)
 				note = " inline=yes"
 			}
@@ -171,32 +188,7 @@ func attachmentManifest(root, userID string, atts []store.Attachment, vis vision
 	return b.String(), urls
 }
 
-// visionLimits snapshots the llm.vision knobs for one request-build.
-// Non-positive values fall back to the program defaults, mirroring
-// validateAttachmentPaths: struct-literal configs built outside
-// config.Load (tests) still get sane caps.
-func (s *Server) visionLimits() visionLimits {
-	vis := visionLimits{
-		enabled:   s.cfg.LLM.Vision,
-		maxBytes:  int64(s.cfg.LLM.VisionMaxImageBytes),
-		maxImages: s.cfg.LLM.VisionMaxImages,
-	}
-	if vis.maxBytes <= 0 {
-		vis.maxBytes = 4 << 20
-	}
-	if vis.maxImages <= 0 {
-		vis.maxImages = 4
-	}
-	return vis
-}
-
-type visionLimits struct {
-	enabled   bool
-	maxBytes  int64
-	maxImages int
-}
-
-// imageDataURL reads a sandboxed upload (§9.7 open chain) and encodes it as
+// imageDataURL reads a sandboxed file (§9.7 open chain) and encodes it as
 // a data: URL when its SNIFFED content type is a raster image endpoints
 // consume. The type comes from the bytes (http.DetectContentType, spec
 // §9.4), never the extension: an SVG or HTML file wearing a .png name is
@@ -483,8 +475,13 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 
 		msgs = append(msgs, llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls})
 		for _, call := range res.ToolCalls {
-			result := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call)
+			result, attach := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call)
 			msgs = append(msgs, llm.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
+			if attach != "" {
+				if im, ok := s.attachImageView(user.ID, conv.ID, attach); ok {
+					msgs = append(msgs, im)
+				}
+			}
 		}
 
 		round++
@@ -613,11 +610,12 @@ func (s *Server) execTimeout(tool string) time.Duration {
 // runToolCall executes one proposed call: audit row, optional approval,
 // execution, truncated result message, tool_end event. Returns the content
 // to hand back to the model (always a valid tool message — denied and
-// failed calls are reported as such, keeping the protocol intact).
+// failed calls are reported as such, keeping the protocol intact) plus any
+// image path the result asks the loop to attach (view_image; "" otherwise).
 // call.ID is guaranteed non-empty by runModelRound.
 func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	userID, convID, assistantMsgID string, call llm.ChatToolCall,
-) string {
+) (string, string) {
 	callID := call.ID
 	name := call.Function.Name
 
@@ -631,7 +629,7 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	tool, known := s.tools.Get(name)
 	if !known {
 		emitEnd("error", "unknown tool", nil)
-		return `{"error":"unknown tool ` + jsonQuote(name) + `"}`
+		return `{"error":"unknown tool ` + jsonQuote(name) + `"}`, ""
 	}
 
 	status := "running"
@@ -670,7 +668,7 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 			// Deliberately no tool-result row: historyToLLM only replays
 			// answered calls, so a denied call simply vanishes from later
 			// prompts; the in-session msgs get the denial answer below.
-			return `{"error":"the user denied this tool call"}`
+			return `{"error":"the user denied this tool call"}`, ""
 		}
 	}
 
@@ -693,7 +691,7 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 		}
 		s.appendToolResult(detachedCtx(), userID, convID, callID, content)
 		emitEnd("error", msg, nil)
-		return content
+		return content, ""
 	}
 
 	content := tools.TruncateMiddle(tres.Content, toolResultBudgetRunes)
@@ -702,7 +700,7 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	}
 	s.appendToolResult(detachedCtx(), userID, convID, callID, content)
 	emitEnd("ok", tres.Summary, tres.Data)
-	return content
+	return content, tres.AttachPath
 }
 
 // detachedCtx gives a final persistence write 5 s of independence from the
@@ -758,6 +756,63 @@ func (s *Server) appendToolResult(ctx context.Context, userID, convID, callID, c
 	}
 }
 
+// viewTurnMarker prefixes the persisted note of every synthetic
+// view_image turn — and is the replay rule: only user messages carrying
+// it re-embed their attachments as image parts (§7.2). Uploads never
+// do; they are pointers on the wire until view_image asks. (A user
+// typing the marker themselves merely re-embeds their own files — the
+// pre-view_image default, so no security angle.)
+const viewTurnMarker = "[view_image attached "
+
+// visionMaxBytes is llm.vision_max_image_bytes with the program default
+// applied, mirroring config.setDefaults so struct-literal configs built
+// outside config.Load (tests) still get a sane cap.
+func (s *Server) visionMaxBytes() int64 {
+	if b := int64(s.cfg.LLM.VisionMaxImageBytes); b > 0 {
+		return b
+	}
+	return 4 << 20
+}
+
+// attachImageView realises a view_image call: tool answers are text, so
+// the picture instead joins the conversation as a synthetic user turn —
+// the manifest + inline-image pipeline, which only such marked turns
+// ever ride. The row is persisted so historyToLLM rebuilds the bytes on
+// every later replay: once the model has asked to see a picture, it
+// keeps seeing it. Only the note is stored; the manifest is generated at
+// replay, exactly like a real user message. Detached context, as for
+// tool results: a browser vanishing must not strand the conversation
+// with an "attached" answer and a hole where the picture should be. If
+// the bytes vanished between validation and here, nothing embeds: false,
+// logged, and this round proceeds picture-less.
+func (s *Server) attachImageView(userID, convID, rel string) (llm.ChatMessage, bool) {
+	att := store.Attachment{Path: rel}
+	manifest, urls := attachmentManifest(s.cfg.Scratchpad.Root, userID,
+		[]store.Attachment{att}, manifestOpts{visionOn: true, embed: true, maxBytes: s.visionMaxBytes()})
+	if len(urls) == 0 {
+		s.logger.Warn("view_image embedded nothing (file gone or unreadable?)",
+			"path", rel, "user", userID)
+		return llm.ChatMessage{}, false
+	}
+	note := viewTurnMarker + jsonQuote(att.Name()) +
+		" so you can see it; it stays in this conversation for later turns]"
+	ctx := detachedCtx()
+	m := &store.Message{
+		ConversationID: convID, Role: "user", Content: note,
+		Status:     "complete",
+		TokenCount: int64ptr(int64(agent.EstimateTokens(note + manifest))),
+	}
+	if err := s.store.AddMessage(ctx, userID, m); err != nil {
+		s.logger.Error("view_image attach persist failed", "error", err, "path", rel)
+		return llm.ChatMessage{}, false
+	}
+	if err := s.store.AttachFilesToMessage(ctx, m.ID, userID, []string{rel}); err != nil {
+		s.logger.Error("view_image attach link failed", "error", err, "path", rel)
+		return llm.ChatMessage{}, false
+	}
+	return llm.ChatMessage{Role: "user", Content: note + manifest, Images: urls}, true
+}
+
 // nameConversation asks the model for a topic title for conv, stores it if
 // the conversation is still unnamed, and announces it over the live stream
 // when possible. Purely best-effort: every failure only means the chat
@@ -801,7 +856,6 @@ func (s *Server) finishMessage(_ context.Context, msgID, content, status string,
 // told about tools in that mode. userID owns the conversation; it is the
 // sandbox root owner for the attachment manifests.
 func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID string) []llm.ChatMessage {
-	vis := s.visionLimits()
 	answered := map[string]bool{}
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -844,8 +898,13 @@ func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID st
 			content := m.Content
 			var imgs []string
 			if m.Role == "user" && len(m.Attachments) > 0 {
+				// Uploads ride as manifest lines; only the marked
+				// view_image turns carry their bytes (§7.2).
+				embed := s.cfg.LLM.Vision && strings.HasPrefix(m.Content, viewTurnMarker)
 				var manifest string
-				manifest, imgs = attachmentManifest(s.cfg.Scratchpad.Root, userID, m.Attachments, vis)
+				manifest, imgs = attachmentManifest(s.cfg.Scratchpad.Root, userID,
+					m.Attachments, manifestOpts{visionOn: s.cfg.LLM.Vision, embed: embed,
+						maxBytes: s.visionMaxBytes()})
 				content += manifest
 			}
 			out = append(out, llm.ChatMessage{Role: m.Role, Content: content, Images: imgs})
