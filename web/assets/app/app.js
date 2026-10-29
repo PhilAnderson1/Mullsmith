@@ -474,6 +474,8 @@ function convRow(c) {
   if (c.id === state.currentId) li.classList.add("active");
 
   li.querySelector(".conv-open").addEventListener("click", () => {
+    // The long-press echo (see strayClickGuardUntil) must not open the chat.
+    if (Date.now() < strayClickGuardUntil) return;
     // Typing right away is the point of opening a chat: the one-shot makes
     // selectConversation focus the composer once it has loaded (skipped on
     // phones, and on re-clicks of the open chat, which fire no hashchange —
@@ -573,6 +575,7 @@ function convRow(c) {
     if (pressFired) {
       ev.preventDefault(); // swallow the tap the held finger would also send
       pressFired = false;
+      strayClickGuardUntil = Date.now() + 700; // …and its home-screen echo
     }
   });
   li.addEventListener("touchcancel", () => {
@@ -591,6 +594,13 @@ function convRow(c) {
 // time; the row hands over its own action closures, so the menu knows
 // nothing about titles or the delete flow.
 let rowMenuTarget = null;
+// Home-screen (standalone) WebKit can still synthesise a click after a
+// long press even though touchend called preventDefault — in-app-browser
+// it stays away, in home-screen mode it does not, and that stray click
+// lands inside the list and closes the menu instantly. For a short window
+// after the gesture, clicks inside the list are ignored (deliberate taps
+// elsewhere, or on the menu itself, still work).
+let strayClickGuardUntil = 0;
 
 function openConvRowMenu(target, ev) {
   closeConvRowMenu();
@@ -2149,6 +2159,7 @@ async function boot() {
   // is its own toggle (its click bubbles here after the menu opened), so
   // the "outside" check must spare it like a container.
   document.addEventListener("click", (ev) => {
+    if (!$("#conv-row-menu").hidden && Date.now() < strayClickGuardUntil && ev.target.closest("#conv-list")) return;
     if (!$("#conv-row-menu").hidden && !ev.target.closest("#conv-row-menu, .conv-menu-btn")) closeConvRowMenu();
   });
   document.addEventListener("keydown", (ev) => {
