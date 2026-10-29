@@ -150,6 +150,7 @@
       <div class="conv-prune">
         <select id="conv-prune-select" aria-label="Delete older than">
           <option value="" selected>Delete older than…</option>
+          <option value="1d">1 day</option>
           <option value="1w">1 week</option>
           <option value="1mo">1 month</option>
           <option value="1y">1 year</option>
@@ -176,22 +177,33 @@
       <div id="pending-files" class="pending-files" hidden></div>
       <p id="ctx-meter" class="ctx-meter" hidden></p>
       <div class="composer">
-        <button id="btn-attach" class="icon-btn" type="button" title="Attach files" aria-label="Attach files">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.9 8.9a1.8 1.8 0 0 1-2.6-2.6l8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        </button>
+        <!-- "+" opens a vertical add-menu (thinking level + attach files)
+             instead of a paperclip and a row under the prompt box — one
+             icon fewer, one row fewer. -->
+        <div class="add-wrap" id="add-wrap">
+          <button id="btn-add" class="icon-btn" type="button" title="More options" aria-label="More options" aria-haspopup="true" aria-expanded="false" aria-controls="add-menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+          </button>
+          <div class="add-menu" id="add-menu" role="menu" hidden>
+            <!-- Thinking-level selector (thinking-control-specification.md §8):
+                 populated from /api/v1/meta's choices and hidden entirely
+                 when the deployment offers nothing to choose. -->
+            <div class="add-item add-item-select" id="thinking-row" hidden>
+              <label for="thinking-select">Thinking</label>
+              <select id="thinking-select" title="Thinking level for this conversation"></select>
+            </div>
+            <button id="btn-attach" class="add-item" type="button" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.9 8.9a1.8 1.8 0 0 1-2.6-2.6l8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              <span>Attach files</span>
+            </button>
+          </div>
+        </div>
         <input id="attach-input" type="file" multiple hidden>
         <textarea id="composer-input" rows="1" placeholder="Start or pick a chat first" disabled></textarea>
         <button id="btn-stop" class="icon-btn stop-btn" type="button" title="Stop generating" aria-label="Stop generating" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
         </button>
         <button id="btn-send" class="btn primary" disabled>Send</button>
-      </div>
-      <!-- Thinking-level selector (thinking-control-specification.md §8):
-           below the prompt box, populated from /api/v1/meta's choices and
-           hidden entirely when the deployment offers nothing to choose. -->
-      <div class="thinking-row" id="thinking-row" hidden>
-        <label for="thinking-select">Thinking</label>
-        <select id="thinking-select" title="Thinking level for this conversation"></select>
       </div>
 
       <!-- Files view (spec §10.2): swaps into the chat main area -->

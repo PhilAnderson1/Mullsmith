@@ -416,33 +416,61 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .composer .btn { flex: none; }
 
-/* Thinking-level row under the prompt box. Opaque theme tokens, not
-   transparent: the native popup paints its list from the control's
-   colours, and transparency there means the OS default with muted grey
-   text on top (same reasoning as the sidebar's command dropdown). */
-.thinking-row {
+/* Composer "+" add-menu: a short vertical list (thinking level, attach
+   files) opening up-left from the button, in place of the old paperclip
+   + row-under-the-composer. Opaque theme tokens, not transparent: the
+   native select popup paints its list from the control's colours, and
+   transparency there means the OS default with muted grey text on top. */
+.add-wrap { position: relative; flex: none; }
+.add-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 13.5rem;
+  padding: 0.5rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.4);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  color: var(--fg-muted);
+  font-size: 0.85em;
+}
+.add-item {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0 clamp(0.6rem, 3vw, 1.5rem) 0.45rem;
-  padding-bottom: calc(0.45rem + env(safe-area-inset-bottom));
-  background: var(--bg-raised);
-  color: var(--fg-muted);
-  font-size: 0.8em;
+  min-height: 2.25rem; /* both rows share one height, so the Thinking label
+                          sits level with the Attach files text */
+  padding: 0.4rem 0.5rem;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.thinking-row select {
+button.add-item:hover, button.add-item:focus-visible { background: var(--bg-sunken); }
+.add-item svg { width: 18px; height: 18px; flex: none; }
+/* Label inherits the menu row's colour — same as the Attach files text —
+   and sheds the global label styling (block, semibold) so the two rows
+   match. */
+.add-item-select { gap: 0.3rem; padding-right: 0.2rem; }
+.add-item-select label { display: inline; font-weight: 400; margin: 0; }
+.add-item-select select {
   font: inherit;
   color: var(--fg);
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 0.2rem 0.4rem;
-  min-height: 1.9rem;
-  max-width: 60vw;
+  padding: 0.15rem 0.4rem;
+  max-width: 60%;
 }
-.thinking-row option { color: var(--fg); background: var(--bg-raised); }
-/* The safe-area inset belongs to whichever footer element sits last. */
-body.thinking-visible .composer { padding-bottom: 0.6rem; }
+.add-item-select option { color: var(--fg); background: var(--bg-raised); }
 
 /* ---------- dialog ---------- */
 

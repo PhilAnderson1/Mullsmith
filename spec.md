@@ -424,7 +424,7 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 |---|---|---|
 | GET | `/api/v1/conversations?q=&cursor=` | List user's conversations (newest updated first, optional title search). |
 | POST | `/api/v1/conversations` | `{title?, model?, system_prompt?}` → create. A missing `system_prompt` inherits the user's `default_system_prompt` (the row stores the copy; later default edits never rewrite existing chats). |
-| DELETE | `/api/v1/conversations?older_than=` | Bulk housekeeping (`older_than` ∈ `1w`/`1mo`/`1y`/`all`, calendar-approximated 7/30/365 days; anything else → 400). Hard-deletes the caller's conversations with `updated_at` older than the cutoff — `all` spares none — FK cascades as per-row delete does; answers `{deleted, ids}` so the UI knows whether its open thread died, and approval memory dies with each row. |
+| DELETE | `/api/v1/conversations?older_than=` | Bulk housekeeping (`older_than` ∈ `1d`/`1w`/`1mo`/`1y`/`all`, calendar-approximated 1/7/30/365 days; anything else → 400). Hard-deletes the caller's conversations with `updated_at` older than the cutoff — `all` spares none — FK cascades as per-row delete does; answers `{deleted, ids}` so the UI knows whether its open thread died, and approval memory dies with each row. |
 | GET | `/api/v1/conversations/{id}` | Metadata + pinned files. Carries `thinking`: the **effective** choice (`default`, or a saved one still valid under the current endpoint/model/type/profile — §6.3). |
 | PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt, thinking choice (`{thinking}`; §6.3). |
 | DELETE | `/api/v1/conversations/{id}` | Hard delete; FK cascades to messages → tool calls & attachment links. |
@@ -560,9 +560,9 @@ budget preset that could leave no room inside `max_tokens_response` is a configu
   before the endpoint is contacted, never silently translated.
 - **Snapshot.** The fragment is rendered once at generation start and reused for every tool
   round of that reply: moving the selector mid-flight affects the next request only.
-- **UI.** A `Thinking` dropdown under the composer (§10.2), populated from `meta.thinking`,
-  hidden entirely when there is nothing to choose. Changing it PATCHes the conversation
-  (reverting the select if the server refuses).
+- **UI.** A `Thinking` item inside the composer's **"+" add-menu** (§10.2), populated from
+  `meta.thinking`, hidden entirely when there is nothing to choose. Changing it PATCHes the
+  conversation (reverting the select if the server refuses).
 
 ---
 
@@ -1218,7 +1218,7 @@ Cross-cutting touch/responsive behavior:
 | View | Contents |
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
-| **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat") with a muted **"Delete older than…"** command dropdown under it (1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. Directly under the composer sits a muted **Thinking** dropdown (Default first, then the deployment's choices from `meta.thinking`; hidden when there is nothing to choose — §6.3). Each assistant reply carries a muted **tok/s**
+| **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat") with a muted **"Delete older than…"** command dropdown under it (1 day / 1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), a **"+" add-menu button** (a vertical popover holding the muted **Thinking** dropdown — Default first, then the deployment's choices from `meta.thinking`; hidden when there is nothing to choose, §6.3 — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
 note, pinned to the right of a footnote row under the answer (completion tokens
 ÷ model-round time; absent on rows without timing, e.g. history from before the
 feature). The **regenerate** button shares that row at the far left, so the two

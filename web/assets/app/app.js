@@ -1882,7 +1882,7 @@ function thinkingChoices() {
 
 // Build the dropdown from /api/v1/meta. Only the built-in Default (or
 // nothing at all) means the deployment has no thinking decision to offer:
-// the row is hidden and requests carry no override.
+// the item is hidden from the add-menu and requests carry no override.
 function populateThinkingChoices() {
   const sel = $("#thinking-select");
   sel.replaceChildren();
@@ -1892,10 +1892,7 @@ function populateThinkingChoices() {
     opt.textContent = c.label;
     sel.appendChild(opt);
   }
-  const visible = thinkingChoices().length > 1;
-  show($("#thinking-row"), visible);
-  // Tells the composer its safe-area inset is now the row's job.
-  document.body.classList.toggle("thinking-visible", visible);
+  show($("#thinking-row"), thinkingChoices().length > 1);
 }
 
 // The server projects the EFFECTIVE choice (a stale one is already
@@ -1925,6 +1922,17 @@ async function onThinkingChange(ev) {
     handleErr(err, "set thinking level");
   }
 }
+
+// --- composer "+" add-menu ---------------------------------------------------------------
+
+// One button, one vertical menu: attach files and the thinking selector
+// live here instead of occupying the composer bar and a row beneath it.
+function setAddMenu(open) {
+  show($("#add-menu"), open);
+  $("#btn-add").setAttribute("aria-expanded", String(open));
+}
+
+function closeAddMenu() { setAddMenu(false); }
 
 // --- confirm dialog ------------------------------------------------------------------------
 
@@ -2028,7 +2036,7 @@ async function boot() {
   // then the select falls back to its prompt (it holds no setting). The
   // server answers with the deleted ids, so we know precisely whether the
   // open thread was among them.
-  const pruneLabels = { "1w": "1 week", "1mo": "1 month", "1y": "1 year", all: "ALL" };
+  const pruneLabels = { "1d": "1 day", "1w": "1 week", "1mo": "1 month", "1y": "1 year", all: "ALL" };
   $("#conv-prune-select").addEventListener("change", async (ev) => {
     const choice = ev.target.value;
     ev.target.value = "";
@@ -2051,14 +2059,32 @@ async function boot() {
     }
   });
   $("#model-picker").addEventListener("change", onModelChange);
-  $("#thinking-select").addEventListener("change", onThinkingChange);
+  $("#thinking-select").addEventListener("change", (ev) => {
+    onThinkingChange(ev);
+    closeAddMenu(); // one pick, menu done — like the sidebar's command dropdown
+  });
   $("#btn-menu").addEventListener("click", () =>
     document.body.classList.contains("drawer-open") ? closeDrawer() : openDrawer()
   );
   $("#backdrop").addEventListener("click", closeDrawer);
   $("#btn-send").addEventListener("click", () => sendFromComposer());
   $("#btn-stop").addEventListener("click", stopStream);
-  $("#btn-attach").addEventListener("click", () => $("#attach-input").click());
+  // The add-menu: the "+" toggles it; any click outside or Escape dismisses.
+  // The check is containment, so clicking the open select's own rows — or
+  // the button again — never fights the toggle.
+  $("#btn-add").addEventListener("click", () => {
+    setAddMenu($("#add-menu").hidden);
+  });
+  document.addEventListener("click", (ev) => {
+    if (!$("#add-menu").hidden && !$("#add-wrap").contains(ev.target)) closeAddMenu();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeAddMenu();
+  });
+  $("#btn-attach").addEventListener("click", () => {
+    closeAddMenu();
+    $("#attach-input").click();
+  });
   $("#attach-input").addEventListener("change", onAttachPick);
   $("#btn-files").addEventListener("click", () => {
     location.hash = "#/files";

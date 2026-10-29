@@ -318,6 +318,7 @@ func (s *Server) handleConversationDelete(w http.ResponseWriter, r *http.Request
 // (30/365 days): a housekeeping threshold, not a billing period. "all"
 // maps to zero so the store applies no age condition at all.
 var pruneAges = map[string]time.Duration{
+	"1d":  24 * time.Hour,
 	"1w":  7 * 24 * time.Hour,
 	"1mo": 30 * 24 * time.Hour,
 	"1y":  365 * 24 * time.Hour,
@@ -329,7 +330,7 @@ func (s *Server) handleConversationsPrune(w http.ResponseWriter, r *http.Request
 	age, ok := pruneAges[r.URL.Query().Get("older_than")]
 	if !ok {
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_older_than",
-			"older_than must be one of 1w, 1mo, 1y, all")
+			"older_than must be one of 1d, 1w, 1mo, 1y, all")
 		return
 	}
 	var cutoff int64
