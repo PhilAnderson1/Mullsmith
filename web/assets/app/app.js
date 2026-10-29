@@ -838,6 +838,10 @@ function refreshLastAssistant() {
 
 function syncComposerButtons() {
   const busy = Boolean(state.inflight);
+  // Stop swaps into Send's slot while generating: a disabled-but-present
+  // Send crowds the row next to the stop square (squeezing the textarea,
+  // most visibly on phones). Hiding it makes the replacement literal.
+  $("#btn-send").hidden = busy;
   $("#btn-send").disabled = busy || !state.currentId;
   $("#btn-stop").hidden = !busy;
 }
