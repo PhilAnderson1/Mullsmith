@@ -310,8 +310,11 @@ body.drawer-open #sidebar { transform: translateX(0); }
 .conv-menu-btn:hover { opacity: 1 !important; }
 @media (hover: none) {
   /* Phones and tablets summon the same menu by long press, so the button
-     hides here — pointer-events keeps the invisible target inert. */
-  .conv-menu-btn { opacity: 0; pointer-events: none; }
+     hides here — pointer-events keeps the invisible target inert, and the
+     :hover selector cancels the sticky hover the touch browser applies to
+     the pressed row. */
+  .conv-menu-btn,
+  .conv-item:hover .conv-menu-btn { opacity: 0; pointer-events: none; }
 }
 .conv-open {
   flex: 1;
