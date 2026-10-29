@@ -838,12 +838,17 @@ function refreshLastAssistant() {
 
 function syncComposerButtons() {
   const busy = Boolean(state.inflight);
+  const send = $("#btn-send");
+  const stop = $("#btn-stop");
   // Stop swaps into Send's slot while generating: a disabled-but-present
   // Send crowds the row next to the stop square (squeezing the textarea,
-  // most visibly on phones). Hiding it makes the replacement literal.
-  $("#btn-send").hidden = busy;
-  $("#btn-send").disabled = busy || !state.currentId;
-  $("#btn-stop").hidden = !busy;
+  // most visibly on phones). Hiding it makes the replacement literal —
+  // and measured, so the row cannot shift: the square takes Send's exact
+  // width (measured live, because "Send" is font- and locale-dependent).
+  if (busy && !send.hidden) stop.style.minWidth = send.offsetWidth + "px";
+  send.hidden = busy;
+  send.disabled = busy || !state.currentId;
+  stop.hidden = !busy;
 }
 
 function focusComposer() {
