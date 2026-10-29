@@ -351,6 +351,9 @@ body.drawer-open #sidebar { transform: translateX(0); }
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
 }
 .row-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.45rem 0.6rem;
   border: none;
   border-radius: var(--radius);
@@ -360,6 +363,8 @@ body.drawer-open #sidebar { transform: translateX(0); }
   text-align: left;
   cursor: pointer;
 }
+.row-menu-item svg { flex: none; width: 1.05em; height: 1.05em; fill: currentColor; }
+.row-menu-item[data-action="delete"] svg { fill: var(--danger); }
 .row-menu-item:hover, .row-menu-item:focus-visible { background: var(--bg-sunken); }
 
 /* ---------- thread & composer ---------- */

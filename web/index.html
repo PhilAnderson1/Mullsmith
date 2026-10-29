@@ -307,8 +307,14 @@
   <!-- Sidebar row actions, summoned by the "…" button or a long press.
        Lives outside the list; app.js points it at one row at a time. -->
   <div class="row-menu" id="conv-row-menu" role="menu" hidden>
-    <button class="row-menu-item" type="button" role="menuitem" data-action="rename">Rename</button>
-    <button class="row-menu-item" type="button" role="menuitem" data-action="delete">Delete</button>
+    <button class="row-menu-item" type="button" role="menuitem" data-action="rename">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+      Rename
+    </button>
+    <button class="row-menu-item" type="button" role="menuitem" data-action="delete">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      Delete
+    </button>
   </div>
 
   <!-- One message bubble -->
