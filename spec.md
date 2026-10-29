@@ -307,6 +307,7 @@ messages (
   token_count     INTEGER,               -- estimate, for context budgeting
   completion_tokens INTEGER,             -- output tokens (reported, else estimated) — per-message tok/s
   duration_ms     INTEGER,               -- model-round wall time (tool runs excluded) — per-message tok/s
+  synthetic       INTEGER NOT NULL DEFAULT 0, -- server-inserted row (view_image turn); API projects it, the UI renders no bubble
   created_at      INTEGER NOT NULL
 )
 
@@ -540,7 +541,7 @@ output is data, never instructions; approval gates bound the blast radius).
 | `fs_delete` | `path` | Delete inside scratchpad (no `..`, no symlinks out). |
 | `code_run` | `runtime, script, files?` | Execute in user's `work/` dir via allowlisted runtime (§9.9). Returns exit code + stdout/stderr (truncated). Files the script writes stay in the scratchpad. |
 | `files_share` | `path, note?` | **Copies** a scratchpad file into `artifacts/` → appears as a download card in chat (this is how "the model gives you a file" works). Snapshot semantics: the card points at the copy, re-sharing an edited draft lands as `name (1).ext` and the first card keeps its bytes. Sharing a file already in `artifacts/` delivers it in place. `uploads/` cannot be shared — `artifacts/` ages out on the TTL sweep and user originals must not (audit finding 8); uploads are already downloadable from the Files page. |
-| `view_image` | `path` | Registered only with `llm.vision` on: lets the model **see** a picture already on the server — anywhere in the user's sandbox (`uploads/`, `work/`, `artifacts/`; tool answers are text, so nothing can carry an image back). This is the ONLY path picture bytes take to the endpoint (§6.1 step 1: uploads ride as manifest pointers). The tool validates (sniffed png/jpeg/webp, ≤ `vision_max_image_bytes`) and the chat loop then appends a synthetic **user** turn carrying the inline image — and persists it, marked so every later replay re-embeds it, meaning once the model has asked to see a picture it keeps seeing it. Views of `work/`/`artifacts/` pictures age with the TTL sweep, like the files themselves: the chip dies, replay degrades to the manifest line. Auto-approved by default: seeing the user's own bytes is no more exposure than the retired automatic embedding ever was. |
+| `view_image` | `path` | Registered only with `llm.vision` on: lets the model **see** a picture already on the server — anywhere in the user's sandbox (`uploads/`, `work/`, `artifacts/`; tool answers are text, so nothing can carry an image back). This is the ONLY path picture bytes take to the endpoint (§6.1 step 1: uploads ride as manifest pointers). The tool validates (sniffed png/jpeg/webp, ≤ `vision_max_image_bytes`) and the chat loop then appends a synthetic **user** turn carrying the inline image — persisted with `synthetic = 1` (the API projects `"synthetic": true`; the UI renders no bubble for such rows, they exist for the model) and re-embedded by flag on every later replay: once the model has asked to see a picture it keeps seeing it. Views of `work/`/`artifacts/` pictures age with the TTL sweep, like the files themselves: the chip dies, replay degrades to the manifest line. Auto-approved by default: seeing the user's own bytes is no more exposure than the retired automatic embedding ever was. |
 
 ### 7.3 Agentic file workflow (typical session)
 

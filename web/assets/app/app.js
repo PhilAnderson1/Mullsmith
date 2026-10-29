@@ -587,6 +587,13 @@ function markActive() {
 
 // --- messages ---------------------------------------------------------------------------
 
+// isDisplayable gates the stored rows the thread renders: tool answers
+// (the tool card covers them) and synthetic turns the server inserted
+// for the model — today view_image's (§7.2), flagged in the DB and
+// projected by the API, so typing the old marker text can no longer hide
+// a genuine message.
+const isDisplayable = (m) => m.role !== "tool" && !m.synthetic;
+
 function msgNode(m) {
   const el = clone("tpl-message");
   el.classList.add(m.role === "user" ? "from-user" : "from-assistant");
@@ -766,7 +773,7 @@ async function loadFirstMessages() {
     if (data.next_cursor) thread.appendChild(earlierButton(data.next_cursor));
     // role='tool' rows carry model-facing payloads; the UI shows them as
     // tool cards attached to the assistant message that proposed the call.
-    for (const m of data.items) if (m.role !== "tool") thread.appendChild(msgNode(m));
+    for (const m of data.items) if (isDisplayable(m)) thread.appendChild(msgNode(m));
   }
   state.messagesCursor = data.next_cursor;
   refreshLastAssistant();
@@ -788,7 +795,7 @@ function earlierButton(cursor) {
       // The page is chronological (oldest first); insert each item before the
       // same ref so the whole page lands between the button and what was there.
       const ref = nextBtn ? nextBtn.nextSibling : host.firstChild;
-      for (const m of data.items) if (m.role !== "tool") host.insertBefore(msgNode(m), ref);
+      for (const m of data.items) if (isDisplayable(m)) host.insertBefore(msgNode(m), ref);
       state.messagesCursor = data.next_cursor;
       refreshLastAssistant();
     } catch (err) {

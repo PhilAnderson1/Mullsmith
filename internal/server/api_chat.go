@@ -757,11 +757,11 @@ func (s *Server) appendToolResult(ctx context.Context, userID, convID, callID, c
 }
 
 // viewTurnMarker prefixes the persisted note of every synthetic
-// view_image turn — and is the replay rule: only user messages carrying
-// it re-embed their attachments as image parts (§7.2). Uploads never
-// do; they are pointers on the wire until view_image asks. (A user
-// typing the marker themselves merely re-embeds their own files — the
-// pre-view_image default, so no security angle.)
+// view_image turn. It is prose for the model — "this attachment is
+// here because you asked" — nothing more: display filtering and replay
+// embedding both follow the row's store.Message.Synthetic flag (§7.2),
+// so typing this prefix changes nothing. Migration 0012 retro-flags the
+// rows written before the flag existed by matching this prefix.
 const viewTurnMarker = "[view_image attached "
 
 // visionMaxBytes is llm.vision_max_image_bytes with the program default
@@ -800,6 +800,7 @@ func (s *Server) attachImageView(userID, convID, rel string) (llm.ChatMessage, b
 	m := &store.Message{
 		ConversationID: convID, Role: "user", Content: note,
 		Status:     "complete",
+		Synthetic:  true, // the browser hides it: the model's copy, not your words
 		TokenCount: int64ptr(int64(agent.EstimateTokens(note + manifest))),
 	}
 	if err := s.store.AddMessage(ctx, userID, m); err != nil {
@@ -898,9 +899,10 @@ func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID st
 			content := m.Content
 			var imgs []string
 			if m.Role == "user" && len(m.Attachments) > 0 {
-				// Uploads ride as manifest lines; only the marked
-				// view_image turns carry their bytes (§7.2).
-				embed := s.cfg.LLM.Vision && strings.HasPrefix(m.Content, viewTurnMarker)
+				// Uploads ride as manifest lines; only synthetic rows
+				// (view_image turns, §7.2) carry their bytes, decided by
+				// the DB flag, not by sniffing the note text.
+				embed := s.cfg.LLM.Vision && m.Synthetic
 				var manifest string
 				manifest, imgs = attachmentManifest(s.cfg.Scratchpad.Root, userID,
 					m.Attachments, manifestOpts{visionOn: s.cfg.LLM.Vision, embed: embed,

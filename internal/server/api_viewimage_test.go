@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/base64"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -117,6 +118,31 @@ func TestChatViewImageAttachesPictureTurn(t *testing.T) {
 		t.Errorf("replayed tool rows = %d, want 1", len(n))
 	}
 
+	// The API projects the row's synthetic flag so the browser hides it
+	// without sniffing content; genuine rows carry no flag at all.
+	pageResp := a.do(http.MethodGet, "/api/v1/conversations/"+c.ID+"/messages", nil)
+	page := decodedBody(t, pageResp)
+	raws, _ := page["items"].([]any)
+	seenFlagged, seenGenuine := 0, 0
+	for _, it := range raws {
+		m, _ := it.(map[string]any)
+		s, isUser := m["synthetic"]
+		switch {
+		case strings.HasPrefix(m["content"].(string), viewTurnMarker):
+			if !isUser || s != true {
+				t.Errorf("view turn projected without synthetic=true: %v", m)
+			}
+			seenFlagged++
+		case m["role"] == "user":
+			if isUser {
+				t.Errorf("genuine user message carries a synthetic flag: %v", m)
+			}
+			seenGenuine++
+		}
+	}
+	if seenFlagged != 1 || seenGenuine != 2 { // both typed messages of the test
+		t.Errorf("projected rows: flagged = %d, genuine = %d, want 1 and 2", seenFlagged, seenGenuine)
+	}
 }
 
 func TestChatViewImageAbsentWithoutVision(t *testing.T) {

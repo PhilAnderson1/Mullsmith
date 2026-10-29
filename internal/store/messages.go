@@ -25,6 +25,10 @@ type Message struct {
 	CompletionTokens *int64
 	DurationMS       *int64
 	CreatedAt        time.Time
+	// Synthetic marks rows the server inserted on its own behalf — today
+	// only the view_image turn (§7.2): role 'user' so its image replays,
+	// but never a "You" bubble. The client filters on this flag.
+	Synthetic bool
 	// ToolCallID is set on role='tool' rows: the call this result answers.
 	ToolCallID string
 	// Calls holds the audit rows for assistant messages that proposed tool
@@ -70,9 +74,9 @@ func (d *DB) AddMessage(ctx context.Context, userID string, m *Message) error {
 		tok = *m.TokenCount
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at, tool_call_id)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ConversationID, m.Role, m.Content, m.Status, tok, m.CreatedAt.Unix(), m.ToolCallID); err != nil {
+		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, m.Role, m.Content, m.Status, tok, m.CreatedAt.Unix(), m.ToolCallID, m.Synthetic); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -173,7 +177,7 @@ func (d *DB) SweepStreaming(ctx context.Context) (int64, error) {
 // OpenAI tool protocol faithfully.
 func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Message, error) {
 	rows, err := d.sqlDB.QueryContext(ctx,
-		`SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id
+		`SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic
 		 FROM messages
 		 WHERE conversation_id = ? AND id <> ? AND status = 'complete'
 		 ORDER BY created_at ASC, id ASC LIMIT 4000`,
@@ -189,7 +193,7 @@ func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Me
 			tok     sql.NullInt64
 			created int64
 		)
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created, &m.ToolCallID); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created, &m.ToolCallID, &m.Synthetic); err != nil {
 			return nil, err
 		}
 		if tok.Valid {
@@ -273,7 +277,7 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 	}
 	sb := strings.Builder{}
 	sb.WriteString(`SELECT id, conversation_id, role, content, status, token_count,
-	                        completion_tokens, duration_ms, created_at, tool_call_id
+	                        completion_tokens, duration_ms, created_at, tool_call_id, synthetic
 	                 FROM messages WHERE conversation_id = ?`)
 	args := []any{convID}
 	if cursor != "" {
@@ -301,7 +305,7 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 			created int64
 		)
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status,
-			&tok, &comp, &dur, &created, &m.ToolCallID); err != nil {
+			&tok, &comp, &dur, &created, &m.ToolCallID, &m.Synthetic); err != nil {
 			return nil, "", err
 		}
 		if tok.Valid {

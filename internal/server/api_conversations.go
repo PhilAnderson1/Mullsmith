@@ -54,6 +54,11 @@ func (s *Server) messageJSON(m *store.Message, userID string) map[string]any {
 	if m.ToolCallID != "" {
 		j["tool_call_id"] = m.ToolCallID
 	}
+	if m.Synthetic {
+		// Server-inserted turn (view_image, §7.2): the client renders no
+		// bubble for it. Absent means a genuine message.
+		j["synthetic"] = true
+	}
 	if len(m.Calls) > 0 {
 		calls := make([]map[string]any, 0, len(m.Calls))
 		for _, tc := range m.Calls {
