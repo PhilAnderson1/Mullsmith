@@ -330,14 +330,16 @@ body.drawer-open #sidebar { transform: translateX(0); }
   font-size: 0.82em;
 }
 .msg-role { font-weight: 700; }
-/* Footnote row under the answer: the regenerate button on the left, the
-   round's tok/s pinned right. Hidden until it has something to show — a
-   tok/s figure (app.js adds .on) or the regenerate button, which only the
-   last assistant reply carries. Both live on one line: they are footnotes
-   on the same answer, and tok/s keeps its place when the button comes and
-   goes. */
+/* Footnote row under the answer, right-aligned: the round's tok/s and,
+   furthest right, the regenerate button — which only the last assistant
+   reply carries, so on older messages the rate sits alone at the right
+   edge. Hidden until it has something to show — a tok/s figure (app.js
+   adds .on) or the regenerate button. Both live on one line: they are
+   footnotes on the same answer, and tok/s keeps its place when the
+   button comes and goes. */
 .msg-foot {
   display: none;
+  justify-content: flex-end;
   align-items: center;
   gap: 0.6rem;
   margin-top: 0.15rem;
@@ -345,7 +347,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   font-size: 0.78em;
 }
 .msg-foot.on, .msg.last-assistant .msg-foot { display: flex; }
-.msg-tps { font-variant-numeric: tabular-nums; margin-left: auto; }
+.msg-tps { font-variant-numeric: tabular-nums; }
 .msg-status { margin: 0.3rem 0 0; font-size: 0.82em; }
 .load-earlier { max-width: var(--thread-max); margin: 0 auto; }
 

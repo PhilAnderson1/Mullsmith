@@ -280,15 +280,17 @@
       <header class="msg-meta"><span class="msg-role"></span><time class="msg-time"></time></header>
       <div class="msg-body"></div>
       <p class="muted msg-status" hidden></p>
-      <!-- One footnote row: the reply's action on the left, its generation
-           rate pinned right (styles.css: .msg-foot). -->
+      <!-- One footnote row, right-aligned: generation rate, then the
+           reply's regenerate action furthest right (styles.css: .msg-foot).
+           On older replies the button hides and the rate sits alone at
+           the right edge. -->
       <footer class="msg-foot">
+        <span class="msg-tps"></span>
         <div class="msg-actions">
           <button class="icon-btn tiny regen-btn" type="button" aria-label="Regenerate reply" title="Regenerate">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1M20.5 4v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
           </button>
         </div>
-        <span class="msg-tps"></span>
       </footer>
     </article>
   </template>
