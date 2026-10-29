@@ -648,7 +648,10 @@ function msgNode(m) {
   const time = el.querySelector("time");
   time.dateTime = m.created_at;
   time.textContent = new Date(m.created_at).toLocaleString();
-  if (m.role === "assistant") tpsNote(el, m.completion_tokens, m.duration_ms);
+  // tok/s only rates text the user can read — tool-only turns stay silent.
+  if (m.role === "assistant" && m.content && m.content.trim()) {
+    tpsNote(el, m.completion_tokens, m.duration_ms);
+  }
 
   const body = el.querySelector(".msg-body");
   if (m.role === "assistant" && m.content) {
@@ -771,7 +774,8 @@ function msgTps(completion, durationMS) {
 
 // tpsNote prints the reply's generation rate in the message footer — the
 // bottom-right corner under the answer, where a report on the round reads
-// better than in the who/when header. Missing figures (rows from before
+// better than in the who/when header. Callers pass only text-bearing turns
+// (a tool card alone has nothing to rate). Missing figures (rows from before
 // the feature, or an endpoint that reported nothing) print nothing.
 function tpsNote(el, completion, durationMS) {
   const tps = msgTps(completion, durationMS);
@@ -1765,7 +1769,8 @@ function finishGeneration(st, done) {
     showStatusNote(nodes.el, "Connection lost — the reply was interrupted.");
   }
   nodes.el.dataset.id = done.message_id || st.msgId || "";
-  tpsNote(nodes.el, done.completion_tokens, done.duration_ms);
+  // Rate the prose only: a turn whose body is empty (tool card alone) shows nothing.
+  if (st.raw.trim()) tpsNote(nodes.el, done.completion_tokens, done.duration_ms);
   if (done.usage_tokens > 0) updateCtxMeter(done.usage_tokens); // freshest fullness figure
   refreshLastAssistant();
   if (nodes.el.dataset.id) attachRegen(nodes.el); // the button becomes visible now — make it work
