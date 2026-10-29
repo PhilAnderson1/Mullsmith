@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"mullsmith/internal/scratch"
 	"mullsmith/internal/store"
 )
 
@@ -81,7 +85,7 @@ func TestAdminDeleteUserByIdAndEmail(t *testing.T) {
 	// Pending sign-up: ONLY its id names it (the address lives in
 	// unconfirmed_email, which no delete lookup may match).
 	var buf bytes.Buffer
-	if code := adminDeleteUser(ctx, db, &buf, []string{pending.ID}); code != 0 {
+	if code := adminDeleteUser(ctx, db, t.TempDir(), &buf, []string{pending.ID}); code != 0 {
 		t.Fatalf("delete pending by id = %d, want 0; out=%s", code, buf.String())
 	}
 	if u, _ := db.UserByID(ctx, pending.ID); u != nil {
@@ -90,7 +94,7 @@ func TestAdminDeleteUserByIdAndEmail(t *testing.T) {
 
 	// Confirmed account by (uppercase-insensitive on storage) email.
 	buf.Reset()
-	if code := adminDeleteUser(ctx, db, &buf, []string{"bye@cli.io"}); code != 0 {
+	if code := adminDeleteUser(ctx, db, t.TempDir(), &buf, []string{"bye@cli.io"}); code != 0 {
 		t.Fatalf("delete by email = %d, want 0; out=%s", code, buf.String())
 	}
 	if u, _ := db.UserByEmail(ctx, "bye@cli.io"); u != nil {
@@ -98,6 +102,25 @@ func TestAdminDeleteUserByIdAndEmail(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "deleted user "+active.ID) {
 		t.Errorf("delete output = %q", buf.String())
+	}
+}
+
+// The user's scratchpad tree goes with the row — not a day later with
+// the unknown-user sweep.
+func TestAdminDeleteUserRemovesScratchpad(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	u := putUser(t, db, "scratch@cli.io", "", "active")
+	if err := scratch.EnsureUserDirs(root, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if code := adminDeleteUser(ctx, db, root, &buf, []string{u.ID}); code != 0 {
+		t.Fatalf("delete = %d; out=%s", code, buf.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, u.ID)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("scratchpad tree survived delete (stat err = %v)", err)
 	}
 }
 
@@ -111,7 +134,7 @@ func TestAdminDeleteUserUnknownTarget(t *testing.T) {
 	pending := putUser(t, db, "", "wait@cli.io", "disabled")
 	for _, target := range []string{"nosuchid", "wait@cli.io"} {
 		var buf bytes.Buffer
-		if code := adminDeleteUser(ctx, db, &buf, []string{target}); code == 0 {
+		if code := adminDeleteUser(ctx, db, t.TempDir(), &buf, []string{target}); code == 0 {
 			t.Errorf("delete %q = 0, want non-zero", target)
 		}
 	}
@@ -122,7 +145,7 @@ func TestAdminDeleteUserUnknownTarget(t *testing.T) {
 		}
 	}
 	// No argument: usage error.
-	if code := adminDeleteUser(ctx, db, &bytes.Buffer{}, nil); code != 2 {
+	if code := adminDeleteUser(ctx, db, t.TempDir(), &bytes.Buffer{}, nil); code != 2 {
 		t.Errorf("delete-user with no target = %d, want 2", code)
 	}
 }

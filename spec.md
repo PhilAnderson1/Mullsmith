@@ -70,7 +70,7 @@ mullsmith admin reset-password <email>     # set a new password, or mail a one-s
 mullsmith admin create-user                # non-interactive account creation for bootstrap
 mullsmith admin invite [n]                 # mint n single-use invite codes (default 1) → stdout
 mullsmith admin list-users                 # every account, incl. pending sign-ups (§9.17)
-mullsmith admin delete-user <id-or-email>  # remove an account (id also names pending ones)
+mullsmith admin delete-user <id-or-email>  # remove an account + its scratchpad (id also names pending ones)
 ```
 
 On startup Mullsmith: loads config → opens/creates SQLite DB → applies embedded schema

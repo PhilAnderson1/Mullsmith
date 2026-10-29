@@ -125,7 +125,8 @@ mullsmith admin delete-user <id-or-email>
 `admin create-user` run as root hands the new user's scratchpad directories to
 the owner the daemon itself uses — derived from the deepest directory at or
 above the configured `scratchpad.root` that is not root-owned (the packaged
-data directory, by default `/var/lib/mullsmith`).
+data directory, by default `/var/lib/mullsmith`). `admin delete-user` removes
+the user's scratchpad tree along with the row.
 
 Relative paths in the config resolve against the config file's directory, so
 the binary can run from anywhere. `${VAR}` / `${VAR:-default}` expansion keeps

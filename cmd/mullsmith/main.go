@@ -286,7 +286,7 @@ func adminMain(cfgPath string, args []string) int {
 	case "list-users":
 		return adminListUsers(ctx, db, os.Stdout, args[1:])
 	case "delete-user":
-		return adminDeleteUser(ctx, db, os.Stdout, args[1:])
+		return adminDeleteUser(ctx, db, cfg.Scratchpad.Root, os.Stdout, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "mullsmith: unknown admin command %q\n", args[0])
 		return 2
@@ -520,13 +520,14 @@ func adminEmailLabel(u store.User) string {
 	return "<pending: " + u.UnconfirmedEmail + ">"
 }
 
-// adminDeleteUser removes an account by id or confirmed email. Id first:
-// pending sign-ups can ONLY be named that way (their address lives in
-// unconfirmed_email, which no lookup key matches — same invariant as
-// login). auth_tokens cascade via FK; scratchpad bytes go to the existing
-// unknown-user sweep (§8). Status is never a reason to refuse — the
-// operator has create-user standing (plan §11.3).
-func adminDeleteUser(ctx context.Context, db *store.DB, out io.Writer, args []string) int {
+// adminDeleteUser removes an account by id or confirmed email, scratchpad
+// included. Id first: pending sign-ups can ONLY be named that way (their
+// address lives in unconfirmed_email, which no lookup key matches — same
+// invariant as login). auth_tokens cascade via FK; if the tree cannot be
+// deleted here the unknown-user sweep (§8) collects it later. Status is
+// never a reason to refuse — the operator has create-user standing (plan
+// §11.3).
+func adminDeleteUser(ctx context.Context, db *store.DB, scratchRoot string, out io.Writer, args []string) int {
 	fs := flag.NewFlagSet("admin delete-user", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -565,7 +566,15 @@ func adminDeleteUser(ctx context.Context, db *store.DB, out io.Writer, args []st
 		fmt.Fprintln(os.Stderr, "mullsmith: user vanished mid-delete; nothing removed")
 		return 1
 	}
-	fmt.Fprintf(out, "deleted user %s (%s)\n", u.ID, adminEmailLabel(*u))
+	// The row is gone, so the scratchpad is orphaned; removing it here
+	// spares the operator a day's wait for the server sweep, which stays
+	// the backstop when this fails (unreadable tree, wrong permissions).
+	if err := scratch.RemoveUserDirs(scratchRoot, u.ID); err != nil {
+		fmt.Fprintln(os.Stderr, "mullsmith: warning: scratchpad not removed (the maintenance sweep will retry):", err)
+		fmt.Fprintf(out, "deleted user %s (%s)\n", u.ID, adminEmailLabel(*u))
+		return 0
+	}
+	fmt.Fprintf(out, "deleted user %s (%s); removed the scratchpad\n", u.ID, adminEmailLabel(*u))
 	return 0
 }
 
