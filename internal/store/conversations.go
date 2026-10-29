@@ -23,8 +23,13 @@ type Conversation struct {
 	Title        string
 	Model        string // "" = server default
 	SystemPrompt string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// Thinking is the saved thinking-level choice ('' = Default: send no
+	// override). ThinkingCtx is the endpoint/model/profile fingerprint
+	// taken when it was saved — see internal/thinking for the rule.
+	Thinking    string
+	ThinkingCtx string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // --- opaque keyset cursors ---------------------------------------------------
@@ -92,10 +97,11 @@ func (d *DB) ConversationForUser(ctx context.Context, userID, convID string) (*C
 		created, updated int64
 	)
 	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT id, user_id, title, model, system_prompt, created_at, updated_at
+		`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at
 		 FROM conversations WHERE id = ? AND user_id = ?`,
 		convID, userID).
-		Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt, &created, &updated)
+		Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt,
+			&c.Thinking, &c.ThinkingCtx, &created, &updated)
 	if errors.Is(err, ErrNoRows) {
 		return nil, ErrConversationNotFound
 	}
@@ -112,6 +118,11 @@ type ConversationPatch struct {
 	Title        *string
 	Model        *string
 	SystemPrompt *string
+	// Thinking and ThinkingCtx travel together: the fingerprint is only
+	// meaningful alongside the choice it was taken for, so the API layer
+	// always patches both (or clears both for Default).
+	Thinking    *string
+	ThinkingCtx *string
 }
 
 func (d *DB) UpdateConversation(ctx context.Context, userID, convID string, p ConversationPatch) (*Conversation, error) {
@@ -128,6 +139,14 @@ func (d *DB) UpdateConversation(ctx context.Context, userID, convID string, p Co
 	if p.SystemPrompt != nil {
 		sets = append(sets, `system_prompt = ?`)
 		args = append(args, *p.SystemPrompt)
+	}
+	if p.Thinking != nil {
+		sets = append(sets, `thinking = ?`)
+		args = append(args, *p.Thinking)
+	}
+	if p.ThinkingCtx != nil {
+		sets = append(sets, `thinking_ctx = ?`)
+		args = append(args, *p.ThinkingCtx)
 	}
 	if len(sets) == 0 {
 		return d.ConversationForUser(ctx, userID, convID)
@@ -245,7 +264,7 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 		limit = 100
 	}
 	sb := strings.Builder{}
-	sb.WriteString(`SELECT id, user_id, title, model, system_prompt, created_at, updated_at
+	sb.WriteString(`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at
 	                 FROM conversations WHERE user_id = ?`)
 	args := []any{userID}
 	if q != "" {
@@ -273,7 +292,8 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 			c                Conversation
 			created, updated int64
 		)
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt, &created, &updated); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt,
+			&c.Thinking, &c.ThinkingCtx, &created, &updated); err != nil {
 			return nil, "", err
 		}
 		c.CreatedAt = time.Unix(created, 0)

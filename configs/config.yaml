@@ -83,6 +83,21 @@ llm:
   # plain-string manifest and no view_image tool at all.
   vision: false
   vision_max_image_bytes: 4MiB    # per-picture cap for view_image
+  # --- Thinking control (thinking-control-specification.md) -------------
+  # All four are optional: omitted together, requests keep the existing
+  # transport and no thinking selector appears. The two files extend the
+  # catalogues embedded in the binary per ID (an entry with a matching ID
+  # is replaced wholesale); relative paths resolve against this file's
+  # directory. endpoint_type selects the request convention for the URL
+  # above, thinking_profile the choices offered for the model above —
+  # both must name an existing catalogue entry or startup fails. There is
+  # deliberately no default_thinking: every conversation starts at the
+  # built-in Default (sends no override) and the user's pick is
+  # conversation state.
+  endpoints_file: ""              # e.g. ./endpoints.yaml
+  profiles_file: ""               # e.g. ./thinking-profiles.yaml
+  endpoint_type: ""               # e.g. gufo — must speak protocol openai_chat
+  thinking_profile: ""            # e.g. qwen3_8; "none" keeps the selector hidden
 
 tools:
   web_search:

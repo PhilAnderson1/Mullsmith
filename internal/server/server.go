@@ -20,9 +20,41 @@ import (
 	"gabkeep/internal/mail"
 	"gabkeep/internal/runner"
 	"gabkeep/internal/store"
+	"gabkeep/internal/thinking"
 	"gabkeep/internal/tools"
 	"gabkeep/web"
 )
+
+// resolveThinking resolves the thinking-control runtime before anything
+// reads it (the llm client takes its route from it). A config that came
+// through config.Load already carries the built runtime — startup would
+// have failed otherwise; it only gets its hidden-choice warnings logged.
+// Struct-literal configs (tests) that selected an endpoint type/profile
+// are resolved here from the embedded catalogues so the feature works
+// exactly as the loader would run it.
+func resolveThinking(cfg *config.Config, logger *slog.Logger) {
+	if cfg.Thinking == nil {
+		if cfg.LLM.EndpointType == "" && (cfg.LLM.ThinkingProfile == "" || cfg.LLM.ThinkingProfile == "none") {
+			return // legacy config: no selector, existing transport
+		}
+		rt, err := thinking.Build(thinking.Settings{
+			EndpointURL:   cfg.LLM.Endpoint,
+			EndpointType:  cfg.LLM.EndpointType,
+			ProfileID:     cfg.LLM.ThinkingProfile,
+			MaxOutput:     cfg.LLM.MaxTokensResponse,
+			EndpointsFile: cfg.LLM.EndpointsFile,
+			ProfilesFile:  cfg.LLM.ProfilesFile,
+		})
+		if err != nil {
+			logger.Error("thinking control misconfigured; running without it", "error", err)
+			return
+		}
+		cfg.Thinking = rt
+	}
+	for _, w := range cfg.Thinking.Warnings() {
+		logger.Warn("thinking control", "warning", w)
+	}
+}
 
 // Server is the assembled gabkeep HTTP application.
 type Server struct {
@@ -107,6 +139,7 @@ func buildUploadGate(cfg *config.Config) chan struct{} {
 func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	code runner.Runner, mailer *mail.Outbox,
 ) *Server {
+	resolveThinking(cfg, logger)
 	s := &Server{
 		cfg:        cfg,
 		store:      db,
@@ -257,6 +290,11 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// exactly like remember_login and registration drive theirs.
 		"email_features": s.cfg.Email.Enabled,
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
+		// Thinking selector: the choices configured for this deployment's
+		// endpoint/model, or null when the feature is off — the SPA hides
+		// the selector on null. Only id+label cross the wire: request
+		// templates and credentials stay server-side.
+		"thinking": s.thinkingMeta(),
 		// The context window in force for the SPA's meter and fullness
 		// warning: the pinned llm.max_context_tokens, or the auto-detected
 		// one; null while auto-detection has nothing — the UI then shows

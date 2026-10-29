@@ -46,7 +46,7 @@ func TestRoundAccumulatesToolCallsByIndex(t *testing.T) {
 	g := genFor(t, ts)
 
 	var deltaEvents int
-	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil },
+	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil },
 		func(_ int, d llm.ToolCallDelta) {
 			if d.ID != "" || d.Name != "" || d.Arguments != "" {
 				deltaEvents++
@@ -82,7 +82,7 @@ func TestRoundDropsNamelessCall(t *testing.T) {
 		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"real","function":{"name":"web_search","arguments":"{}"}}]}}]}`,
 	)
 	g := genFor(t, ts)
-	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil }, nil)
+	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
 	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "real" {
 		t.Fatalf("calls = %+v, want only [real]", res.ToolCalls)
 	}
@@ -100,7 +100,7 @@ func TestRoundContentAndReasoningSeparate(t *testing.T) {
 	)
 	g := genFor(t, ts)
 	var got []string
-	res := g.Round(context.Background(), "", nil, nil, func(kind, text string) error {
+	res := g.Round(context.Background(), "", nil, nil, nil, func(kind, text string) error {
 		got = append(got, kind+":"+text)
 		return nil
 	}, nil)
@@ -126,7 +126,7 @@ func TestRoundCompletionTokens(t *testing.T) {
 		`{"choices":[{"delta":{"content":"answer"}}],"usage":{"completion_tokens":9,"total_tokens":42}}`,
 	)
 	g := genFor(t, ts)
-	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil }, nil)
+	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
 	if res.Usage != 42 || res.Completion != 9 {
 		t.Errorf("usage=%d completion=%d, want 42/9", res.Usage, res.Completion)
 	}
@@ -138,7 +138,7 @@ func TestRoundUsageEstimatedWhenUnreported(t *testing.T) {
 		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
 	)
 	g := genFor(t, ts)
-	res := g.Round(context.Background(), "", nil, nil, func(string, string) error { return nil }, nil)
+	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
 	if res.Usage <= 0 || res.Completion <= 0 {
 		t.Errorf("no upstream usage: usage=%d completion=%d, want estimates > 0",
 			res.Usage, res.Completion)
@@ -151,7 +151,7 @@ func TestRoundClientGoneIsAborted(t *testing.T) {
 		`{"choices":[{"delta":{"content":"y"}}]}`,
 	)
 	g := genFor(t, ts)
-	res := g.Round(context.Background(), "", nil, nil, func(string, string) error {
+	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error {
 		return ErrClientGone
 	}, nil)
 	if res.Status != "aborted" {

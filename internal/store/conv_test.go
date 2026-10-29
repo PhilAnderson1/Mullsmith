@@ -322,3 +322,46 @@ func TestMessagesPaginationAndTouch(t *testing.T) {
 		t.Errorf("cascade: %d messages survived their conversation (err %v)", left, err)
 	}
 }
+
+// Thinking columns: a fresh conversation starts at ” (Default: send no
+// override), a patch stores choice+fingerprint together, and both travel
+// through the list query too.
+func TestConversationThinkingRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	u := mkUser("think@x.io")
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+
+	c := mkConv(t, db, u.ID, "Think")
+	if c.Thinking != "" || c.ThinkingCtx != "" {
+		t.Errorf("fresh conversation = %q/%q, want empty (Default)", c.Thinking, c.ThinkingCtx)
+	}
+
+	choice, fp := "high", "abc123"
+	up, err := db.UpdateConversation(ctx, u.ID, c.ID,
+		ConversationPatch{Thinking: &choice, ThinkingCtx: &fp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Thinking != "high" || up.ThinkingCtx != "abc123" {
+		t.Errorf("patched = %q/%q", up.Thinking, up.ThinkingCtx)
+	}
+	got, err := db.ConversationForUser(ctx, u.ID, c.ID)
+	if err != nil || got.Thinking != "high" || got.ThinkingCtx != "abc123" {
+		t.Errorf("get = %q/%q (%v)", got.Thinking, got.ThinkingCtx, err)
+	}
+	items, _, err := db.ListConversations(ctx, u.ID, "", "", 10)
+	if err != nil || len(items) != 1 || items[0].Thinking != "high" || items[0].ThinkingCtx != "abc123" {
+		t.Errorf("list = %+v (%v)", items, err)
+	}
+
+	// Back to Default clears both.
+	empty := ""
+	up, err = db.UpdateConversation(ctx, u.ID, c.ID,
+		ConversationPatch{Thinking: &empty, ThinkingCtx: &empty})
+	if err != nil || up.Thinking != "" || up.ThinkingCtx != "" {
+		t.Errorf("clear = %q/%q (%v)", up.Thinking, up.ThinkingCtx, err)
+	}
+}

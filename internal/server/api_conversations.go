@@ -20,12 +20,16 @@ const (
 	maxTitleSearchLen  = 100
 )
 
-func conversationJSON(c *store.Conversation) map[string]any {
+// conversationJSON projects a row for the API. thinking is the restored
+// effective choice (saved-and-valid, else Default) so a fresh page load
+// shows exactly what the next request will send.
+func (s *Server) conversationJSON(c *store.Conversation) map[string]any {
 	return map[string]any{
 		"id":            c.ID,
 		"title":         c.Title,
 		"model":         c.Model,
 		"system_prompt": c.SystemPrompt,
+		"thinking":      s.thinkingChoice(c),
 		"created_at":    c.CreatedAt.UTC().Format(timeRFC3339),
 		"updated_at":    c.UpdatedAt.UTC().Format(timeRFC3339),
 	}
@@ -148,7 +152,7 @@ func (s *Server) handleConversationsList(w http.ResponseWriter, r *http.Request)
 	}
 	out := make([]map[string]any, 0, len(items))
 	for i := range items {
-		out = append(out, conversationJSON(&items[i]))
+		out = append(out, s.conversationJSON(&items[i]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out, "next_cursor": next})
 }
@@ -212,7 +216,7 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 	if s.cfg.LLM.MaxContextTokens <= 0 {
 		s.refreshContextWindow()
 	}
-	writeJSON(w, http.StatusCreated, conversationJSON(c))
+	writeJSON(w, http.StatusCreated, s.conversationJSON(c))
 }
 
 // --- GET / PATCH / DELETE /api/v1/conversations/{id} ----------------------------------
@@ -224,7 +228,7 @@ func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {
 		s.writeConvErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, conversationJSON(c))
+	writeJSON(w, http.StatusOK, s.conversationJSON(c))
 }
 
 func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request) {
@@ -233,11 +237,12 @@ func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request)
 		Title        *string `json:"title"`
 		Model        *string `json:"model"`
 		SystemPrompt *string `json:"system_prompt"`
+		Thinking     *string `json:"thinking"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if body.Title == nil && body.Model == nil && body.SystemPrompt == nil {
+	if body.Title == nil && body.Model == nil && body.SystemPrompt == nil && body.Thinking == nil {
 		writeAPIError(w, r, http.StatusBadRequest, "no_fields", "nothing to update")
 		return
 	}
@@ -264,12 +269,36 @@ func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request)
 		}
 		p.SystemPrompt = body.SystemPrompt
 	}
+	if body.Thinking != nil {
+		// The fingerprint must name the model this conversation runs on
+		// AFTER this patch — a same-call model change is part of the new
+		// choice's context, not a mismatch with it.
+		model := ""
+		switch {
+		case body.Model != nil:
+			model = *body.Model
+		default:
+			c, err := s.store.ConversationForUser(r.Context(), user.ID, r.PathValue("id"))
+			if err != nil {
+				s.writeConvErr(w, r, err)
+				return
+			}
+			model = c.Model
+		}
+		choice, fp, ok := s.validateThinkingChoice(s.thinkingModel(model), *body.Thinking)
+		if !ok {
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_thinking_choice",
+				"unknown thinking choice for this endpoint and profile")
+			return
+		}
+		p.Thinking, p.ThinkingCtx = &choice, &fp
+	}
 	c, err := s.store.UpdateConversation(r.Context(), user.ID, r.PathValue("id"), p)
 	if err != nil {
 		s.writeConvErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, conversationJSON(c))
+	writeJSON(w, http.StatusOK, s.conversationJSON(c))
 }
 
 func (s *Server) handleConversationDelete(w http.ResponseWriter, r *http.Request) {

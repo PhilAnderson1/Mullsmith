@@ -23,6 +23,11 @@ type completionResponse struct {
 // conversation titling). Thinking is disabled via chat_template_kwargs so
 // reasoning models answer promptly; endpoints that ignore the kwarg still
 // work, just slower. maxTokens bounds the reply; ctx bounds the wait.
+//
+// This hardcoded disable is deliberate and NOT the thinking selector: a
+// title quest is not a conversation turn, never carries a choice, and the
+// selector owns only the chat request body (thinking-control-specification.md
+// §6 — one owner per control).
 func (c *Client) Complete(ctx context.Context, model string, msgs []ChatMessage,
 	maxTokens int,
 ) (string, error) {
@@ -41,7 +46,7 @@ func (c *Client) Complete(ctx context.Context, model string, msgs []ChatMessage,
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/chat/completions",
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(),
 		bytes.NewReader(body))
 	if err != nil {
 		return "", err

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"gabkeep/internal/thinking"
 	"gopkg.in/yaml.v3"
 )
 
@@ -123,6 +124,10 @@ type Config struct {
 
 	// Path is the config file path; relative dirs resolve against its folder.
 	Path string `yaml:"-"`
+	// Thinking is the resolved thinking-control runtime (catalogues
+	// parsed, selection cross-checked) or nil when the feature is not
+	// configured — legacy behaviour untouched. Built by Validate.
+	Thinking *thinking.Runtime `yaml:"-"`
 	// TrustedNets is the parsed form of Server.TrustedProxies (spec §9.10).
 	TrustedNets []netip.Prefix `yaml:"-"`
 	// rawDoc is the decoded document as written, kept for Validate: after
@@ -251,6 +256,20 @@ type LLM struct {
 	// a content-part array it cannot parse.
 	Vision              bool `yaml:"vision"`
 	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"` // per-picture cap for view_image (default 4 MiB)
+
+	// Thinking control (thinking-control-specification.md §2). All four
+	// are optional: omitted together, the existing transport is kept and
+	// no thinking selector appears. The two files extend the embedded
+	// catalogues per ID (relative paths resolve against this config
+	// file's directory); endpoint_type selects the request convention
+	// for llm.endpoint's URL, thinking_profile the choices for the
+	// configured model. There is no default_thinking here on purpose:
+	// a conversation starts at the built-in Default and the user's
+	// choice is conversation state, not another global LLM setting.
+	EndpointsFile   string `yaml:"endpoints_file"`
+	ProfilesFile    string `yaml:"profiles_file"`
+	EndpointType    string `yaml:"endpoint_type"`
+	ThinkingProfile string `yaml:"thinking_profile"`
 }
 
 type Tools struct {
@@ -508,24 +527,51 @@ func Load(path string) (*Config, error) {
 	}
 	c.Path = abs
 	c.setDefaults()
+	// The thinking catalogues resolve like every other relative path in
+	// the file — against the config's directory, never the process
+	// working dir — but before Validate, which pairs with the build
+	// below.
+	c.LLM.EndpointsFile = resolveAgainst(filepath.Dir(abs), c.LLM.EndpointsFile)
+	c.LLM.ProfilesFile = resolveAgainst(filepath.Dir(abs), c.LLM.ProfilesFile)
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	c.resolvePaths()
+	// The thinking runtime reads its catalogues (embedded, plus any
+	// operator files), so it is built here rather than inside the pure
+	// Validate: an explicitly configured unreadable or invalid file is a
+	// startup error, and the selected endpoint/profile combination must
+	// be cross-checked before the server ever serves a choice list.
+	rt, err := thinking.Build(thinking.Settings{
+		EndpointURL:   c.LLM.Endpoint,
+		EndpointType:  c.LLM.EndpointType,
+		ProfileID:     c.LLM.ThinkingProfile,
+		MaxOutput:     c.LLM.MaxTokensResponse,
+		EndpointsFile: c.LLM.EndpointsFile,
+		ProfilesFile:  c.LLM.ProfilesFile,
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.Thinking = rt
 	return &c, nil
+}
+
+// resolveAgainst anchors one configured path at base and cleans it;
+// "" passes through (unset).
+func resolveAgainst(base, p string) string {
+	if p == "" {
+		return p
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(base, p)
+	}
+	return filepath.Clean(p)
 }
 
 func (c *Config) resolvePaths() {
 	base := filepath.Dir(c.Path)
-	resolve := func(p string) string {
-		if p == "" {
-			return p
-		}
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(base, p)
-		}
-		return filepath.Clean(p)
-	}
+	resolve := func(p string) string { return resolveAgainst(base, p) }
 	c.Database.Dir = resolve(c.Database.Dir)
 	c.Scratchpad.Root = resolve(c.Scratchpad.Root)
 	if c.Logging.File != "" {

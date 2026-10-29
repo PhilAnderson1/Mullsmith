@@ -416,6 +416,34 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .composer .btn { flex: none; }
 
+/* Thinking-level row under the prompt box. Opaque theme tokens, not
+   transparent: the native popup paints its list from the control's
+   colours, and transparency there means the OS default with muted grey
+   text on top (same reasoning as the sidebar's command dropdown). */
+.thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 clamp(0.6rem, 3vw, 1.5rem) 0.45rem;
+  padding-bottom: calc(0.45rem + env(safe-area-inset-bottom));
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-size: 0.8em;
+}
+.thinking-row select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.2rem 0.4rem;
+  min-height: 1.9rem;
+  max-width: 60vw;
+}
+.thinking-row option { color: var(--fg); background: var(--bg-raised); }
+/* The safe-area inset belongs to whichever footer element sits last. */
+body.thinking-visible .composer { padding-bottom: 0.6rem; }
+
 /* ---------- dialog ---------- */
 
 dialog {

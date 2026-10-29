@@ -45,16 +45,19 @@ type Generator struct {
 func (g *Generator) Generate(ctx context.Context, model string,
 	msgs []llm.ChatMessage, emit func(kind, text string) error,
 ) Result {
-	return g.Round(ctx, model, msgs, nil, emit, nil)
+	return g.Round(ctx, model, msgs, nil, nil, emit, nil)
 }
 
 // Round streams one model round (spec §6.1 step 3–5). Tool deltas are
 // forwarded raw through toolDelta (may be nil) for live UI cards and are
 // accumulated by index into Result.ToolCalls. Reasoning is accumulated but
 // only emitted as a separate event kind — it is never part of the answer
-// content (spec §6.2).
+// content (spec §6.2). thinking carries the rendered request fragment of
+// the generation's snapshotted choice (nil = Default, no override); the
+// caller renders it once, so every round of one generation — tool
+// continuations included — speaks the same thinking level.
 func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMessage,
-	tools []llm.ToolSpec, emit func(kind, text string) error,
+	tools []llm.ToolSpec, thinking map[string]any, emit func(kind, text string) error,
 	toolDelta func(callIndex int, d llm.ToolCallDelta),
 ) Result {
 	var (
@@ -67,7 +70,7 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	acc := map[int]*callAccumulator{}
 	var order []int
 
-	err := g.LLM.StreamTools(ctx, model, msgs, tools, func(d llm.Delta) error {
+	err := g.LLM.StreamTools(ctx, model, msgs, tools, thinking, func(d llm.Delta) error {
 		if d.Usage > 0 {
 			usage = d.Usage
 		}

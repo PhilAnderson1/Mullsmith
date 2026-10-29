@@ -407,6 +407,7 @@ function applyMetaFlags() {
     opt.textContent = value;
     sel.appendChild(opt);
   }
+  populateThinkingChoices();
 }
 
 async function onLogin(ev) {
@@ -1809,6 +1810,7 @@ function renderConversation() {
   syncPlaceholder();
   if (!state.currentId) input.value = "";
   syncComposerButtons();
+  syncThinkingSelect();
 
   if (!state.currentId) {
     state.currentConv = null;
@@ -1869,6 +1871,58 @@ async function onModelChange(ev) {
     toast(`Model: ${model || "default"}`, false);
   } catch (err) {
     handleErr(err, "set model");
+  }
+}
+
+// --- thinking-level selector -----------------------------------------------------
+
+function thinkingChoices() {
+  return (state.meta && state.meta.thinking && state.meta.thinking.choices) || [];
+}
+
+// Build the dropdown from /api/v1/meta. Only the built-in Default (or
+// nothing at all) means the deployment has no thinking decision to offer:
+// the row is hidden and requests carry no override.
+function populateThinkingChoices() {
+  const sel = $("#thinking-select");
+  sel.replaceChildren();
+  for (const c of thinkingChoices()) {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = c.label;
+    sel.appendChild(opt);
+  }
+  const visible = thinkingChoices().length > 1;
+  show($("#thinking-row"), visible);
+  // Tells the composer its safe-area inset is now the row's job.
+  document.body.classList.toggle("thinking-visible", visible);
+}
+
+// The server projects the EFFECTIVE choice (a stale one is already
+// Default), so the dropdown simply names what the next request sends.
+function syncThinkingSelect() {
+  const sel = $("#thinking-select");
+  sel.disabled = !state.currentId || thinkingChoices().length < 2;
+  if (!state.currentId) return;
+  const want = (state.currentConv && state.currentConv.thinking) || "default";
+  sel.value = [...sel.options].some((o) => o.value === want) ? want : "default";
+}
+
+async function onThinkingChange(ev) {
+  if (!state.currentId) return;
+  const choice = ev.target.value;
+  const before = (state.currentConv && state.currentConv.thinking) || "default";
+  try {
+    state.currentConv = await api.patchConversation(state.currentId, { thinking: choice });
+    syncThinkingSelect();
+    const label = ev.target.selectedOptions[0]
+      ? ev.target.selectedOptions[0].textContent : choice;
+    toast(`Thinking: ${label}`, false);
+  } catch (err) {
+    // The server kept the old state — the dropdown must show that, not
+    // the rejected pick.
+    ev.target.value = before;
+    handleErr(err, "set thinking level");
   }
 }
 
@@ -1997,6 +2051,7 @@ async function boot() {
     }
   });
   $("#model-picker").addEventListener("change", onModelChange);
+  $("#thinking-select").addEventListener("change", onThinkingChange);
   $("#btn-menu").addEventListener("click", () =>
     document.body.classList.contains("drawer-open") ? closeDrawer() : openDrawer()
   );

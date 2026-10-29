@@ -32,6 +32,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content         string   `json:"content"`
 		AttachmentPaths []string `json:"attachment_paths"`
+		Thinking        *string  `json:"thinking"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -57,6 +58,28 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusConflict, "context_full",
 			"this conversation has reached its context window — start a new chat")
 		return
+	}
+	// A thinking choice shipped with the message is validated against the
+	// backend's effective list and persisted BEFORE anything is streamed:
+	// an invalid one is a plain 400 that never reaches the endpoint, and
+	// a valid one is this generation's snapshot — later tool rounds of the
+	// same reply speak it even if the selector moves mid-flight.
+	if body.Thinking != nil {
+		choice, fp, ok := s.validateThinkingChoice(s.thinkingModel(conv.Model), *body.Thinking)
+		if !ok {
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_thinking_choice",
+				"unknown thinking choice for this endpoint and profile")
+			return
+		}
+		if choice != conv.Thinking || fp != conv.ThinkingCtx {
+			updated, err := s.store.UpdateConversation(r.Context(), user.ID, conv.ID,
+				store.ConversationPatch{Thinking: &choice, ThinkingCtx: &fp})
+			if err != nil {
+				s.writeConvErr(w, r, err)
+				return
+			}
+			conv = updated
+		}
 	}
 
 	// Persist the user turn first (spec §6.1 step 1), then stream. The user
@@ -441,6 +464,11 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	}()
 
 	// --- the agentic loop (spec §6.1 steps 3–5) --------------------------------
+	// The thinking choice is snapshotted here, once: every round below —
+	// tool continuations included — sends this same fragment, and a
+	// selector change during the stream only reaches the NEXT generation
+	// (thinking-control-specification.md §5).
+	thinkFrag := s.thinkingSnapshot(conv)
 	maxRounds := s.cfg.Tools.Agent.MaxToolRounds
 	if maxRounds < 0 {
 		maxRounds = 0
@@ -454,7 +482,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			roundTools = nil // force a final, tool-less answer
 		}
 		roundStart := time.Now() // model time only: tool runs land on tool cards
-		res = s.runModelRound(genCtx, conn, conv.Model, msgs, roundTools)
+		res = s.runModelRound(genCtx, conn, conv.Model, msgs, roundTools, thinkFrag)
 		roundMS := time.Since(roundStart).Milliseconds()
 
 		if res.Err != nil || res.Status == "aborted" {
@@ -496,8 +524,13 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	}
 
 	if res.Err != nil {
+		// The sanitized client-facing error stays upstream_error (§9.12);
+		// the log carries the deployment context a thinking failure needs:
+		// endpoint, model and the choice this generation sent (§6).
 		s.logger.Warn("generation failed", "error", res.Err, "user", user.ID,
-			"conversation", conv.ID, "rid", RequestIDFrom(r.Context()))
+			"conversation", conv.ID, "endpoint", s.cfg.LLM.Endpoint,
+			"model", s.thinkingModel(conv.Model), "thinking", s.thinkingChoice(conv),
+			"rid", RequestIDFrom(r.Context()))
 		_ = conn.Event("error", map[string]any{
 			"code":       "upstream_error",
 			"message":    "the model endpoint failed; try again",
@@ -526,8 +559,10 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 
 // runModelRound streams one model round; tool deltas surface as
 // tool_start/tool_args SSE events with stable call ids (§6.1 taxonomy).
+// thinking is the generation's snapshotted request fragment (nil = no
+// thinking override).
 func (s *Server) runModelRound(ctx context.Context, conn *sseConn, model string,
-	msgs []llm.ChatMessage, toolSpecs []llm.ToolSpec,
+	msgs []llm.ChatMessage, toolSpecs []llm.ToolSpec, thinking map[string]any,
 ) agent.Result {
 	type card struct {
 		callID  string
@@ -556,7 +591,7 @@ func (s *Server) runModelRound(ctx context.Context, conn *sseConn, model string,
 		}
 	}
 
-	res := s.generator.Round(ctx, model, msgs, toolSpecs, func(kind, text string) error {
+	res := s.generator.Round(ctx, model, msgs, toolSpecs, thinking, func(kind, text string) error {
 		event := "token"
 		if kind == agent.EventReasoning {
 			if !s.cfg.LLM.ShowReasoning {

@@ -186,6 +186,13 @@
         </button>
         <button id="btn-send" class="btn primary" disabled>Send</button>
       </div>
+      <!-- Thinking-level selector (thinking-control-specification.md §8):
+           below the prompt box, populated from /api/v1/meta's choices and
+           hidden entirely when the deployment offers nothing to choose. -->
+      <div class="thinking-row" id="thinking-row" hidden>
+        <label for="thinking-select">Thinking</label>
+        <select id="thinking-select" title="Thinking level for this conversation"></select>
+      </div>
 
       <!-- Files view (spec §10.2): swaps into the chat main area -->
       <section id="files-panel" class="files-panel" hidden aria-label="Files">

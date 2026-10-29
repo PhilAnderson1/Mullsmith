@@ -842,3 +842,116 @@ func TestLoadBlockExtensionsHasNoDefaults(t *testing.T) {
 		}
 	}
 }
+
+// --- thinking control fields (thinking-control-specification.md §2) ---------
+
+// The legacy llm block — none of the four new fields — loads unchanged
+// and leaves the runtime off: no selector, existing transport.
+func TestLoadThinkingOmittedIsLegacy(t *testing.T) {
+	cfg, err := Load(writeCfg(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Thinking != nil {
+		t.Errorf("Thinking = %+v, want nil for a config without the new fields", cfg.Thinking)
+	}
+}
+
+// The extended block from §2: every existing value keeps its exact
+// meaning, the four new fields are carried, catalogue paths resolve
+// against the config file's directory (not the working directory), and
+// the selected combination resolves to the documented choice list.
+func TestLoadThinkingExtended(t *testing.T) {
+	dir := t.TempDir()
+	// Small overlay files: adding an ID must not disturb the selection
+	// (the embedded gufo/qwen3_8 entries stay live untouched).
+	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(
+		"schema_version: 1\nendpoints:\n  extra:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: true}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "thinking-profiles.yaml"), []byte(
+		"schema_version: 1\nprofiles:\n  operator_p:\n    options: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+server:
+  listen: "127.0.0.1:8090"
+database:
+  dir: "./data/db"
+scratchpad:
+  root: "./data/scratchpad"
+llm:
+  endpoint: "http://192.168.0.2:8080/v1"
+  api_key: ""
+  model: "Qwen3.8 Flash Next"
+  max_context_tokens: 32768
+  default_temperature: 0.7
+  request_timeout: 5m
+  max_tokens_response: 16384
+  show_reasoning: false
+  vision: true
+  vision_max_image_bytes: 1MiB
+  endpoints_file: ./endpoints.yaml
+  profiles_file: ./thinking-profiles.yaml
+  endpoint_type: gufo
+  thinking_profile: qwen3_8
+`
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLM.Model != "Qwen3.8 Flash Next" || cfg.LLM.MaxContextTokens != 32768 ||
+		cfg.LLM.DefaultTemperature != 0.7 || cfg.LLM.MaxTokensResponse != 16384 ||
+		!cfg.LLM.Vision || cfg.LLM.RequestTimeout.D() != 5*time.Minute {
+		t.Errorf("existing llm values changed meaning: %+v", cfg.LLM)
+	}
+	if cfg.LLM.EndpointType != "gufo" || cfg.LLM.ThinkingProfile != "qwen3_8" {
+		t.Errorf("new fields = %q / %q", cfg.LLM.EndpointType, cfg.LLM.ThinkingProfile)
+	}
+	if want := filepath.Join(dir, "endpoints.yaml"); cfg.LLM.EndpointsFile != want {
+		t.Errorf("endpoints_file = %q, want resolved %q", cfg.LLM.EndpointsFile, want)
+	}
+	if cfg.Thinking == nil || !cfg.Thinking.SelectorVisible() {
+		t.Fatal("runtime not resolved")
+	}
+	var ids []string
+	for _, c := range cfg.Thinking.Choices() {
+		ids = append(ids, c.ID)
+	}
+	want := []string{"default", "off", "low", "medium", "high"}
+	if len(ids) != len(want) {
+		t.Fatalf("choices = %v, want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("choices = %v, want %v", ids, want)
+		}
+	}
+}
+
+// An explicitly selected but unknown ID, or a broken catalogue file, is
+// a startup error — config.Load fails, the server never boots half-on.
+func TestLoadThinkingFailures(t *testing.T) {
+	cases := []struct{ name, tail string }{
+		{"unknown endpoint_type", "  endpoint_type: nope\n  thinking_profile: qwen3_8\n"},
+		{"unknown thinking_profile", "  endpoint_type: gufo\n  thinking_profile: nope\n"},
+		{"profile without type", "  thinking_profile: qwen3_8\n"},
+		{"native protocol", "  endpoint_type: ollama\n  thinking_profile: qwen3_5\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Load(writeCfg(t, minimalYAML+"  "+tc.tail)); err == nil {
+				t.Errorf("config accepted: %s", tc.tail)
+			}
+		})
+	}
+	t.Run("unreadable file", func(t *testing.T) {
+		if _, err := Load(writeCfg(t, minimalYAML+"  endpoints_file: ./gone.yaml\n  endpoint_type: gufo\n")); err == nil {
+			t.Error("missing endpoints_file accepted")
+		}
+	})
+}

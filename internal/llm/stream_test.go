@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"gabkeep/internal/config"
+	"gabkeep/internal/thinking"
 )
 
 // sseHandler serves canned SSE bodies with OpenAI chunk framing.
@@ -383,7 +385,7 @@ func TestStreamToolsPayload(t *testing.T) {
 			Function: ChatToolCallFunc{Name: "web_search", Arguments: `{"query":"x"}`}}}},
 		{Role: "tool", ToolCallID: "c1", Content: "{}"},
 	}
-	if err := c.StreamTools(context.Background(), "m", msgs, tools, func(Delta) error { return nil }); err != nil {
+	if err := c.StreamTools(context.Background(), "m", msgs, tools, nil, func(Delta) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if tc, ok := gotBody["tools"].([]any); !ok || len(tc) != 1 {
@@ -476,5 +478,147 @@ func TestChatMessageMarshalsImagesAsContentParts(t *testing.T) {
 	}
 	if !strings.Contains(string(b2), `"type":"image_url"`) {
 		t.Errorf("image-only body = %s", b2)
+	}
+}
+
+// --- thinking fragments on the wire (thinking-control-specification.md) ----
+
+// captureServer records each request's path and body, answering with a
+// minimal finished stream.
+func captureServer(t *testing.T) (*httptest.Server, func() (string, map[string]any)) {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		path string
+		body map[string]any
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		json.NewDecoder(r.Body).Decode(&b)
+		mu.Lock()
+		path, body = r.URL.Path, b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(ts.Close)
+	return ts, func() (string, map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		return path, body
+	}
+}
+
+// The endpoint definition's path joins the base URL exactly once — the
+// reverse-proxy prefix in the URL survives.
+func TestClientRouteFromEndpointDefinition(t *testing.T) {
+	ts, last := captureServer(t)
+	cfg := &config.Config{}
+	cfg.LLM.Endpoint = ts.URL + "/proxy/v1"
+	cfg.LLM.Model = "m"
+	cfg.LLM.MaxTokensResponse = 128
+	rt, err := thinking.Build(thinking.Settings{EndpointType: "gufo", ProfileID: "qwen3_8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Thinking = rt
+	c := NewClient(cfg, nil)
+	if err := c.Stream(context.Background(), "", nil, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if path, _ := last(); path != "/proxy/v1/chat/completions" {
+		t.Errorf("path = %q, want /proxy/v1/chat/completions", path)
+	}
+}
+
+// A rendered fragment rides the normal body (no extra_body wrapper);
+// Default (nil) leaves no thinking field of any kind behind, so a later
+// request can never inherit an earlier turn's effort or budget.
+func TestStreamThinkingFragment(t *testing.T) {
+	ts, last := captureServer(t)
+	cfg := &config.Config{}
+	cfg.LLM.Endpoint = ts.URL + "/v1"
+	cfg.LLM.Model = "m"
+	cfg.LLM.MaxTokensResponse = 128
+	rt, err := thinking.Build(thinking.Settings{EndpointType: "gufo", ProfileID: "qwen3_8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Thinking = rt
+	c := NewClient(cfg, nil)
+
+	high, _ := rt.Resolve("high")
+	frag, err := rt.Fragment(high)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.StreamTools(context.Background(), "", nil, nil, frag,
+		func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	_, body := last()
+	if body["reasoning_effort"] != "xhigh" {
+		t.Errorf("body = %v, want reasoning_effort xhigh", body)
+	}
+	if ctk, ok := body["chat_template_kwargs"].(map[string]any); !ok || ctk["enable_thinking"] != true {
+		t.Errorf("chat_template_kwargs = %v, want enable_thinking true", body["chat_template_kwargs"])
+	}
+
+	// Default after High: fresh body, no leftover thinking fields.
+	if err := c.StreamTools(context.Background(), "", nil, nil, nil,
+		func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	_, body = last()
+	for _, k := range []string{"reasoning_effort", "chat_template_kwargs", "reasoning_budget_tokens"} {
+		if _, found := body[k]; found {
+			t.Errorf("Default request carries stale %q: %v", k, body)
+		}
+	}
+}
+
+// mergeJSON preserves unrelated fields inside nested objects (§6).
+func TestMergeJSONPreservesUnrelatedFields(t *testing.T) {
+	dst := map[string]any{
+		"chat_template_kwargs": map[string]any{"skip_special": true},
+		"temperature":          0.7,
+	}
+	src := map[string]any{
+		"chat_template_kwargs": map[string]any{"enable_thinking": true},
+	}
+	mergeJSON(dst, src)
+	ctk := dst["chat_template_kwargs"].(map[string]any)
+	if ctk["skip_special"] != true || ctk["enable_thinking"] != true {
+		t.Errorf("merged kwargs = %v, want both keys", ctk)
+	}
+	// src must not be aliased into dst: later mutation of dst cannot
+	// corrupt the shared fragment.
+	ctk["skip_special"] = false
+	if src["chat_template_kwargs"].(map[string]any)["skip_special"] != nil {
+		t.Error("merge aliased the source map")
+	}
+}
+
+// The reasoning aliases: same trace under both spellings must reach the
+// consumer exactly once; either one alone still arrives; and content in
+// the same chunk is processed independently.
+func TestReasoningAliasesDedupe(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"think","reasoning":"think"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"reasoning":"only"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"reasoning_content":"rc","content":"answer"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		``,
+	}, "\n")
+	ts := sseServer(t, body)
+	_, reasoning, _, err := collect(t, clientFor(ts, nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reasoning != "thinkonlyrc" {
+		t.Errorf("reasoning = %q, want thinkonlyrc (no duplication)", reasoning)
 	}
 }

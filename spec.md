@@ -168,6 +168,15 @@ llm:
                                          # the conversation (needs a vision-capable
                                          # endpoint; uploads are never sent on their own)
   vision_max_image_bytes: 4MiB           # per-picture cap for view_image
+  # Thinking control (thinking-control-specification.md, §6.3). All four
+  # optional: omitted together, no selector appears and requests keep the
+  # plain transport. The files extend the catalogues embedded in the binary
+  # per ID — a matching ID replaces that entry wholesale, a new ID adds it.
+  # Relative paths resolve against this config file's directory.
+  endpoints_file: ""                     # e.g. ./endpoints.yaml (request-field recipes)
+  profiles_file: ""                      # e.g. ./thinking-profiles.yaml (choice lists)
+  endpoint_type: ""                      # catalogue id: the request convention for `endpoint`
+  thinking_profile: ""                   # catalogue id: the choices for `model`; "none" hides the picker
 
 tools:
   web_search:
@@ -294,6 +303,8 @@ conversations (
   title        TEXT NOT NULL DEFAULT 'New chat',
   model        TEXT NOT NULL,            -- model override; empty = server default
   system_prompt TEXT NOT NULL DEFAULT '',
+  thinking     TEXT NOT NULL DEFAULT '', -- thinking choice id; empty = built-in Default (§6.3)
+  thinking_ctx TEXT NOT NULL DEFAULT '', -- endpoint/model/type/profile fingerprint taken with `thinking`
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL         -- bumped on new message
 )
@@ -414,11 +425,11 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 | GET | `/api/v1/conversations?q=&cursor=` | List user's conversations (newest updated first, optional title search). |
 | POST | `/api/v1/conversations` | `{title?, model?, system_prompt?}` → create. A missing `system_prompt` inherits the user's `default_system_prompt` (the row stores the copy; later default edits never rewrite existing chats). |
 | DELETE | `/api/v1/conversations?older_than=` | Bulk housekeeping (`older_than` ∈ `1w`/`1mo`/`1y`/`all`, calendar-approximated 7/30/365 days; anything else → 400). Hard-deletes the caller's conversations with `updated_at` older than the cutoff — `all` spares none — FK cascades as per-row delete does; answers `{deleted, ids}` so the UI knows whether its open thread died, and approval memory dies with each row. |
-| GET | `/api/v1/conversations/{id}` | Metadata + pinned files. |
-| PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt. |
+| GET | `/api/v1/conversations/{id}` | Metadata + pinned files. Carries `thinking`: the **effective** choice (`default`, or a saved one still valid under the current endpoint/model/type/profile — §6.3). |
+| PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt, thinking choice (`{thinking}`; §6.3). |
 | DELETE | `/api/v1/conversations/{id}` | Hard delete; FK cascades to messages → tool calls & attachment links. |
 | GET | `/api/v1/conversations/{id}/messages?cursor=` | Full history (incl. tool-call cards). |
-| POST | `/api/v1/conversations/{id}/messages` | **The core endpoint.** Body `{content, attachment_paths?}`. Responds with an **SSE stream** (§6). Disconnecting aborts generation server-side. |
+| POST | `/api/v1/conversations/{id}/messages` | **The core endpoint.** Body `{content, attachment_paths?, thinking?}`. Responds with an **SSE stream** (§6). Disconnecting aborts generation server-side. |
 | POST | `/api/v1/toolcalls/{id}/approval` | `{decision: "allow" | "deny", remember?: "conversation"}` for tools in `confirm` mode. |
 | POST | `/api/v1/messages/{id}/regenerate` | Re-run last assistant turn (streams like above). |
 
@@ -445,7 +456,9 @@ the chip behind as a historical record whose download 404s (by design).
 
 `GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
 `registration` mode, `remember_login`/`show_reasoning` flags, `email_features`
-(§9.17), `max_context_tokens` (the context window in force for the meter: the pinned config
+(§9.17), `thinking` (`{choices: [{id, label}]}` — the effective list for this deployment's
+endpoint/model, or `null` when the selector is off; only ids and labels cross the wire, §6.3),
+`max_context_tokens` (the context window in force for the meter: the pinned config
 number, or the endpoint-discovered one while auto; `null` while auto-detection has nothing),
 message
 char limit, tools
@@ -517,6 +530,39 @@ Event taxonomy (SSE `event:` field): `start`, `token`, `reasoning`, `title`,
 - Abort: client disconnect or `POST /api/v1/generations/{id}/abort` cancels the upstream
   request (`context.Cancel`), message saved with `status='aborted'` + partial content —
   matching ChatGPT's stop button.
+
+### 6.3 Thinking-level control
+
+`internal/thinking` owns the feature: two catalogues (endpoints = how one request convention
+expresses a choice as JSON fields; profiles = the ordered choices for the configured model),
+both shipped in the binary and extendable per ID by `llm.endpoints_file`/`llm.profiles_file`
+— a new profile or mapping is a YAML edit plus a restart, never a recompile. `config.Load`
+builds the runtime after `Validate` (which stays pure); an unreadable configured file, an
+unknown `endpoint_type`/`thinking_profile`, or a native (non-`openai_chat`) protocol selection
+refuses startup. Endpoint range misses hide the offending choice with a startup warning; a
+budget preset that could leave no room inside `max_tokens_response` is a configuration error.
+
+- **Choice → request.** A choice is one ID from the profile. At request time the backend
+  renders the endpoint's ONE fragment for that choice's mode (`off`/`on`/`effort`/`budget`),
+  substituting `$effort`/`$budget_tokens` wholesale, and deep-merges it into the normal body
+  (nested objects merge key by key; no `extra_body` wrapper). The built-in `default` sends
+  nothing. Effort and budget never merge; a fresh copy is rendered per request, so no turn
+  inherits another's fields. Clients supply only the ID — never effort strings or JSON.
+- **Route.** With an endpoint definition selected, its `path` replaces the client's
+  `/chat/completions` suffix, joined to `llm.endpoint` exactly once (a reverse-proxy prefix
+  in the URL survives). Titling (`Complete`) keeps its own hardcoded thinking-off: the
+  selector owns only the chat body.
+- **State.** `conversations.thinking` ('' = Default) plus `thinking_ctx` = sha256 over
+  endpoint URL · the conversation's effective model · endpoint type · profile ID (never the
+  API key). Reads resolve the saved pair against the current context: any mismatch projects
+  `default` visibly rather than applying a choice belonging to another model. An invalid
+  choice on PATCH or send is `400 invalid_thinking_choice` — validated before persistence and
+  before the endpoint is contacted, never silently translated.
+- **Snapshot.** The fragment is rendered once at generation start and reused for every tool
+  round of that reply: moving the selector mid-flight affects the next request only.
+- **UI.** A `Thinking` dropdown under the composer (§10.2), populated from `meta.thinking`,
+  hidden entirely when there is nothing to choose. Changing it PATCHes the conversation
+  (reverting the select if the server refuses).
 
 ---
 
@@ -1172,7 +1218,7 @@ Cross-cutting touch/responsive behavior:
 | View | Contents |
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
-| **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat") with a muted **"Delete older than…"** command dropdown under it (1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
+| **Chat (main)** | Left sidebar: conversation list (search, rename, delete, "New chat") with a muted **"Delete older than…"** command dropdown under it (1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), **attach file** button (uploads to scratchpad, chip shown before send), model picker, stop button while streaming. Directly under the composer sits a muted **Thinking** dropdown (Default first, then the deployment's choices from `meta.thinking`; hidden when there is nothing to choose — §6.3). Each assistant reply carries a muted **tok/s**
 note, pinned to the right of a footnote row under the answer (completion tokens
 ÷ model-round time; absent on rows without timing, e.g. history from before the
 feature). The **regenerate** button shares that row at the far left, so the two

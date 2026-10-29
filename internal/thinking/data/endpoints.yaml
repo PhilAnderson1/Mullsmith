@@ -1,0 +1,139 @@
+schema_version: 1
+endpoints:
+  gufo:
+    protocol: openai_chat
+    path: /chat/completions
+    requests:
+      'off':
+        chat_template_kwargs:
+          enable_thinking: false
+      'on':
+        chat_template_kwargs:
+          enable_thinking: true
+      effort:
+        chat_template_kwargs:
+          enable_thinking: true
+        reasoning_effort: $effort
+      budget:
+        chat_template_kwargs:
+          enable_thinking: true
+        reasoning_budget_tokens: $budget_tokens
+    budget_min: 1
+    effort_values:
+    - minimal
+    - low
+    - medium
+    - high
+    - xhigh
+    - max
+    budget_max: 2147483647
+  llama_cpp:
+    protocol: openai_chat
+    path: /chat/completions
+    requests:
+      'off':
+        chat_template_kwargs:
+          enable_thinking: false
+      'on':
+        chat_template_kwargs:
+          enable_thinking: true
+      effort:
+        chat_template_kwargs:
+          enable_thinking: true
+        reasoning_effort: $effort
+      budget:
+        chat_template_kwargs:
+          enable_thinking: true
+        reasoning_budget_tokens: $budget_tokens
+    budget_min: 1
+    budget_max: 2147483647
+  vllm:
+    protocol: openai_chat
+    path: /chat/completions
+    requests:
+      'off':
+        chat_template_kwargs:
+          enable_thinking: false
+      'on':
+        chat_template_kwargs:
+          enable_thinking: true
+      effort:
+        chat_template_kwargs:
+          enable_thinking: true
+        reasoning_effort: $effort
+      budget:
+        chat_template_kwargs:
+          enable_thinking: true
+        thinking_token_budget: $budget_tokens
+    budget_min: 1
+    effort_values:
+    - minimal
+    - low
+    - medium
+    - high
+    - xhigh
+    - max
+  lm_studio:
+    protocol: openai_chat
+    path: /chat/completions
+    requests:
+      effort:
+        reasoning_effort: $effort
+  lm_studio_native:
+    protocol: lm_studio_chat
+    path: /chat
+    requests:
+      'off':
+        reasoning: 'off'
+      'on':
+        reasoning: 'on'
+      effort:
+        reasoning: $effort
+    effort_values:
+    - low
+    - medium
+    - high
+  ollama:
+    protocol: ollama_chat
+    path: /chat
+    requests:
+      'off':
+        think: false
+      'on':
+        think: true
+      effort:
+        think: $effort
+  ollama_openai:
+    protocol: openai_chat
+    path: /chat/completions
+    requests:
+      'off':
+        reasoning_effort: none
+      'on':
+        reasoning_effort: medium
+      effort:
+        reasoning_effort: $effort
+  openrouter:
+    protocol: openai_chat
+    path: /chat/completions
+    requests:
+      'off':
+        reasoning:
+          enabled: false
+      'on':
+        reasoning:
+          enabled: true
+      effort:
+        reasoning:
+          effort: $effort
+      budget:
+        reasoning:
+          max_tokens: $budget_tokens
+    effort_values:
+    - minimal
+    - low
+    - medium
+    - high
+    - xhigh
+    - max
+    budget_min: 1

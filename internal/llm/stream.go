@@ -101,6 +101,7 @@ type ToolCallDelta struct {
 // Client talks to one OpenAI-compatible endpoint (spec §6.2).
 type Client struct {
 	endpoint    string
+	route       string // request path appended to endpoint (default /chat/completions)
 	apiKey      string
 	model       string
 	maxTokens   int
@@ -109,10 +110,18 @@ type Client struct {
 }
 
 // NewClient builds the streaming client. Transport may be nil for defaults
-// (tests inject a fake one to exercise the retry path).
+// (tests inject a fake one to exercise the retry path). With the thinking
+// control configured, the endpoint definition's path replaces the default
+// route — joined to the base URL exactly once, keeping any reverse-proxy
+// prefix the URL carries (thinking-control-specification.md §3).
 func NewClient(cfg *config.Config, transport http.RoundTripper) *Client {
+	route := "/chat/completions"
+	if r := cfg.Thinking; r.Enabled() && r.Route() != "" {
+		route = r.Route()
+	}
 	return &Client{
 		endpoint:    strings.TrimRight(cfg.LLM.Endpoint, "/"),
+		route:       route,
 		apiKey:      cfg.LLM.APIKey,
 		model:       cfg.LLM.Model,
 		maxTokens:   cfg.LLM.MaxTokensResponse,
@@ -120,6 +129,10 @@ func NewClient(cfg *config.Config, transport http.RoundTripper) *Client {
 		http:        &http.Client{Transport: transport}, // no global timeout: streaming
 	}
 }
+
+// url is the request target: base URL with its path intact, route suffix
+// appended once.
+func (c *Client) url() string { return c.endpoint + c.route }
 
 var (
 	// ErrUpstream is a sanitized upstream failure (spec §9.12: no internals
@@ -129,7 +142,7 @@ var (
 	ErrAborted = errors.New("generation aborted")
 )
 
-// Stream posts /chat/completions with stream:true and invokes onDelta for
+// Stream posts the chat route with stream:true and invokes onDelta for
 // every parsed piece of content/reasoning (plus one final Done delta).
 // Cancelling ctx aborts the upstream request. Lenient parsing per spec §6.2:
 // unknown fields ignored, malformed chunk lines skipped, a stream that
@@ -140,12 +153,17 @@ var (
 func (c *Client) Stream(ctx context.Context, model string, msgs []ChatMessage,
 	onDelta func(Delta) error,
 ) error {
-	return c.StreamTools(ctx, model, msgs, nil, onDelta)
+	return c.StreamTools(ctx, model, msgs, nil, nil, onDelta)
 }
 
-// StreamTools is Stream with tool specs advertised (spec §6.1 step 3).
+// StreamTools is Stream with tool specs advertised (spec §6.1 step 3) and
+// an optional thinking fragment: the already-rendered JSON fields one
+// thinking choice adds (thinking-control-specification.md §6), deep-merged
+// into every request attempt. Callers render it once per generation, so a
+// selection change mid-flight cannot reach this stream's continuations;
+// nil means Default — no override is ever sent.
 func (c *Client) StreamTools(ctx context.Context, model string, msgs []ChatMessage,
-	tools []ToolSpec, onDelta func(Delta) error,
+	tools []ToolSpec, thinking map[string]any, onDelta func(Delta) error,
 ) error {
 	if model == "" {
 		model = c.model
@@ -156,7 +174,7 @@ func (c *Client) StreamTools(ctx context.Context, model string, msgs []ChatMessa
 	)
 	for attempt := 0; attempt < 2; attempt++ {
 		sawDelta = false
-		err = c.streamOnce(ctx, model, msgs, tools, func(d Delta) error {
+		err = c.streamOnce(ctx, model, msgs, tools, thinking, func(d Delta) error {
 			if d.Content != "" || d.Reasoning != "" || len(d.ToolCalls) > 0 {
 				sawDelta = true
 			}
@@ -185,7 +203,7 @@ func isConnRefused(err error) bool {
 }
 
 func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessage,
-	tools []ToolSpec, onDelta func(Delta) error,
+	tools []ToolSpec, thinking map[string]any, onDelta func(Delta) error,
 ) error {
 	payload := map[string]any{
 		"model":          model,
@@ -201,11 +219,17 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 	if c.temperature > 0 {
 		payload["temperature"] = c.temperature
 	}
+	// The thinking fragment rides the normal body — no extra_body
+	// wrapper, that name belongs to SDK conventions, not the HTTP
+	// request (thinking-control-specification.md §6).
+	if len(thinking) > 0 {
+		mergeJSON(payload, thinking)
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/chat/completions",
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(),
 		bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -234,13 +258,42 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 	return parseSSE(resp.Body, onDelta, ctx.Err)
 }
 
+// mergeJSON deep-merges src into dst: nested objects merge key by key so
+// unrelated fields already in either tree survive; anything else replaces
+// (thinking-control-specification.md §6: setting
+// chat_template_kwargs.enable_thinking must not drop another template
+// argument). src comes from the thinking renderer — already a fresh
+// copy — and is never mutated.
+func mergeJSON(dst, src map[string]any) {
+	for k, v := range src {
+		sm, ok := v.(map[string]any)
+		if !ok {
+			dst[k] = v
+			continue
+		}
+		dm, ok := dst[k].(map[string]any)
+		if !ok {
+			dst[k] = v
+			continue
+		}
+		mergeJSON(dm, sm)
+	}
+}
+
 // chunk mirrors the subset of an OpenAI streaming chunk we consume; unknown
 // fields are ignored by construction (forward-compat, spec §6.2).
 type chunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`
+			Content string `json:"content"`
+			// Reasoning arrives under two aliases across providers:
+			// reasoning_content (vLLM/llama.cpp/Gufo lineage) and
+			// reasoning (newer Chat surfaces). When both carry the same
+			// trace, only one may reach the stream — double-appending a
+			// thought duplicates every word of it (thinking-control-
+			// specification.md §7).
 			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
 			Role             string `json:"role"`
 			ToolCalls        []struct {
 				Index    *int   `json:"index"`
@@ -291,7 +344,12 @@ func parseSSE(r io.Reader, onDelta func(Delta) error, abort func() error) error 
 		}
 		for _, cch := range ch.Choices {
 			d.Content = cch.Delta.Content
+			// One alias per trace: reasoning_content wins when both are
+			// set (the longer-established spelling), never concatenated.
 			d.Reasoning = cch.Delta.ReasoningContent
+			if d.Reasoning == "" {
+				d.Reasoning = cch.Delta.Reasoning
+			}
 			for pos, tc := range cch.Delta.ToolCalls {
 				idx := pos // servers may omit index on the first fragment
 				if tc.Index != nil {
