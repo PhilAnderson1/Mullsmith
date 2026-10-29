@@ -550,7 +550,7 @@ function convRow(c) {
   let pressFired = false;
   let pressPos = null;
   li.addEventListener("touchstart", (ev) => {
-    if (ev.touches.length !== 1 || ev.target.closest("button, form")) return;
+    if (ev.touches.length !== 1 || ev.target.closest(".conv-menu-btn, .conv-rename")) return;
     const t = ev.touches[0];
     pressPos = { clientX: t.clientX, clientY: t.clientY };
     pressFired = false;
@@ -579,6 +579,9 @@ function convRow(c) {
     clearTimeout(pressTimer);
     pressFired = false;
   });
+  // Belt and braces: silence any native long-press menu the browser still
+  // tries to raise over ours. No browser gesture opens the row menu itself.
+  li.addEventListener("contextmenu", (ev) => ev.preventDefault());
 
   return li;
 }
