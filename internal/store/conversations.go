@@ -228,16 +228,16 @@ func (d *DB) PruneConversations(ctx context.Context, userID string, cutoff int64
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		ids = append(ids, s)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close() // must close before Exec on the single shared connection
+	_ = rows.Close() // must close before Exec on the single shared connection
 
 	if len(ids) > 0 {
 		dq := `DELETE FROM conversations WHERE user_id = ?`
