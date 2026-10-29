@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // --- fake SMTP server ------------------------------------------------------
@@ -264,7 +264,7 @@ func selfSignedCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(os.Stderr, nil)) }
 
 func clientCfg(s *fakeServer, auth bool) config.SMTP {
-	return config.SMTP{Host: "127.0.0.1", Port: s.port(), AuthenticatedSMTP: auth, From: "gabkeep@test"}
+	return config.SMTP{Host: "127.0.0.1", Port: s.port(), AuthenticatedSMTP: auth, From: "mullsmith@test"}
 }
 
 // --- tests -------------------------------------------------------------------
@@ -298,7 +298,7 @@ func TestAuthenticatedSendOverSTARTTLS(t *testing.T) {
 		t.Fatalf("messages = %d, want 1", len(msgs))
 	}
 	m := msgs[0]
-	if m.to != "user@dest.io" || m.subject != "Hello there" || m.from != "gabkeep@test" {
+	if m.to != "user@dest.io" || m.subject != "Hello there" || m.from != "mullsmith@test" {
 		t.Errorf("envelope/headers = %+v", m)
 	}
 	if !strings.Contains(m.raw, "\r\n..dot stuffed\r\n") {
@@ -432,10 +432,10 @@ func TestMessageBuilders(t *testing.T) {
 		t.Errorf("change-confirm link missing: %s", body)
 	}
 	if !strings.Contains(subj, "address change") ||
-		!strings.Contains(body, "activate your Gabkeep email address change") {
+		!strings.Contains(body, "activate your Mullsmith email address change") {
 		t.Errorf("change-confirm must read as an address change, not an activation: %q / %s", subj, body)
 	}
-	if strings.Contains(body, "activate your gabkeep account") || strings.Contains(body, "deleted") {
+	if strings.Contains(body, "activate your mullsmith account") || strings.Contains(body, "deleted") {
 		t.Errorf("change-confirm must carry no sign-up/deletion wording: %s", body)
 	}
 	// Sign-up wording must stay distinct from the change wording.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/scratch"
 )
 
 const (

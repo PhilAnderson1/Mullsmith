@@ -10,11 +10,11 @@ import (
 // ${ENV_VAR} and must not cost a fresh install its startup (§9.12).
 // Values still expand, and unset ${VAR} in a value still fails loudly.
 func TestExpandEnvCommentsPassThrough(t *testing.T) {
-	t.Setenv("GABKEEP_TEST_PRESENT", "hunter2")
+	t.Setenv("MULLSMITH_TEST_PRESENT", "hunter2")
 
-	out, err := expandEnv("# like ${TOTALLY_UNSET} or ${GABKEEP_TEST_PRESENT}\n" +
+	out, err := expandEnv("# like ${TOTALLY_UNSET} or ${MULLSMITH_TEST_PRESENT}\n" +
 		"  # indented ${TOTALLY_UNSET:-fallback} too\n" +
-		"key: ${GABKEEP_TEST_PRESENT}\n" +
+		"key: ${MULLSMITH_TEST_PRESENT}\n" +
 		"fallback: ${TOTALLY_UNSET:-dflt}\n")
 	if err != nil {
 		t.Fatalf("expandEnv with unset var in comment: %v", err)

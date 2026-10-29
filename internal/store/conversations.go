@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/id"
+	"mullsmith/internal/id"
 )
 
 // ErrConversationNotFound covers "does not exist" and "not yours" alike —

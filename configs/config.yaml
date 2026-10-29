@@ -1,5 +1,5 @@
-# Gabkeep — production config template (spec.md §2.2).
-# Copy, edit, then verify with:  gabkeep -config /etc/gabkeep/config.yaml -check-config
+# Mullsmith — production config template (spec.md §2.2).
+# Copy, edit, then verify with:  mullsmith -config /etc/mullsmith/config.yaml -check-config
 # Relative paths resolve against this file's directory. Secrets go in via
 # ${ENV_VAR} / ${ENV_VAR:-default} expansion (§9.12) — never commit them.
 
@@ -11,12 +11,12 @@ server:
   tls:
     enabled: false                # true + cert/key here, or terminate at proxy
     # To serve HTTPS directly: un-comment the commented ExecStartPre line in
-    # the shipped unit (packaging/systemd/gabkeep.service) and set its
+    # the shipped unit (packaging/systemd/mullsmith.service) and set its
     # YOUR.HOSTNAME to your certbot domain. It then stages certbot's key into
-    # RAM-only /run/gabkeep at service start — the key never persists to disk
+    # RAM-only /run/mullsmith at service start — the key never persists to disk
     # and no group grants are needed:
-    cert_file: "/run/gabkeep/cert.pem"
-    key_file: "/run/gabkeep/key.pem"
+    cert_file: "/run/mullsmith/cert.pem"
+    key_file: "/run/mullsmith/key.pem"
   trusted_proxies: []             # CIDRs of your proxies ONLY (§9.11 spoofing)
   hsts_max_age: 31536000          # HSTS when serving TLS; -1 disables
   read_timeout: 30s               # slow-body guard on the listening socket
@@ -24,10 +24,10 @@ server:
   shutdown_grace: 15s             # in-flight grace on SIGTERM
 
 database:
-  dir: "/var/lib/gabkeep/db"
+  dir: "/var/lib/mullsmith/db"
 
 scratchpad:
-  root: "/var/lib/gabkeep/scratchpad"
+  root: "/var/lib/mullsmith/scratchpad"
   max_file_size: 25MiB
   user_quota: 1GiB
   artifact_ttl: 168h              # shared artifacts expire after 7 days
@@ -43,11 +43,11 @@ scratchpad:
     # One sandbox, always: every script runs inside a bubblewrap (bwrap)
     # jail — own namespaces, read-only /usr, only the user's work dir
     # writable, network off unless allow_network. Requires the bubblewrap
-    # package; gabkeep refuses to start with enabled: true when bwrap is
+    # package; mullsmith refuses to start with enabled: true when bwrap is
     # missing or unprivileged user namespaces are disabled.
     # max_memory is a PER-RUN aggregate: the whole process tree (children
     # included) shares it via a per-run cgroup, which needs a delegated
-    # cgroup v2 subtree — for systemd use packaging/systemd/gabkeep.service as shipped
+    # cgroup v2 subtree — for systemd use packaging/systemd/mullsmith.service as shipped
     # (Delegate=yes + DelegateSubgroup=payload). Metering unavailable ⇒
     # refuses to start, same fail-closed contract (§9.9).
     # (Old keys mode/container_image/run_as_user are retired — remove them.)
@@ -64,7 +64,7 @@ scratchpad:
 
 llm:
   endpoint: "http://127.0.0.1:8081/v1"   # your OpenAI-compatible server
-  api_key: "${GABKEEP_LLM_API_KEY:-}"
+  api_key: "${MULLSMITH_LLM_API_KEY:-}"
   model: "your-model-name"
   models: []                             # picker list; the model above is always in it
   max_context_tokens: -1                 # -1 = read the window from the endpoint's /models listing;
@@ -103,7 +103,7 @@ tools:
   web_search:
     enabled: false                # true + brave key to enable "search the web"
     provider: "brave"             # the only implemented provider
-    api_key: "${GABKEEP_SEARCH_API_KEY:-}"
+    api_key: "${MULLSMITH_SEARCH_API_KEY:-}"
     max_results: 8
   web_fetch:
     enabled: true                 # SSRF-guarded egress (§9.6); public web only
@@ -139,16 +139,16 @@ email:                            # password reset + email confirmation
   # Absolute origin the links in mails are built from — REQUIRED when enabled.
   # Never derived from request headers on purpose: a spoofed Host must not be
   # able to inject an attacker domain into password-reset links.
-  base_url: ""                    # e.g. https://gabkeep.example:3210
+  base_url: ""                    # e.g. https://mullsmith.example:3210
   smtp:
     host: ""                      # submission server hostname or address
     port: 587                     # 587 (STARTTLS) or 465 (implicit TLS)
     authenticated_smtp: true      # true → AUTH LOGIN (never before TLS);
                                   # false → unauthenticated send (LAN relay)
     username: ""
-    password: "${GABKEEP_SMTP_PASSWORD:-}"   # keep the secret in the service
+    password: "${MULLSMITH_SMTP_PASSWORD:-}"   # keep the secret in the service
                                   # EnvironmentFile (§9.12), not in this file
-    from: "gabkeep@localhost"     # envelope sender + From header
+    from: "mullsmith@localhost"     # envelope sender + From header
   # With enabled: true, new sign-ups must click a confirmation link within
   # 24 hours (or the pending account is deleted); "Forgot password?" appears
   # on the login page for accounts with a confirmed address. Authenticated

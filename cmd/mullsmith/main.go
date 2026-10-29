@@ -1,14 +1,14 @@
-// Command gabkeep is a self-hosted, single-binary chat assistant (spec.md).
+// Command mullsmith is a self-hosted, single-binary chat assistant (spec.md).
 //
 // Usage:
 //
-//	gabkeep                                              # serve (default config)
-//	gabkeep -config /path/to/config.yaml
-//	gabkeep [-config /path/to/config.yaml] admin invite [n]
-//	gabkeep [-config /path/to/config.yaml] admin create-user -email E -name N -password P
-//	gabkeep [-config /path/to/config.yaml] admin reset-password <email> [-password P]
-//	gabkeep [-config /path/to/config.yaml] admin list-users
-//	gabkeep [-config /path/to/config.yaml] admin delete-user <id-or-email>
+//	mullsmith                                              # serve (default config)
+//	mullsmith -config /path/to/config.yaml
+//	mullsmith [-config /path/to/config.yaml] admin invite [n]
+//	mullsmith [-config /path/to/config.yaml] admin create-user -email E -name N -password P
+//	mullsmith [-config /path/to/config.yaml] admin reset-password <email> [-password P]
+//	mullsmith [-config /path/to/config.yaml] admin list-users
+//	mullsmith [-config /path/to/config.yaml] admin delete-user <id-or-email>
 package main
 
 import (
@@ -30,15 +30,15 @@ import (
 
 	"golang.org/x/term"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
-	"gabkeep/internal/id"
-	"gabkeep/internal/llm"
-	"gabkeep/internal/mail"
-	"gabkeep/internal/runner"
-	"gabkeep/internal/scratch"
-	"gabkeep/internal/server"
-	"gabkeep/internal/store"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
+	"mullsmith/internal/id"
+	"mullsmith/internal/llm"
+	"mullsmith/internal/mail"
+	"mullsmith/internal/runner"
+	"mullsmith/internal/scratch"
+	"mullsmith/internal/server"
+	"mullsmith/internal/store"
 )
 
 // Set via -ldflags at build time.
@@ -57,16 +57,16 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
-// defaultConfigPath is where gabkeep looks when -config is omitted: every
+// defaultConfigPath is where mullsmith looks when -config is omitted: every
 // supported install (tarball, .deb, .rpm) puts the file there, so a default
 // install never has to name it (spec §2.1).
-const defaultConfigPath = "/etc/gabkeep/config.yaml"
+const defaultConfigPath = "/etc/mullsmith/config.yaml"
 
 func run(args []string) int {
-	fs := flag.NewFlagSet("gabkeep", flag.ContinueOnError)
+	fs := flag.NewFlagSet("mullsmith", flag.ContinueOnError)
 	fs.Usage = func() {
 		out := fs.Output()
-		fmt.Fprintln(out, "usage: gabkeep [flags] [command]")
+		fmt.Fprintln(out, "usage: mullsmith [flags] [command]")
 		fmt.Fprintln(out, "\nflags:")
 		fs.PrintDefaults()
 		fmt.Fprintln(out, "\ncommands:")
@@ -88,7 +88,7 @@ func run(args []string) int {
 	}
 
 	if *showVersion {
-		fmt.Printf("gabkeep %s (commit %s, built %s)\n", version, commit, buildDate)
+		fmt.Printf("mullsmith %s (commit %s, built %s)\n", version, commit, buildDate)
 		return 0
 	}
 
@@ -97,19 +97,19 @@ func run(args []string) int {
 		if rest[0] == "admin" {
 			return adminMain(*cfgPath, rest[1:])
 		}
-		fmt.Fprintf(os.Stderr, "gabkeep: unexpected argument %q\n", rest[0])
+		fmt.Fprintf(os.Stderr, "mullsmith: unexpected argument %q\n", rest[0])
 		return 2
 	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gabkeep: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mullsmith: %v\n", err)
 		return 1
 	}
 
 	logFile, logger, err := openLogging(cfg.Logging)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gabkeep: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mullsmith: %v\n", err)
 		return 1
 	}
 	defer func() {
@@ -131,7 +131,7 @@ func run(args []string) int {
 		return 1
 	}
 
-	db, err := store.Open(filepath.Join(cfg.Database.Dir, "gabkeep.db"))
+	db, err := store.Open(filepath.Join(cfg.Database.Dir, "mullsmith.db"))
 	if err != nil {
 		logger.Error("cannot open database", "error", err)
 		return 1
@@ -254,21 +254,21 @@ func expireSessionsLoop(ctx context.Context, db *store.DB, logger *slog.Logger) 
 
 func adminMain(cfgPath string, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: gabkeep [-config CFG] admin <invite|create-user|reset-password|list-users|delete-user> [...]")
+		fmt.Fprintln(os.Stderr, "usage: mullsmith [-config CFG] admin <invite|create-user|reset-password|list-users|delete-user> [...]")
 		return 2
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gabkeep: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mullsmith: %v\n", err)
 		return 1
 	}
 	if err := cfg.EnsureDirs(); err != nil {
-		fmt.Fprintf(os.Stderr, "gabkeep: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mullsmith: %v\n", err)
 		return 1
 	}
-	db, err := store.Open(filepath.Join(cfg.Database.Dir, "gabkeep.db"))
+	db, err := store.Open(filepath.Join(cfg.Database.Dir, "mullsmith.db"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "gabkeep: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mullsmith: %v\n", err)
 		return 1
 	}
 	defer db.Close()
@@ -288,7 +288,7 @@ func adminMain(cfgPath string, args []string) int {
 	case "delete-user":
 		return adminDeleteUser(ctx, db, os.Stdout, args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "gabkeep: unknown admin command %q\n", args[0])
+		fmt.Fprintf(os.Stderr, "mullsmith: unknown admin command %q\n", args[0])
 		return 2
 	}
 }
@@ -310,11 +310,11 @@ func adminInvite(ctx context.Context, cfg *config.Config, db *store.DB, args []s
 	for i := 0; i < n; i++ {
 		code, err := auth.NewInviteCode()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "gabkeep:", err)
+			fmt.Fprintln(os.Stderr, "mullsmith:", err)
 			return 1
 		}
 		if err := db.CreateInvite(ctx, code, time.Now()); err != nil {
-			fmt.Fprintln(os.Stderr, "gabkeep: create invite:", err)
+			fmt.Fprintln(os.Stderr, "mullsmith: create invite:", err)
 			return 1
 		}
 		fmt.Println(code)
@@ -336,16 +336,16 @@ func adminCreateUser(ctx context.Context, cfg *config.Config, db *store.DB, args
 	}
 	emailNorm, ok := auth.NormalizeEmail(*email)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "gabkeep: invalid email address")
+		fmt.Fprintln(os.Stderr, "mullsmith: invalid email address")
 		return 1
 	}
 	if err := auth.CheckPasswordPolicy(*password); err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
 	}
 	hash, err := auth.HashPassword(*password, cfg.Auth.Argon2)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
 	}
 	now := time.Now()
@@ -359,11 +359,11 @@ func adminCreateUser(ctx context.Context, cfg *config.Config, db *store.DB, args
 		UpdatedAt:    now,
 	}
 	if err := db.Register(ctx, u, ""); err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep: create user:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith: create user:", err)
 		return 1
 	}
 	if err := scratch.EnsureUserDirs(cfg.Scratchpad.Root, u.ID); err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep: scratchpad:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith: scratchpad:", err)
 		return 1
 	}
 	fmt.Printf("created user %s (%s)\n", u.ID, u.Email)
@@ -397,16 +397,16 @@ func adminResetPassword(ctx context.Context, cfg *config.Config, db *store.DB, a
 	}
 	lookup, ok := auth.NormalizeEmail(rest[0])
 	if !ok {
-		fmt.Fprintln(os.Stderr, "gabkeep: invalid email address")
+		fmt.Fprintln(os.Stderr, "mullsmith: invalid email address")
 		return 1
 	}
 	u, err := db.UserByEmail(ctx, lookup)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
 	}
 	if u == nil {
-		fmt.Fprintln(os.Stderr, "gabkeep: no account with that email")
+		fmt.Fprintln(os.Stderr, "mullsmith: no account with that email")
 		return 1
 	}
 
@@ -421,7 +421,7 @@ func adminResetPassword(ctx context.Context, cfg *config.Config, db *store.DB, a
 
 	if newPw == "" {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			fmt.Fprintln(os.Stderr, "gabkeep: no terminal for prompt; use -password")
+			fmt.Fprintln(os.Stderr, "mullsmith: no terminal for prompt; use -password")
 			return 2
 		}
 		fmt.Print("New password: ")
@@ -437,26 +437,26 @@ func adminResetPassword(ctx context.Context, cfg *config.Config, db *store.DB, a
 			return 1
 		}
 		if string(b) != string(b2) {
-			fmt.Fprintln(os.Stderr, "gabkeep: passwords do not match")
+			fmt.Fprintln(os.Stderr, "mullsmith: passwords do not match")
 			return 1
 		}
 		newPw = string(b)
 	}
 	if err := auth.CheckPasswordPolicy(newPw); err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
 	}
 	hash, err := auth.HashPassword(newPw, cfg.Auth.Argon2)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
 	}
 	if err := db.SetPassword(ctx, u.ID, hash, time.Now()); err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
 	}
 	if n, err := db.DeleteSessionsForUser(ctx, u.ID, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep: session revocation failed:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith: session revocation failed:", err)
 		return 1
 	} else {
 		fmt.Printf("password reset for %s; %d session(s) revoked\n", u.Email, n)
@@ -472,12 +472,12 @@ func adminResetPassword(ctx context.Context, cfg *config.Config, db *store.DB, a
 func adminMailReset(ctx context.Context, cfg *config.Config, db *store.DB, u *store.User) bool {
 	raw, err := db.CreateToken(ctx, store.TokenResetPassword, u.ID, u.Email, time.Now().Add(30*time.Minute))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep: reset token:", err, "— falling back to password prompt")
+		fmt.Fprintln(os.Stderr, "mullsmith: reset token:", err, "— falling back to password prompt")
 		return false
 	}
 	subject, body := mail.ResetMail(cfg.Email.BaseURL, raw)
 	if err := mail.NewSMTP(cfg.Email.SMTP).Deliver(u.Email, subject, body); err != nil {
-		fmt.Fprintf(os.Stderr, "gabkeep: mail failed (%v) — falling back to password prompt\n", err)
+		fmt.Fprintf(os.Stderr, "mullsmith: mail failed (%v) — falling back to password prompt\n", err)
 		return false
 	}
 	fmt.Printf("reset link mailed to %s (one-shot, 30 min; completing it revokes all sessions)\n", u.Email)
@@ -494,7 +494,7 @@ func adminListUsers(ctx context.Context, db *store.DB, out io.Writer, args []str
 	}
 	users, err := db.ListUsers(ctx)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep: list users:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith: list users:", err)
 		return 1
 	}
 	for _, u := range users {
@@ -531,7 +531,7 @@ func adminDeleteUser(ctx context.Context, db *store.DB, out io.Writer, args []st
 	target := fs.Arg(0)
 	u, err := db.UserByID(ctx, target)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
 	}
 	if u == nil && strings.Contains(target, "@") {
@@ -540,22 +540,22 @@ func adminDeleteUser(ctx context.Context, db *store.DB, out io.Writer, args []st
 		if lookup, ok := auth.NormalizeEmail(target); ok {
 			u, err = db.UserByEmail(ctx, lookup)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "gabkeep:", err)
+				fmt.Fprintln(os.Stderr, "mullsmith:", err)
 				return 1
 			}
 		}
 	}
 	if u == nil {
-		fmt.Fprintf(os.Stderr, "gabkeep: no account with that id or confirmed email: %s\n", target)
+		fmt.Fprintf(os.Stderr, "mullsmith: no account with that id or confirmed email: %s\n", target)
 		return 1
 	}
 	deleted, err := db.DeleteUser(ctx, u.ID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gabkeep: delete user:", err)
+		fmt.Fprintln(os.Stderr, "mullsmith: delete user:", err)
 		return 1
 	}
 	if !deleted {
-		fmt.Fprintln(os.Stderr, "gabkeep: user vanished mid-delete; nothing removed")
+		fmt.Fprintln(os.Stderr, "mullsmith: user vanished mid-delete; nothing removed")
 		return 1
 	}
 	fmt.Fprintf(out, "deleted user %s (%s)\n", u.ID, adminEmailLabel(*u))

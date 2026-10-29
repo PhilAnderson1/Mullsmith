@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/id"
+	"mullsmith/internal/id"
 )
 
 // Message is a messages-table row.

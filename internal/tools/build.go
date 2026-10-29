@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/runner"
+	"mullsmith/internal/config"
+	"mullsmith/internal/runner"
 )
 
 // BuildFor assembles the registry from config (§7.1: registration is driven
@@ -41,7 +41,7 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 		case "brave":
 			switch {
 			case cfg.Tools.WebSearch.APIKey == "":
-				logger.Warn("web_search disabled: tools.web_search.api_key / GABKEEP_SEARCH_API_KEY not set")
+				logger.Warn("web_search disabled: tools.web_search.api_key / MULLSMITH_SEARCH_API_KEY not set")
 			default:
 				reg.Register(NewBraveSearch(cfg.Tools.WebSearch.APIKey,
 					cfg.Tools.WebSearch.MaxResults, searchClient))

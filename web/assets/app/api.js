@@ -40,8 +40,8 @@ async function request(method, path, body) {
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
-  const csrf = cookieValue("gabkeep_csrf");
-  if (csrf) headers["X-Gabkeep-CSRF"] = csrf;
+  const csrf = cookieValue("mullsmith_csrf");
+  if (csrf) headers["X-Mullsmith-CSRF"] = csrf;
 
   const resp = await fetch(path, {
     method,
@@ -58,8 +58,8 @@ async function uploadFile(file) {
   const fd = new FormData();
   fd.append("file", file);
   const headers = {};
-  const csrf = cookieValue("gabkeep_csrf");
-  if (csrf) headers["X-Gabkeep-CSRF"] = csrf;
+  const csrf = cookieValue("mullsmith_csrf");
+  if (csrf) headers["X-Mullsmith-CSRF"] = csrf;
   const resp = await fetch("/api/v1/files", {
     method: "POST",
     headers,

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/llm"
+	"mullsmith/internal/config"
+	"mullsmith/internal/llm"
 )
 
 // Event kinds handed to the SSE layer (spec §6.1 taxonomy; tool_* events

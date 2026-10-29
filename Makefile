@@ -1,4 +1,4 @@
-# Gabkeep build. Version stamping: -version prints these values.
+# Mullsmith build. Version stamping: -version prints these values.
 # CGO is never required (pure-Go sqlite), so builds are portable static binaries.
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
@@ -13,7 +13,7 @@ LDFLAGS := -s -w \
 
 build:
 	mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/gabkeep ./cmd/gabkeep
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/mullsmith ./cmd/mullsmith
 
 test:
 	go test ./...
@@ -42,6 +42,6 @@ check: vet race lint vuln
 # Release artifact: single static binary stamped with version/commit/date.
 dist: build
 	@mkdir -p dist
-	@cp bin/gabkeep dist/gabkeep-$(VERSION)-linux-amd64
-	@sha256sum dist/gabkeep-$(VERSION)-linux-amd64 | tee dist/gabkeep-$(VERSION)-linux-amd64.sha256
-	@echo "dist/gabkeep-$(VERSION)-linux-amd64 (+ .sha256)"
+	@cp bin/mullsmith dist/mullsmith-$(VERSION)-linux-amd64
+	@sha256sum dist/mullsmith-$(VERSION)-linux-amd64 | tee dist/mullsmith-$(VERSION)-linux-amd64.sha256
+	@echo "dist/mullsmith-$(VERSION)-linux-amd64 (+ .sha256)"

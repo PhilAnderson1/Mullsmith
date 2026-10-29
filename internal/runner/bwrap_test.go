@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/runner"
+	"mullsmith/internal/config"
+	"mullsmith/internal/runner"
 )
 
 // TestMain lets the test binary double as the sandbox launcher: when the
@@ -308,7 +308,7 @@ func TestJailCannotSeeHostFiles(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("SECRET"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := b.Run(t.Context(), "userA", d.req(`for p in `+outside+` /etc/gabkeep/env /var/lib/gabkeep/db/gabkeep.db /etc/passwd /home; do
+	out, err := b.Run(t.Context(), "userA", d.req(`for p in `+outside+` /etc/mullsmith/env /var/lib/mullsmith/db/mullsmith.db /etc/passwd /home; do
   if [ -e "$p" ]; then echo "VISIBLE: $p"; else echo "no-path: $p"; fi
 done
 echo "scratch-entries: $(ls /scratchpad | tr '\n' ' ')"`))
@@ -318,7 +318,7 @@ echo "scratch-entries: $(ls /scratchpad | tr '\n' ' ')"`))
 	if strings.Contains(out.Stdout, "VISIBLE") {
 		t.Errorf("host file visible from jail:\n%s", out.Stdout)
 	}
-	for _, want := range []string{"no-path: " + outside, "no-path: /etc/gabkeep/env", "no-path: /var/lib/gabkeep/db/gabkeep.db"} {
+	for _, want := range []string{"no-path: " + outside, "no-path: /etc/mullsmith/env", "no-path: /var/lib/mullsmith/db/mullsmith.db"} {
 		if !strings.Contains(out.Stdout, want) {
 			t.Errorf("missing observation %q in %q", want, out.Stdout)
 		}
@@ -409,10 +409,10 @@ except OSError as e:
 // --- always-on layers, observed from inside the jail -----------------------
 
 func TestJailEnvIsScrubbed(t *testing.T) {
-	t.Setenv("GABKEEP_LLM_API_KEY", "SECRET-KEY")
+	t.Setenv("MULLSMITH_LLM_API_KEY", "SECRET-KEY")
 	b := newJail(t)
 	out, err := b.Run(t.Context(), "userA", scratchDirs(t).req(
-		`echo "S=[${GABKEEP_LLM_API_KEY}]"; echo "P=${PATH}"; echo "H=${HOME}"; echo "T=${TMPDIR}"`))
+		`echo "S=[${MULLSMITH_LLM_API_KEY}]"; echo "P=${PATH}"; echo "H=${HOME}"; echo "T=${TMPDIR}"`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +728,7 @@ func TestNewForConfigEnabledBuildsJail(t *testing.T) {
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("production-built runner failed: %v %+v", err, out)
 	}
-	if strings.Contains(out.Stdout, "etc/gabkeep") || strings.Contains(out.Stdout, "var") {
+	if strings.Contains(out.Stdout, "etc/mullsmith") || strings.Contains(out.Stdout, "var") {
 		t.Errorf("unexpected host paths in jail root: %q", out.Stdout)
 	}
 }

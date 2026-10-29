@@ -1,21 +1,21 @@
-# gabkeep.service — systemd unit for a production install (spec §2.1, §9).
-# Install path assumes: binary /usr/local/bin/gabkeep, config
-# /etc/gabkeep/config.yaml, state /var/lib/gabkeep (mode 0700, owned by the
-# gabkeep user created below). See README "Quick install on a fresh Ubuntu box".
+# mullsmith.service — systemd unit for a production install (spec §2.1, §9).
+# Install path assumes: binary /usr/local/bin/mullsmith, config
+# /etc/mullsmith/config.yaml, state /var/lib/mullsmith (mode 0700, owned by the
+# mullsmith user created below). See README "Quick install on a fresh Ubuntu box".
 
 [Unit]
-Description=Gabkeep self-hosted chat assistant
-Documentation=file:/usr/share/doc/gabkeep/README.md
+Description=Mullsmith self-hosted chat assistant
+Documentation=file:/usr/share/doc/mullsmith/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=gabkeep
-Group=gabkeep
-ExecStart=/usr/local/bin/gabkeep -config /etc/gabkeep/config.yaml
-# Secrets via EnvironmentFile (mode 0640): GABKEEP_SEARCH_API_KEY=...
-EnvironmentFile=-/etc/gabkeep/env
+User=mullsmith
+Group=mullsmith
+ExecStart=/usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml
+# Secrets via EnvironmentFile (mode 0640): MULLSMITH_SEARCH_API_KEY=...
+EnvironmentFile=-/etc/mullsmith/env
 
 Restart=on-failure
 RestartSec=2s
@@ -25,24 +25,24 @@ RestartSec=2s
 KillSignal=SIGTERM
 TimeoutStopSec=45
 
-# TLS via tmpfs-staged certificates (§9.12) — OFF by default. gabkeep starts
+# TLS via tmpfs-staged certificates (§9.12) — OFF by default. mullsmith starts
 # with server.tls.enabled: false (plain HTTP on loopback; acceptable on a
 # private network — read the README Security section before exposing it).
 # Enabling SSL takes two steps: un-comment the line at the end of this
 # block, and set server.tls.enabled: true in the config. Deliberately NO
-# ExecReload= line: gabkeep reads its cert at startup and does not catch
+# ExecReload= line: mullsmith reads its cert at startup and does not catch
 # SIGHUP, so the conventional `kill -HUP $MAINPID` would KILL the service
 # (default disposition), not reload it.
-RuntimeDirectory=gabkeep
+RuntimeDirectory=mullsmith
 RuntimeDirectoryMode=0700
 
   # To use SSL, un-comment this line and edit the 'YOUR.HOSTNAME' references.
   # The "+" makes the command run as root: certbot keeps privkeys 0600
-  # root:root, and only root can hand gabkeep-readable copies to the RAM-only
-  # /run/gabkeep (wiped on stop; the key never persists to disk). Certbot
+  # root:root, and only root can hand mullsmith-readable copies to the RAM-only
+  # /run/mullsmith (wiped on stop; the key never persists to disk). Certbot
   # renewals are picked up by a deploy hook doing
-  # `systemctl try-restart gabkeep`.
-  # ExecStartPre=+/bin/sh -c 'install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem)" /run/gabkeep/key.pem && install -m 600 -o gabkeep -g gabkeep "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem)" /run/gabkeep/cert.pem'
+  # `systemctl try-restart mullsmith`.
+  # ExecStartPre=+/bin/sh -c 'install -m 600 -o mullsmith -g mullsmith "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem)" /run/mullsmith/key.pem && install -m 600 -o mullsmith -g mullsmith "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem)" /run/mullsmith/cert.pem'
 
 # Sandboxing (§9). ProtectHome is NOT used: the scratchpad may live under
 # /home on small installs — ProtectSystem=strict + explicit ReadWritePaths
@@ -53,13 +53,13 @@ ProtectSystem=strict
 # read-only for the service, which then denies bubblewrap its per-run
 # `mount proc` (EPERM), and the §9.9 probe refuses startup. The jail itself
 # never sees host /proc; ProtectSystem=strict already covers the tunables
-# for gabkeep's own process (everything outside ReadWritePaths is read-only).
+# for mullsmith's own process (everything outside ReadWritePaths is read-only).
 ProtectKernelModules=true
 # ProtectControlGroups is deliberately NOT set (§9.9 resource layer): it
 # remounts /sys/fs/cgroup read-only, which makes the per-run cgroup meter
-# impossible to arm — gabkeep then refuses code execution at startup (fail
+# impossible to arm — mullsmith then refuses code execution at startup (fail
 # closed, never un-metered). Safety here comes from ownership: the service
-# runs as gabkeep and only its delegated subtree below is user-writable. On
+# runs as mullsmith and only its delegated subtree below is user-writable. On
 # systemd ≥ 257 you can add `ProtectControlGroups=private` for mount-level
 # protection that still permits the delegated subtree.
 RestrictSUIDSGID=true
@@ -67,27 +67,27 @@ LockPersonality=true
 # Go never needs writable-executable memory; keeping W^X enforcement off
 # matches the Go runtime's expectations.
 MemoryDenyWriteExecute=false
-ReadWritePaths=/var/lib/gabkeep
+ReadWritePaths=/var/lib/mullsmith
 PrivateTmp=true
 # AF_NETLINK is required, not incidental: bubblewrap creates a net namespace
 # per run and must open a NETLINK_ROUTE socket to bring up loopback inside it.
-# Without it the §9.9 startup probe fails and gabkeep refuses to start.
+# Without it the §9.9 startup probe fails and mullsmith refuses to start.
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 # If the LLM endpoint is a local unix socket only, you can drop AF_INET here.
 # Code execution uses bubblewrap (unprivileged user namespaces). The systemd
-# hardening above is compatible: bwrap runs fully unprivileged and gabkeep
+# hardening above is compatible: bwrap runs fully unprivileged and mullsmith
 # verifies a real jail at startup, refusing to start if it cannot. If your
 # distro or an added directive (e.g. a custom SystemCallFilter, PrivateUsers=true
 # or ProtectKernelTunables, which blocks the jail's proc mount) gets in the way,
 # the probe fails loudly — adjust the unit rather than disabling the jail.
 
 # Code execution resource metering (§9.9): every jail run is charged to a
-# per-run cgroup (memory/pids/cpu aggregate caps) that gabkeep creates in the
+# per-run cgroup (memory/pids/cpu aggregate caps) that mullsmith creates in the
 # subtree delegated to this unit. Delegate=yes hands the unit's cgroup subtree
-# to User=gabkeep; DelegateSubgroup=payload (systemd ≥ 254 — older versions
-# ignore the key and gabkeep performs the same move itself) starts the service
+# to User=mullsmith; DelegateSubgroup=payload (systemd ≥ 254 — older versions
+# ignore the key and mullsmith performs the same move itself) starts the service
 # in a child cgroup so the kernel allows controllers on the delegation root.
-# Without working metering, gabkeep refuses code_run at startup (fail closed);
+# Without working metering, mullsmith refuses code_run at startup (fail closed);
 # code_execution.enabled: false removes the requirement.
 Delegate=yes
 DelegateSubgroup=payload

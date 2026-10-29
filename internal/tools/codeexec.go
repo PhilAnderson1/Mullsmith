@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/runner"
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/config"
+	"mullsmith/internal/runner"
+	"mullsmith/internal/scratch"
 )
 
 // maxScriptBytes bounds one code_run script argument; a model-authored

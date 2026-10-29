@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/store"
-	"gabkeep/internal/tools"
+	"mullsmith/internal/config"
+	"mullsmith/internal/store"
+	"mullsmith/internal/tools"
 )
 
 // --- test doubles ---------------------------------------------------------------

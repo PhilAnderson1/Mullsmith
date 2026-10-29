@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
-	"gabkeep/internal/mail"
-	"gabkeep/internal/store"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
+	"mullsmith/internal/mail"
+	"mullsmith/internal/store"
 )
 
 // --- harness: an app whose "SMTP" records jobs in memory ---------------------
@@ -86,7 +86,7 @@ func emailTestApp(t *testing.T) (*authTest, *fakeMailer) {
 	cfg.Email = config.Email{
 		Enabled: true,
 		BaseURL: "https://gk.test:3210",
-		SMTP:    config.SMTP{Host: "mail.test", Port: 587, From: "gabkeep@test"},
+		SMTP:    config.SMTP{Host: "mail.test", Port: 587, From: "mullsmith@test"},
 	}
 	fm := &fakeMailer{ch: make(chan mail.Job, 64)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -337,7 +337,7 @@ func TestSignupConfirmPendingLifecycle(t *testing.T) {
 	// below; consuming early also keeps later expectQuiet calls honest).
 	regJob := fm.next(t)
 	oldTok := tokenFromJob(t, regJob, "/#confirm?t=")
-	if !strings.Contains(regJob.Body, "activate your gabkeep account") {
+	if !strings.Contains(regJob.Body, "activate your mullsmith account") {
 		t.Errorf("sign-up confirm mail must read as an activation:\n%s", regJob.Body)
 	}
 
@@ -458,7 +458,7 @@ func TestSettingsEmailChangeFlow(t *testing.T) {
 			// Field feedback: the Settings mail must NOT read like a
 			// sign-up activation (no account-creation, no deletion promise).
 			if !strings.Contains(j.Body, "email address change") ||
-				strings.Contains(j.Body, "activate your gabkeep account") ||
+				strings.Contains(j.Body, "activate your mullsmith account") ||
 				strings.Contains(j.Body, "deleted") {
 				t.Errorf("settings confirm mail wording wrong:\n%s", j.Body)
 			}

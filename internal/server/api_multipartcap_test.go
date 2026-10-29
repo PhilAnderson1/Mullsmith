@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"testing"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
 )
 
 // --- audit finding 6: the whole upload request must carry one budget -------

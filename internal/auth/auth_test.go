@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/id"
+	"mullsmith/internal/config"
+	"mullsmith/internal/id"
 )
 
 func testArgon() config.Argon2 {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Gabkeep</title>
+  <title>Mullsmith</title>
   <link rel="stylesheet" href="/assets/styles.css">
   <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
   <!-- Installable as a standalone app: no browser UI when launched from
@@ -14,13 +14,13 @@
   <meta name="theme-color" content="#14161b" media="(prefers-color-scheme: dark)">
   <link rel="apple-touch-icon" href="/assets/gk-apple-full-v4.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="Gabkeep">
+  <meta name="apple-mobile-web-app-title" content="Mullsmith">
 </head>
 <body>
   <!-- ============================ Auth view ============================ -->
   <div id="view-auth" class="view" hidden>
     <main class="auth-card">
-      <h1 class="brand">Gabkeep</h1>
+      <h1 class="brand">Mullsmith</h1>
       <p class="auth-mode" id="auth-mode-note" hidden>Registrations are invite-only.</p>
 
       <form id="form-login" novalidate>
@@ -118,7 +118,7 @@
       <button id="btn-menu" class="icon-btn" aria-label="Open conversation list" aria-expanded="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
       </button>
-      <span class="topbar-title" id="topbar-title">Gabkeep</span>
+      <span class="topbar-title" id="topbar-title">Mullsmith</span>
       <select id="model-picker" class="model-picker" title="Model for this conversation" aria-label="Model" disabled></select>
       <button id="btn-theme" class="icon-btn" aria-label="Toggle color theme">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2m9-9h-2M5 12H3m14.5-6.5-1.4 1.4M7.9 16.1l-1.4 1.4m11 0-1.4-1.4M7.9 7.9 6.5 6.5M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
@@ -169,7 +169,7 @@
     <main class="chat-main">
       <div id="thread" class="thread" aria-live="polite">
         <div class="empty-state" id="empty-state">
-          <h2>Gabkeep</h2>
+          <h2>Mullsmith</h2>
           <p>Pick a conversation on the left or start a new one.</p>
           <p class="muted">Everything stays on this server, yours alone.</p>
         </div>
@@ -288,21 +288,28 @@
     </form>
   </dialog>
 
-  <!-- One conversation row in the sidebar list -->
+  <!-- One conversation row in the sidebar list. The row's actions hide
+       behind a "…" that appears on hover (always visible where hover
+       doesn't exist, §10.2); a right-click or mobile long press opens
+       the same menu via contextmenu. -->
   <template id="tpl-conv-item">
     <li class="conv-item">
       <button class="conv-open" type="button"><span class="conv-title"></span></button>
       <form class="conv-rename" hidden>
         <input type="text" maxlength="200" aria-label="New title">
       </form>
-      <button class="icon-btn tiny conv-rename-btn" type="button" aria-label="Rename">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19l-4 1z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"/></svg>
-      </button>
-      <button class="icon-btn tiny conv-delete-btn" type="button" aria-label="Delete">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7V5h6v2m-7 0 1 13h6l1-13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <button class="icon-btn tiny conv-menu-btn" type="button" aria-label="Chat actions" title="Chat actions">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="18.5" cy="12" r="1.8" fill="currentColor"/></svg>
       </button>
     </li>
   </template>
+
+  <!-- Sidebar row actions, summoned by the "…" button or contextmenu.
+       Lives outside the list; app.js points it at one row at a time. -->
+  <div class="row-menu" id="conv-row-menu" role="menu" hidden>
+    <button class="row-menu-item" type="button" role="menuitem" data-action="rename">Rename</button>
+    <button class="row-menu-item" type="button" role="menuitem" data-action="delete">Delete</button>
+  </div>
 
   <!-- One message bubble -->
   <template id="tpl-message">

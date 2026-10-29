@@ -1,4 +1,4 @@
-// Package config loads, environment-expands, and validates Gabkeep's YAML
+// Package config loads, environment-expands, and validates Mullsmith's YAML
 // configuration file (spec §2.2). Unknown keys are a hard error so typos are
 // caught at startup rather than silently ignored.
 package config
@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/thinking"
+	"mullsmith/internal/thinking"
 	"gopkg.in/yaml.v3"
 )
 
@@ -953,7 +953,7 @@ func (c *Config) Validate() error {
 		f.bad("tools.web_search.provider: only \"brave\" is implemented")
 	}
 	if c.Tools.WebSearch.Enabled && c.Tools.WebSearch.APIKey == "" {
-		f.bad("tools.web_search.api_key: required for the brave provider (try ${GABKEEP_SEARCH_API_KEY:-})")
+		f.bad("tools.web_search.api_key: required for the brave provider (try ${MULLSMITH_SEARCH_API_KEY:-})")
 	}
 	if c.Tools.WebFetch.MaxBytes <= 0 {
 		f.bad("tools.web_fetch.max_bytes: must be > 0")
@@ -1114,7 +1114,7 @@ func (c *Config) CheckIO() []Check {
 }
 
 func dirWritable(dir string) error {
-	f, err := os.CreateTemp(dir, ".gabkeep-check-*")
+	f, err := os.CreateTemp(dir, ".mullsmith-check-*")
 	if err != nil {
 		return err
 	}

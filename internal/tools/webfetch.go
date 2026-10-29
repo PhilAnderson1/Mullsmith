@@ -102,7 +102,7 @@ func (w *WebFetch) Execute(ctx context.Context, inv Invocation) (Result, error) 
 		return Result{}, errors.New("web_fetch: only http and https urls are allowed")
 	}
 	req.Header.Set("Accept", "text/html,text/plain;q=0.9,*/*;q=0.5")
-	req.Header.Set("User-Agent", "gabkeep/1.0 (personal assistant; single self-hosted user)")
+	req.Header.Set("User-Agent", "mullsmith/1.0 (personal assistant; single self-hosted user)")
 
 	resp, err := w.client.Do(req)
 	if err != nil {

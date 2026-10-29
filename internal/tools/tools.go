@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"gabkeep/internal/llm"
+	"mullsmith/internal/llm"
 )
 
 // Invocation is one execution of a tool on behalf of a user.

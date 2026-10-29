@@ -1,4 +1,4 @@
-/* Gabkeep — mobile-first responsive styles (spec §10.1).
+/* Mullsmith — mobile-first responsive styles (spec §10.1).
    Bands: phone <640 implicit, drawer <1024, desktop grid ≥1024,
    readability cap ~72ch always, app max 1800px. */
 
@@ -283,6 +283,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 
 .conv-item {
+  position: relative;
   display: flex;
   align-items: center;
   border-radius: var(--radius);
@@ -290,6 +291,15 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .conv-item:hover { background: var(--bg-sunken); }
 .conv-item.active { background: var(--bg-sunken); }
+/* The row's actions hide behind "…": revealed on hover, and always there
+   where hover doesn't exist (phones/tablets, §10.2). */
+.conv-menu-btn { opacity: 0; flex: none; }
+.conv-item:hover .conv-menu-btn,
+.conv-menu-btn:focus-visible { opacity: 0.75; }
+.conv-menu-btn:hover { opacity: 1 !important; }
+@media (hover: none) {
+  .conv-menu-btn { opacity: 0.75; }
+}
 .conv-open {
   flex: 1;
   min-width: 0;
@@ -309,8 +319,32 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .conv-rename { flex: 1; min-width: 0; }
 .conv-rename input { padding: 0.4rem 0.5rem; }
-.conv-item .icon-btn { opacity: 0.75; flex: none; }
-.conv-item .icon-btn:hover { opacity: 1; }
+
+/* The row's Rename/Delete menu (the "…" button or a right-click /
+   long press). Fixed so it floats above the scrolling sidebar. */
+.row-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 9rem;
+  padding: 0.35rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.4);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
+.row-menu-item {
+  padding: 0.45rem 0.6rem;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.row-menu-item:hover, .row-menu-item:focus-visible { background: var(--bg-sunken); }
 
 /* ---------- thread & composer ---------- */
 

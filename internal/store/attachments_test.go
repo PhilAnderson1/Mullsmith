@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/id"
+	"mullsmith/internal/id"
 )
 
 func mkConvMsg(t *testing.T, db *DB, ctx context.Context, userID, title string) (Conversation, Message) {

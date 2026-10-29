@@ -1,4 +1,4 @@
-// Gabkeep SPA — M3: auth, conversations and live streamed chat.
+// Mullsmith SPA — M3: auth, conversations and live streamed chat.
 // Tools and files arrive in M4/M5. No framework, no build step (spec §10).
 // DOM helpers are local; views are plain functions over a single state object.
 
@@ -485,16 +485,20 @@ function convRow(c) {
 
   const form = li.querySelector(".conv-rename");
   const input = form.querySelector("input");
-  li.querySelector(".conv-rename-btn").addEventListener("click", () => {
+  const openBtn = li.querySelector(".conv-open");
+  const menuBtn = li.querySelector(".conv-menu-btn");
+  const startRename = () => {
     input.value = c.title;
-    show(li.querySelector(".conv-open"), false);
+    show(openBtn, false);
+    show(menuBtn, false);
     show(form, true);
     input.focus();
     input.select();
-  });
+  };
   const cancelRename = () => {
     show(form, false);
-    show(li.querySelector(".conv-open"), true);
+    show(openBtn, true);
+    show(menuBtn, true);
   };
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") cancelRename();
@@ -514,7 +518,9 @@ function convRow(c) {
     cancelRename();
   });
 
-  li.querySelector(".conv-delete-btn").addEventListener("click", async () => {
+  // Delete lives here, not behind a DOM button: the row menu drives this
+  // one closure over the conversation object.
+  const confirmDelete = async () => {
     const ok = await confirmDialog(`Delete "${c.title}"?`);
     if (!ok) return;
     if (c.id === state.currentId) await abandonInflight();
@@ -529,8 +535,47 @@ function convRow(c) {
     } catch (err) {
       handleErr(err, "delete");
     }
+  };
+
+  menuBtn.addEventListener("click", () => {
+    // A simple toggle: the second press closes rather than re-summons.
+    if (rowMenuTarget && rowMenuTarget.li === li && !$("#conv-row-menu").hidden) closeConvRowMenu();
+    else openConvRowMenu({ li, rename: startRename, del: confirmDelete });
   });
+  // One gesture covers both worlds: right-click on desktop, long press on
+  // Android/iOS — preventDefault keeps the browser's own callout away.
+  li.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    openConvRowMenu({ li, rename: startRename, del: confirmDelete }, ev);
+  });
+
   return li;
+}
+
+// The sidebar row's action menu: the "…" button summons it at the row,
+// contextmenu (right-click / long press) at the pointer. One row at a
+// time; the row hands over its own action closures, so the menu knows
+// nothing about titles or the delete flow.
+let rowMenuTarget = null;
+
+function openConvRowMenu(target, ev) {
+  closeConvRowMenu();
+  rowMenuTarget = target;
+  const menu = $("#conv-row-menu");
+  show(menu, true);
+  const pad = 8;
+  let x = ev ? ev.clientX : target.li.getBoundingClientRect().right - 8;
+  let y = ev ? ev.clientY : target.li.getBoundingClientRect().bottom + 4;
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  x = Math.min(Math.max(x, pad), window.innerWidth - w - pad);
+  y = Math.min(Math.max(y, pad), window.innerHeight - h - pad);
+  menu.style.left = x + "px";
+  menu.style.top = y + "px";
+}
+
+function closeConvRowMenu() {
+  rowMenuTarget = null;
+  show($("#conv-row-menu"), false);
 }
 
 // applyTitle reflects a server-generated title (SSE "title" event) into the
@@ -599,7 +644,7 @@ function msgNode(m) {
   const el = clone("tpl-message");
   el.classList.add(m.role === "user" ? "from-user" : "from-assistant");
   el.dataset.id = m.id || "";
-  el.querySelector(".msg-role").textContent = m.role === "user" ? "You" : "Gabkeep";
+  el.querySelector(".msg-role").textContent = m.role === "user" ? "You" : "Mullsmith";
   const time = el.querySelector("time");
   time.dateTime = m.created_at;
   time.textContent = new Date(m.created_at).toLocaleString();
@@ -844,8 +889,8 @@ function refreshLastAssistant() {
 function syncPlaceholder() {
   $("#composer-input").placeholder = state.currentId
     ? (isPhone()
-        ? "Message Gabkeep…"
-        : "Message Gabkeep… (Enter sends, Shift+Enter newline)")
+        ? "Message Mullsmith…"
+        : "Message Mullsmith… (Enter sends, Shift+Enter newline)")
     : "Start or pick a chat first";
 }
 
@@ -961,7 +1006,7 @@ function stopSpinner(st) {
 function streamNode() {
   const el = clone("tpl-message");
   el.classList.add("from-assistant");
-  el.querySelector(".msg-role").textContent = "Gabkeep";
+  el.querySelector(".msg-role").textContent = "Mullsmith";
   const time = el.querySelector("time");
   const now = new Date();
   time.dateTime = now.toISOString();
@@ -1787,7 +1832,7 @@ async function abandonInflight() {
 
 function renderConversation() {
   const c = state.currentId ? state.currentConv : null;
-  $("#topbar-title").textContent = c ? c.title : "Gabkeep";
+  $("#topbar-title").textContent = c ? c.title : "Mullsmith";
   const sel = $("#model-picker");
   sel.disabled = !state.currentId;
   if (c) {
@@ -1823,7 +1868,7 @@ function initialEmptyState() {
   const el = document.createElement("div");
   el.className = "empty-state";
   const h = document.createElement("h2");
-  h.textContent = "Gabkeep";
+  h.textContent = "Mullsmith";
   const p1 = document.createElement("p");
   p1.textContent = "Pick a conversation on the left or start a new one.";
   const p2 = document.createElement("p");
@@ -2059,6 +2104,23 @@ async function boot() {
     }
   });
   $("#model-picker").addEventListener("change", onModelChange);
+  // Row action menu: outside click or Escape dismisses it. The "…" button
+  // is its own toggle (its click bubbles here after the menu opened), so
+  // the "outside" check must spare it like a container.
+  document.addEventListener("click", (ev) => {
+    if (!$("#conv-row-menu").hidden && !ev.target.closest("#conv-row-menu, .conv-menu-btn")) closeConvRowMenu();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeConvRowMenu();
+  });
+  $("#conv-row-menu").addEventListener("click", (ev) => {
+    const item = ev.target.closest(".row-menu-item");
+    if (!rowMenuTarget || !item) return;
+    const { rename, del } = rowMenuTarget;
+    closeConvRowMenu();
+    if (item.dataset.action === "rename") rename();
+    else del();
+  });
   $("#thinking-select").addEventListener("change", (ev) => {
     onThinkingChange(ev);
     closeAddMenu(); // one pick, menu done — like the sidebar's command dropdown

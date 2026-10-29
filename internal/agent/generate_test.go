@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/llm"
+	"mullsmith/internal/config"
+	"mullsmith/internal/llm"
 )
 
 // sseServer serves a canned OpenAI-style SSE body.

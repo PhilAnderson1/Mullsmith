@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 func TestHashGateSerializesAndRefuses(t *testing.T) {

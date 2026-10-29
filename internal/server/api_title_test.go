@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/store"
+	"mullsmith/internal/store"
 )
 
 // titleFake answers streaming chat requests with scriptReply-style content

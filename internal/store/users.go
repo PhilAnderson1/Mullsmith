@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"gabkeep/internal/id"
+	"mullsmith/internal/id"
 )
 
 // Sentinel errors surfaced to handlers (mapped to safe API codes).

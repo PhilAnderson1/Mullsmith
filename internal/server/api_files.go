@@ -17,8 +17,8 @@ import (
 	"time"
 	"unicode"
 
-	"gabkeep/internal/id"
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/id"
+	"mullsmith/internal/scratch"
 )
 
 // --- The physical file API (§5.3): upload, list, download, delete ----------

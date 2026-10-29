@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"gabkeep/internal/id"
+	"mullsmith/internal/id"
 )
 
 // errOverLimit ends a DirSizeExceeds walk the instant the sum crosses the

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"gabkeep/internal/auth"
+	"mullsmith/internal/auth"
 )
 
 // Token kinds (auth_tokens.kind).

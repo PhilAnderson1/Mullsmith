@@ -18,8 +18,8 @@ import { ApiError, cookieValue } from "/assets/app/api.js";
 export async function streamChat(path, body, handlers, signal) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const csrf = cookieValue("gabkeep_csrf");
-  if (csrf) headers["X-Gabkeep-CSRF"] = csrf;
+  const csrf = cookieValue("mullsmith_csrf");
+  if (csrf) headers["X-Mullsmith-CSRF"] = csrf;
 
   const resp = await fetch(path, {
     method: "POST",

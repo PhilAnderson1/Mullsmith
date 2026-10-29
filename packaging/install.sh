@@ -3,26 +3,26 @@
 set -eu
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Gabkeep must be installed as root." >&2
+    echo "Mullsmith must be installed as root." >&2
     exit 1
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-# Release archives place install.sh and gabkeep at their root. In a source
-# checkout this script remains under packaging/ and make writes bin/gabkeep.
+# Release archives place install.sh and mullsmith at their root. In a source
+# checkout this script remains under packaging/ and make writes bin/mullsmith.
 content_root="$script_dir"
-binary="$content_root/gabkeep"
+binary="$content_root/mullsmith"
 if [ ! -f "$binary" ] && [ -f "$script_dir/../go.mod" ]; then
     content_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-    binary="$content_root/gabkeep"
+    binary="$content_root/mullsmith"
     if [ ! -f "$binary" ]; then
-        binary="$content_root/bin/gabkeep"
+        binary="$content_root/bin/mullsmith"
     fi
 fi
 
 config_source="$content_root/configs/config.yaml"
-service_source="$content_root/packaging/systemd/gabkeep.service"
+service_source="$content_root/packaging/systemd/mullsmith.service"
 readme_source="$content_root/README.md"
 spec_source="$content_root/spec.md"
 license_source="$content_root/LICENSE"
@@ -41,40 +41,40 @@ if [ ! -d "$third_party_licenses_source" ]; then
     exit 1
 fi
 
-if ! getent group gabkeep >/dev/null 2>&1; then
+if ! getent group mullsmith >/dev/null 2>&1; then
     if command -v groupadd >/dev/null 2>&1; then
-        groupadd --system gabkeep
+        groupadd --system mullsmith
     elif command -v addgroup >/dev/null 2>&1; then
-        addgroup -S gabkeep
+        addgroup -S mullsmith
     else
-        echo "Cannot create the gabkeep group: groupadd/addgroup not found." >&2
+        echo "Cannot create the mullsmith group: groupadd/addgroup not found." >&2
         exit 1
     fi
 fi
 
-if ! id gabkeep >/dev/null 2>&1; then
+if ! id mullsmith >/dev/null 2>&1; then
     if command -v useradd >/dev/null 2>&1; then
-        useradd --system --gid gabkeep --home-dir /nonexistent --shell /usr/sbin/nologin gabkeep
+        useradd --system --gid mullsmith --home-dir /nonexistent --shell /usr/sbin/nologin mullsmith
     elif command -v adduser >/dev/null 2>&1; then
-        adduser -S -D -H -G gabkeep -s /sbin/nologin gabkeep
+        adduser -S -D -H -G mullsmith -s /sbin/nologin mullsmith
     else
-        echo "Cannot create the gabkeep user: useradd/adduser not found." >&2
+        echo "Cannot create the mullsmith user: useradd/adduser not found." >&2
         exit 1
     fi
 fi
 
-install -m 0755 "$binary" /usr/local/bin/gabkeep
-install -d -o root -g gabkeep -m 0750 /etc/gabkeep
-install -d -o gabkeep -g gabkeep -m 0700 /var/lib/gabkeep
-install -d -o root -g root -m 0755 /usr/local/share/gabkeep
-install -o root -g root -m 0644 "$readme_source" /usr/local/share/gabkeep/README.md
-install -o root -g root -m 0644 "$spec_source" /usr/local/share/gabkeep/spec.md
-install -o root -g root -m 0644 "$license_source" /usr/local/share/gabkeep/LICENSE
-install -o root -g root -m 0644 "$third_party_notices_source" /usr/local/share/gabkeep/THIRD_PARTY_NOTICES.md
-install -d -o root -g root -m 0755 /usr/local/share/gabkeep/THIRD_PARTY_LICENSES
-cp -R "$third_party_licenses_source/." /usr/local/share/gabkeep/THIRD_PARTY_LICENSES/
-find /usr/local/share/gabkeep/THIRD_PARTY_LICENSES -type d -exec chmod 0755 {} +
-find /usr/local/share/gabkeep/THIRD_PARTY_LICENSES -type f -exec chmod 0644 {} +
+install -m 0755 "$binary" /usr/local/bin/mullsmith
+install -d -o root -g mullsmith -m 0750 /etc/mullsmith
+install -d -o mullsmith -g mullsmith -m 0700 /var/lib/mullsmith
+install -d -o root -g root -m 0755 /usr/local/share/mullsmith
+install -o root -g root -m 0644 "$readme_source" /usr/local/share/mullsmith/README.md
+install -o root -g root -m 0644 "$spec_source" /usr/local/share/mullsmith/spec.md
+install -o root -g root -m 0644 "$license_source" /usr/local/share/mullsmith/LICENSE
+install -o root -g root -m 0644 "$third_party_notices_source" /usr/local/share/mullsmith/THIRD_PARTY_NOTICES.md
+install -d -o root -g root -m 0755 /usr/local/share/mullsmith/THIRD_PARTY_LICENSES
+cp -R "$third_party_licenses_source/." /usr/local/share/mullsmith/THIRD_PARTY_LICENSES/
+find /usr/local/share/mullsmith/THIRD_PARTY_LICENSES -type d -exec chmod 0755 {} +
+find /usr/local/share/mullsmith/THIRD_PARTY_LICENSES -type f -exec chmod 0644 {} +
 
 install_config_if_missing() {
     source_file=$1
@@ -83,58 +83,58 @@ install_config_if_missing() {
     if [ -e "$destination_file" ]; then
         echo "Preserving existing $destination_file"
     else
-        install -o root -g gabkeep -m 0640 "$source_file" "$destination_file"
+        install -o root -g mullsmith -m 0640 "$source_file" "$destination_file"
         echo "Installed $destination_file"
     fi
 }
 
-install_config_if_missing "$config_source" /etc/gabkeep/config.yaml
+install_config_if_missing "$config_source" /etc/mullsmith/config.yaml
 
 # The systemd unit reads this EnvironmentFile (optional, referenced by the
 # config's ${ENV_VAR} expansions). Same install-if-missing rule; it may later
 # hold API keys, so owner-read/write only.
-if [ -e /etc/gabkeep/env ]; then
-    echo "Preserving existing /etc/gabkeep/env"
+if [ -e /etc/mullsmith/env ]; then
+    echo "Preserving existing /etc/mullsmith/env"
 else
     # Template only (no secrets yet), so writing it plainly is safe; the
     # mode/group below is what real keys added later require.
-    cat > /etc/gabkeep/env <<'EOF'
-# Gabkeep runtime secrets (§9.12). /etc/gabkeep/config.yaml references these
+    cat > /etc/mullsmith/env <<'EOF'
+# Mullsmith runtime secrets (§9.12). /etc/mullsmith/config.yaml references these
 # as ${ENV_VAR} / ${ENV_VAR:-default}. Keep this file mode 0640,
-# root:gabkeep — the service reads it as the gabkeep user.
-# GABKEEP_SEARCH_API_KEY=...
+# root:mullsmith — the service reads it as the mullsmith user.
+# MULLSMITH_SEARCH_API_KEY=...
 EOF
-    chown root:gabkeep /etc/gabkeep/env
-    chmod 0640 /etc/gabkeep/env
-    echo "Installed /etc/gabkeep/env"
+    chown root:mullsmith /etc/mullsmith/env
+    chmod 0640 /etc/mullsmith/env
+    echo "Installed /etc/mullsmith/env"
 fi
 
 if [ -f "$service_source" ] && command -v systemctl >/dev/null 2>&1; then
-    install -m 0644 "$service_source" /etc/systemd/system/gabkeep.service
+    install -m 0644 "$service_source" /etc/systemd/system/mullsmith.service
     systemctl daemon-reload
     echo "Installed the systemd service (not enabled or started)."
     echo ""
-    echo "TLS is OFF by default: gabkeep serves plain HTTP on loopback, which"
+    echo "TLS is OFF by default: mullsmith serves plain HTTP on loopback, which"
     echo "is fine on a private network only. To serve HTTPS with certbot"
     echo "certificates, un-comment the ExecStartPre line in"
-    echo "/etc/systemd/system/gabkeep.service, replace YOUR.HOSTNAME with"
+    echo "/etc/systemd/system/mullsmith.service, replace YOUR.HOSTNAME with"
     echo "your certbot domain, and set server.tls.enabled: true in the config."
 fi
 
-echo "Installed Gabkeep to /usr/local/bin/gabkeep"
+echo "Installed Mullsmith to /usr/local/bin/mullsmith"
 echo ""
-echo "Edit /etc/gabkeep/config.yaml (llm.endpoint and model at minimum) and"
-echo "/etc/gabkeep/env, then validate them with:"
-echo "  sh -c 'set -a; . /etc/gabkeep/env; set +a; /usr/local/bin/gabkeep -config /etc/gabkeep/config.yaml -check-config'"
+echo "Edit /etc/mullsmith/config.yaml (llm.endpoint and model at minimum) and"
+echo "/etc/mullsmith/env, then validate them with:"
+echo "  sh -c 'set -a; . /etc/mullsmith/env; set +a; /usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config'"
 echo ""
 echo "Create the first account with:"
-echo "  sudo -u gabkeep /usr/local/bin/gabkeep -config /etc/gabkeep/config.yaml admin create-user \\"
+echo "  sudo -u mullsmith /usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml admin create-user \\"
 echo "    -email you@example.org -name You -password 'a long passphrase'"
 echo ""
 if [ -f "$service_source" ] && command -v systemctl >/dev/null 2>&1; then
-    echo "Enable and start Gabkeep with:"
-    echo "  systemctl enable --now gabkeep"
+    echo "Enable and start Mullsmith with:"
+    echo "  systemctl enable --now mullsmith"
     echo ""
-    echo "For an upgrade where Gabkeep is already running, restart it with:"
-    echo "  systemctl restart gabkeep"
+    echo "For an upgrade where Mullsmith is already running, restart it with:"
+    echo "  systemctl restart mullsmith"
 fi

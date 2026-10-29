@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 func modelsServer(t *testing.T, body string) *httptest.Server {

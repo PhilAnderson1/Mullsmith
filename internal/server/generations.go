@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"gabkeep/internal/id"
+	"mullsmith/internal/id"
 )
 
 // errGenerating enforces "one in-flight generation per conversation"

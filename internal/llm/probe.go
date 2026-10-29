@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // Model is one entry of the GET /models listing. ContextLength is the

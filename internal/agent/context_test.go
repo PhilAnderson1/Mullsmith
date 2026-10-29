@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/internal/llm"
+	"mullsmith/internal/llm"
 )
 
 func msg(role, content string) llm.ChatMessage { return llm.ChatMessage{Role: role, Content: content} }

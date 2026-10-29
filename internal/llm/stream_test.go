@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/thinking"
+	"mullsmith/internal/config"
+	"mullsmith/internal/thinking"
 )
 
 // sseHandler serves canned SSE bodies with OpenAI chunk framing.

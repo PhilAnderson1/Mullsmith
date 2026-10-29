@@ -16,6 +16,6 @@
 
 # deploy backups live HERE, inside the project — never /root, /var/tmp etc.
 # (house rule 2026-10-26: touch nothing outside this directory except the
-# production config /etc/gabkeep, data /var/lib/gabkeep, binary
-# /usr/local/bin/gabkeep)
+# production config /etc/mullsmith, data /var/lib/mullsmith, binary
+# /usr/local/bin/mullsmith)
 /backups/

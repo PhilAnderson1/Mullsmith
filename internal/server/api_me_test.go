@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/id"
-	"gabkeep/internal/store"
+	"mullsmith/internal/id"
+	"mullsmith/internal/store"
 )
 
 // Settings page backend contract (spec §5): the account row owns a default

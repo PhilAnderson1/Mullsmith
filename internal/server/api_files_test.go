@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
+	"mullsmith/internal/scratch"
 )
 
 // scratchCfg is authCfg plus the scratchpad knobs (test configs bypass

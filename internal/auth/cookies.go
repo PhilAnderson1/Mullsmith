@@ -7,9 +7,9 @@ import (
 
 // Cookie and header names (spec §9.1, §9.5).
 const (
-	SessionCookieName = "gabkeep_session"
-	CSRFCookieName    = "gabkeep_csrf"
-	CSRFHeaderName    = "X-Gabkeep-CSRF"
+	SessionCookieName = "mullsmith_session"
+	CSRFCookieName    = "mullsmith_csrf"
+	CSRFHeaderName    = "X-Mullsmith-CSRF"
 )
 
 // Cookies carry the Secure flag derived PER REQUEST by the server

@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/store"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/store"
 )
 
 // POST /auth/me/delete — the self-service irreversible path (spec §5.1):

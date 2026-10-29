@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // ChatMessage is one message in a chat/completions request. The tool fields

@@ -1,4 +1,4 @@
-// Package web holds the static UI assets that are embedded into the gabkeep
+// Package web holds the static UI assets that are embedded into the mullsmith
 // binary (spec §3: no build step beyond `go build`, no runtime asset fetch).
 package web
 

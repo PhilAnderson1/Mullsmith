@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/store"
-	"gabkeep/web"
+	"mullsmith/internal/config"
+	"mullsmith/internal/store"
+	"mullsmith/web"
 )
 
 func testCfg() *config.Config {
@@ -69,7 +69,7 @@ func TestHealthz(t *testing.T) {
 		t.Errorf("body = %q, want ok", body)
 	}
 	// health output must carry no version/db info (spec §5.4)
-	if strings.Contains(string(body), "gabkeep") {
+	if strings.Contains(string(body), "mullsmith") {
 		t.Error("health body leaks app name")
 	}
 }
@@ -138,7 +138,7 @@ func TestMetaStub(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta["app"] != "gabkeep" || meta["registration"] != "invite-only" {
+	if meta["app"] != "mullsmith" || meta["registration"] != "invite-only" {
 		t.Errorf("meta = %v", meta)
 	}
 	if meta["max_context_tokens"] != float64(32768) {
@@ -158,7 +158,7 @@ func TestIndexServed(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || !strings.Contains(string(body), "Gabkeep") {
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "Mullsmith") {
 		t.Errorf("index: status %d, body missing brand", resp.StatusCode)
 	}
 	// The SPA loads as an external ES module and carries no inline scripts
@@ -178,7 +178,7 @@ func TestUIAssetsServed(t *testing.T) {
 	defer ts.Close()
 	for _, tc := range []struct{ path, marker string }{
 		{"/assets/styles.css", "--thread-max"},
-		{"/assets/app/api.js", "X-Gabkeep-CSRF"},
+		{"/assets/app/api.js", "X-Mullsmith-CSRF"},
 		{"/assets/app/app.js", "api.listConversations"},
 		{"/assets/app/sse.js", "event:"},
 		{"/assets/app/markdown.js", "renderMarkdown"},

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/agent"
-	"gabkeep/internal/config"
-	"gabkeep/internal/runner"
+	"mullsmith/internal/agent"
+	"mullsmith/internal/config"
+	"mullsmith/internal/runner"
 )
 
 // TestMain lets this package's test binary double as the sandbox launcher:

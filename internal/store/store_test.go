@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/auth"
+	"mullsmith/internal/auth"
 )
 
 func openTestDB(t *testing.T) *DB {

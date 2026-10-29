@@ -9,11 +9,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/id"
-	"gabkeep/internal/mail"
-	"gabkeep/internal/scratch"
-	"gabkeep/internal/store"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/id"
+	"mullsmith/internal/mail"
+	"mullsmith/internal/scratch"
+	"mullsmith/internal/store"
 )
 
 // --- helpers ---------------------------------------------------------------

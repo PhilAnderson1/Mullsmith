@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/runner"
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/config"
+	"mullsmith/internal/runner"
+	"mullsmith/internal/scratch"
 )
 
 // fakeRunner records the last request and replays a canned outcome — the
@@ -288,7 +288,7 @@ func TestCodeRunShortOverrunReported(t *testing.T) {
 }
 
 // Staging doubles bytes in the user tree; the pre-check must refuse BEFORE
-// any copy lands, so gabkeep's own copies can never be the overrun.
+// any copy lands, so mullsmith's own copies can never be the overrun.
 func TestCodeRunStagingRefusedBeforeCopy(t *testing.T) {
 	root := toolRoot(t)
 	writeDirect(t, root, "uploads/big.bin", strings.Repeat("a", 5000))

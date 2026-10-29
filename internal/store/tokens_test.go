@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/auth"
+	"mullsmith/internal/auth"
 )
 
 // seedThrough0007 builds a database file exactly as it exists before this

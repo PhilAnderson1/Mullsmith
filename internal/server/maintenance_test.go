@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/id"
-	"gabkeep/internal/scratch"
-	"gabkeep/internal/store"
+	"mullsmith/internal/id"
+	"mullsmith/internal/scratch"
+	"mullsmith/internal/store"
 )
 
 func maintServer(t *testing.T) (*Server, string) {

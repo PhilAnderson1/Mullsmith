@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/scratch"
 )
 
 // pngBytesFor produces bytes whose SNIFFED type is image/png (the signature

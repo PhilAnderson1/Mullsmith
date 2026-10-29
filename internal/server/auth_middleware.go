@@ -7,15 +7,15 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
-	"gabkeep/internal/store"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
+	"mullsmith/internal/store"
 )
 
 // --- CSRF (spec §9.5) ----------------------------------------------------
 
 // csrfProtect implements double-submit: every mutating /api/v1 request must
-// carry X-Gabkeep-CSRF matching the gabkeep_csrf cookie. The cookie is issued
+// carry X-Mullsmith-CSRF matching the mullsmith_csrf cookie. The cookie is issued
 // on any GET (the SPA reads it on load), rotated away from anything the
 // server trusts implicitly.
 func csrfProtect(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {

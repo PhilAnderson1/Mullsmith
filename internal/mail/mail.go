@@ -1,4 +1,4 @@
-// Package mail sends gabkeep's transactional messages (confirmation and
+// Package mail sends mullsmith's transactional messages (confirmation and
 // password-reset links, address-change notices) over SMTP.
 //
 // No dependency: Go's net/smtp cannot do AUTH-over-STARTTLS cleanly, and a
@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 const (
@@ -133,7 +133,7 @@ func (c *smtpClient) Deliver(to, subject, body string) error {
 }
 
 func (c *smtpClient) ehlo() error {
-	code, txt, err := c.cmd("EHLO gabkeep")
+	code, txt, err := c.cmd("EHLO mullsmith")
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (c *smtpClient) ehlo() error {
 	}
 	// Servers without EHLO get the (unauthenticated-era only) legacy HELO;
 	// no STARTTLS/AUTH can exist, which the fail-closed checks above catch.
-	code, txt, err = c.cmd("HELO gabkeep")
+	code, txt, err = c.cmd("HELO mullsmith")
 	if err != nil {
 		return err
 	}
@@ -206,7 +206,7 @@ func (c *smtpClient) writeMessage(to, subject, body string) error {
 	fmt.Fprintf(&b, "To: %s\r\n", to)
 	fmt.Fprintf(&b, "Subject: %s\r\n", sanitizeHeader(subject))
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
-	fmt.Fprintf(&b, "Message-ID: <%s@gabkeep>\r\n", hex.EncodeToString(mid))
+	fmt.Fprintf(&b, "Message-ID: <%s@mullsmith>\r\n", hex.EncodeToString(mid))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("\r\n")

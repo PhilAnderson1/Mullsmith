@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/store"
+	"mullsmith/internal/config"
+	"mullsmith/internal/store"
 )
 
 // thinkingCfg: the gufo/qwen3_8 combination resolved from the embedded

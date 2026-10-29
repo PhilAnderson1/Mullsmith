@@ -1,6 +1,6 @@
-# Gabkeep
+# Mullsmith
 
-[![CI](https://github.com/PhilAnderson1/Gabkeep/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilAnderson1/Gabkeep/actions/workflows/ci.yml)
+[![CI](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml)
 
 Self-hosted, single-binary chat assistant with a ChatGPT-style web UI in front
 of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
@@ -38,10 +38,10 @@ audit artifacts stay with the operator as machine-local files (untracked
 
 * 64-bit Linux (amd64/arm64). Anything else that runs Go works too.
 * The `bubblewrap` package (`apt install bubblewrap`) — only if you enable
-  `code_execution`; gabkeep refuses to start with code execution on when a
+  `code_execution`; mullsmith refuses to start with code execution on when a
   working bwrap is missing (spec §9.9).
 * For `code_execution` under systemd: `Delegate=yes` on the unit (the shipped
-  `packaging/systemd/gabkeep.service` has it, with `DelegateSubgroup=payload`) so each run
+  `packaging/systemd/mullsmith.service` has it, with `DelegateSubgroup=payload`) so each run
   can get a per-run cgroup resource meter — kernel ≥ 5.7 with cgroup v2. No
   meterable subtree ⇒ code execution refuses to start, never runs un-metered.
 * An OpenAI-compatible endpoint for the model. Text is the baseline; if the
@@ -53,73 +53,73 @@ audit artifacts stay with the operator as machine-local files (untracked
 ## Build
 
 ```sh
-make build            # bin/gabkeep, statically linked, version/commit/date stamped
+make build            # bin/mullsmith, statically linked, version/commit/date stamped
 # or without make:
 mkdir -p bin
 CGO_ENABLED=0 go build -trimpath \
   -ldflags "-s -w -X main.version=$(git describe --tags --always) -X main.commit=$(git rev-parse --short HEAD) -X main.buildDate=$(date -u +%FT%TZ)" \
-  -o bin/gabkeep ./cmd/gabkeep
+  -o bin/mullsmith ./cmd/mullsmith
 ```
 
 ## Quick install on a fresh Ubuntu box
 
 ```sh
 # 1. Binary
-sudo install -m 0755 bin/gabkeep /usr/local/bin/gabkeep
+sudo install -m 0755 bin/mullsmith /usr/local/bin/mullsmith
 
 # 2. Service user + state dirs
-sudo useradd --system --home-dir /var/lib/gabkeep --shell /usr/sbin/nologin gabkeep
-sudo mkdir -p /etc/gabkeep /var/lib/gabkeep
-sudo chown gabkeep:gabkeep /var/lib/gabkeep && sudo chmod 700 /var/lib/gabkeep
+sudo useradd --system --home-dir /var/lib/mullsmith --shell /usr/sbin/nologin mullsmith
+sudo mkdir -p /etc/mullsmith /var/lib/mullsmith
+sudo chown mullsmith:mullsmith /var/lib/mullsmith && sudo chmod 700 /var/lib/mullsmith
 
 # 3. Config (template with explanations: configs/config.yaml)
-sudo cp configs/config.yaml /etc/gabkeep/config.yaml
-sudo nano /etc/gabkeep/config.yaml         # set llm.endpoint + model at minimum
-sudo chmod 640 /etc/gabkeep/config.yaml && sudo chown root:gabkeep /etc/gabkeep/config.yaml
+sudo cp configs/config.yaml /etc/mullsmith/config.yaml
+sudo nano /etc/mullsmith/config.yaml         # set llm.endpoint + model at minimum
+sudo chmod 640 /etc/mullsmith/config.yaml && sudo chown root:mullsmith /etc/mullsmith/config.yaml
 
 # 4. Secrets (optional; referenced by ${ENV_VAR} expansion)
-printf 'GABKEEP_SEARCH_API_KEY=...\n' | sudo tee /etc/gabkeep/env
-sudo chmod 640 /etc/gabkeep/env && sudo chown root:gabkeep /etc/gabkeep/env
+printf 'MULLSMITH_SEARCH_API_KEY=...\n' | sudo tee /etc/mullsmith/env
+sudo chmod 640 /etc/mullsmith/env && sudo chown root:mullsmith /etc/mullsmith/env
 
 # 5. systemd
-sudo cp packaging/systemd/gabkeep.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now gabkeep
+sudo cp packaging/systemd/mullsmith.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now mullsmith
 
 # 6. Verify
-/usr/local/bin/gabkeep -config /etc/gabkeep/config.yaml -check-config
-sudo -u gabkeep gabkeep -config /etc/gabkeep/config.yaml admin create-user \
+/usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config
+sudo -u mullsmith mullsmith -config /etc/mullsmith/config.yaml admin create-user \
   -email you@example.org -name You -password 'a long passphrase'
 curl -sk https://127.0.0.1:3210/healthz || curl -s http://127.0.0.1:3210/healthz
 ```
 
 Then either enable `server.tls` in the config (with a real cert — Let's
 Encrypt via `certbot` if public), or terminate TLS in a reverse proxy
-(caddy/nginx) and set `server.trusted_proxies`. Gabkeep warns at startup when
+(caddy/nginx) and set `server.trusted_proxies`. Mullsmith warns at startup when
 bound to a non-loopback address without TLS — on a trusted LAN that may be
 acceptable; read [Security](#security) first.
 
-Let's Encrypt keys stay `0600 root:root` by certbot policy, and gabkeep runs
+Let's Encrypt keys stay `0600 root:root` by certbot policy, and mullsmith runs
 unprivileged. The shipped unit solves this without a second on-disk copy:
 `ExecStartPre` (root) stages cert+key into the RAM-only `RuntimeDirectory`
-`/run/gabkeep`, and a certbot *deploy hook* (`systemctl try-restart gabkeep`)
+`/run/mullsmith`, and a certbot *deploy hook* (`systemctl try-restart mullsmith`)
 picks up renewals. That line ships **commented out** — the default install is
 plain HTTP on loopback (private networks only); un-comment it, set
 `YOUR.HOSTNAME`, and enable `server.tls` to serve HTTPS directly. If you
-terminate TLS at a proxy instead, bind gabkeep to loopback and skip all of it.
+terminate TLS at a proxy instead, bind mullsmith to loopback and skip all of it.
 
 ### CLI
 
 ```text
-gabkeep                                      serve (default config /etc/gabkeep/config.yaml)
-gabkeep -config CFG                          serve with an explicit config (dev runs)
-gabkeep -config CFG -check-config            validate config + probe LLM endpoint
-gabkeep -version                             version/commit/build date
-gabkeep admin invite [n]                     mint invite codes (invite-only mode)
-gabkeep admin create-user -email E -name N -password P
-gabkeep admin reset-password <email>         (prompts, or mails a reset
+mullsmith                                      serve (default config /etc/mullsmith/config.yaml)
+mullsmith -config CFG                          serve with an explicit config (dev runs)
+mullsmith -config CFG -check-config            validate config + probe LLM endpoint
+mullsmith -version                             version/commit/build date
+mullsmith admin invite [n]                     mint invite codes (invite-only mode)
+mullsmith admin create-user -email E -name N -password P
+mullsmith admin reset-password <email>         (prompts, or mails a reset
                                              link when email.enabled; revokes all sessions)
-gabkeep admin list-users                     every account incl. pending sign-ups
-gabkeep admin delete-user <id-or-email>
+mullsmith admin list-users                     every account incl. pending sign-ups
+mullsmith admin delete-user <id-or-email>
 ```
 
 Relative paths in the config resolve against the config file's directory, so
@@ -144,7 +144,7 @@ one click. Turning the switch on later never touches existing accounts —
 nothing is backfilled, nobody is retroactively un-confirmed.
 
 You need an SMTP submission server; the password belongs in the service's
-`EnvironmentFile` (`GABKEEP_SMTP_PASSWORD`), not in the YAML. Any server
+`EnvironmentFile` (`MULLSMITH_SMTP_PASSWORD`), not in the YAML. Any server
 speaking STARTTLS on 587 or implicit TLS on 465 works — for Gmail, an app
 password plus `smtp.gmail.com:587`. A LAN relay that doesn't accept logins
 (most local `postfix`/`ssmtp` setups) is just as valid:
@@ -152,7 +152,7 @@ password plus `smtp.gmail.com:587`. A LAN relay that doesn't accept logins
 ```yaml
 email:
   enabled: true
-  base_url: "https://gabkeep.example:3210"   # where users reach you — links
+  base_url: "https://mullsmith.example:3210"   # where users reach you — links
                                              # are built from this, never from
                                              # request headers
   smtp:
@@ -160,7 +160,7 @@ email:
     port: 25
     authenticated_smtp: false   # unauthenticated send through a trusted relay;
                                 # AUTH is never sent over a cleartext connection
-    from: "gabkeep@example.org"
+    from: "mullsmith@example.org"
 ```
 
 `-check-config` dials the relay when the feature is on — a failure warns but
@@ -187,7 +187,7 @@ security doctrine (no-enumeration answers, hashed one-shot tokens).
 
 All state lives in two directories named by the config:
 
-* `database.dir` — SQLite (`gabkeep.db` + WAL files)
+* `database.dir` — SQLite (`mullsmith.db` + WAL files)
 * `scratchpad.root` — per-user `uploads/`, `artifacts/`, `work/`. Files live on
   disk under their real names and the path is their only identity — there is no
   file registry to keep in sync. `uploads/` is durable user data; `artifacts/`
@@ -196,24 +196,24 @@ All state lives in two directories named by the config:
   `uploads/`; it can delete files there only through `fs_delete`, which asks
   your confirmation every time — scripts in the `code_run` jail never can.
 
-Plus `/etc/gabkeep/config.yaml` and `/etc/gabkeep/env`.
+Plus `/etc/mullsmith/config.yaml` and `/etc/mullsmith/env`.
 
 **Consistent hot backup** (server can stay up; uses the `sqlite3` CLI so the
 WAL is folded in correctly):
 
 ```sh
 #!/bin/sh -e
-DEST=/backups/gabkeep/$(date +%F)
+DEST=/backups/mullsmith/$(date +%F)
 mkdir -p "$DEST"
 install -d -m 700 "$DEST"
-sqlite3 /var/lib/gabkeep/db/gabkeep.db ".backup '$DEST/gabkeep.db'"
-rsync -a --delete /var/lib/gabkeep/scratchpad "$DEST/scratchpad"
-tar czf "$DEST/config.tgz" -C /etc gabkeep
+sqlite3 /var/lib/mullsmith/db/mullsmith.db ".backup '$DEST/mullsmith.db'"
+rsync -a --delete /var/lib/mullsmith/scratchpad "$DEST/scratchpad"
+tar czf "$DEST/config.tgz" -C /etc mullsmith
 ```
 
-Cold backup instead: `systemctl stop gabkeep && cp -a /var/lib/gabkeep …`.
+Cold backup instead: `systemctl stop mullsmith && cp -a /var/lib/mullsmith …`.
 Restore by stopping the service, copying the files back (preserve
-`gabkeep:gabkeep` ownership and `0700`), and starting again. The scratchpad
+`mullsmith:mullsmith` ownership and `0700`), and starting again. The scratchpad
 holds untrusted uploaded content — keep backups encrypted at rest (`age`,
 restic, or an encrypted mount); the database contains full conversation
 history.
@@ -242,7 +242,7 @@ them is reproducible from the commands above.
   registration and strong passphrases; keep the box LAN-only or behind a proxy
   with mTLS/VPN if that matters to your threat model.
 * **Plain HTTP is opt-in.** If you run without TLS, everything — passwords,
-  cookies, history — is readable on the network path. Gabkeep prints a startup
+  cookies, history — is readable on the network path. Mullsmith prints a startup
   warning; session cookies drop their `Secure` flag automatically so login
   works over plain HTTP (they keep it whenever the request really arrives over
   HTTPS, including via a trusted reverse proxy).
@@ -255,7 +255,7 @@ them is reproducible from the commands above.
   approval gates exist, and denials are honoured — but a model can still be
   manipulated into *asking* you to approve something. Keep `code_run: confirm`
   (the default) and never combine `code_run: auto` with open registration —
-  gabkeep warns when you do.
+  mullsmith warns when you do.
 * **Code execution is defence-in-depth, not a VM.** Every run is jailed by
   [bubblewrap](https://github.com/containers/bubblewrap): its own
   user/mount/PID/net namespaces, a root filesystem containing only a
@@ -265,13 +265,13 @@ them is reproducible from the commands above.
   litter the root beside the three directories — the database, other
   users' files and server configs have no path inside the jail — with
   rlimits, a scrubbed environment and no-new-privs underneath, and no
-  network unless you set `allow_network: true` (gabkeep warns when you do).
+  network unless you set `allow_network: true` (mullsmith warns when you do).
   Every run also gets its own cgroup v2 meter: total memory (no swap), task
   count and CPU are capped for the whole process tree, so a multiplying
   script cannot exhaust the host (spec §9.9; needs the unit's delegated
   subtree, refuse-not-degrade).
   `bwrap` is a hard requirement when code execution is on: missing or
-  non-functional bwrap stops gabkeep at startup, never a silent downgrade.
+  non-functional bwrap stops mullsmith at startup, never a silent downgrade.
   Files a script produces can be shared back into the chat: assume anyone
   who can approve runs can read/write that user's scratchpad.
 * **Uploads are for download, not browsing.** Every download is served as
@@ -295,7 +295,7 @@ make dist          # stamped release binary + sha256 under dist/
 
 `local-only/dev.yaml` (kept out of the repo, like my other machine-specific
 files under `local-only/`) is my local dev config: loopback `:8081`, its own
-`local-only/data/`; run `gabkeep -config local-only/dev.yaml` from the repo
+`local-only/data/`; run `mullsmith -config local-only/dev.yaml` from the repo
 root. Copy `configs/config.yaml` and point it at your endpoint. The UI lives
 in `web/` and is embedded into the binary at build time — rebuild and
 hard-refresh after editing assets.
@@ -303,7 +303,7 @@ hard-refresh after editing assets.
 ### Layout
 
 ```text
-cmd/gabkeep/        main: flags, config load, startup wiring, graceful shutdown, admin CLI
+cmd/mullsmith/        main: flags, config load, startup wiring, graceful shutdown, admin CLI
 internal/config/    YAML schema, env expansion, strict validation, startup warnings
 internal/auth/      argon2id, sessions, CSRF tokens, invite codes, login limiter
 internal/store/     SQLite (modernc.org) + migrations; users/conversations/messages/tool_calls (no files table — the disk is the file state)

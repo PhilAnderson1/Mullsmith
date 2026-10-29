@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Gabkeep is distributed as a single static Go binary. This file and the
+Mullsmith is distributed as a single static Go binary. This file and the
 `THIRD_PARTY_LICENSES/` directory accompany every release artifact and credit
 the third-party modules whose code is linked into that binary, as their
 licenses require when distributing compiled works.
@@ -14,7 +14,7 @@ domain) ships several files. Where a module embeds further upstreams, its own
 The set below is the complete direct + indirect module graph of `go.mod`, so
 it stays honest across platforms even though release builds are linux/amd64.
 
-| Module | Version | Licence | Role in Gabkeep |
+| Module | Version | Licence | Role in Mullsmith |
 |---|---|---|---|
 | `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause | argon2id password hashing (spec §9.1) |
 | `golang.org/x/sys` | v0.49.0 | BSD-3-Clause | raw unix syscalls behind the scratchpad path sandbox (§9.7) |

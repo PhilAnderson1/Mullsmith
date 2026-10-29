@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // --- request id -------------------------------------------------------------

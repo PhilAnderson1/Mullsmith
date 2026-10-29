@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"gabkeep/internal/id"
+	"mullsmith/internal/id"
 )
 
 // Background scratchpad lifecycle (spec §8). The disk is the single source
@@ -120,7 +120,7 @@ func (s *Server) sweepScratchpad(ctx context.Context) {
 			}
 			continue
 		}
-		// Only ULID directories are gabkeep's; anything else is left alone.
+		// Only ULID directories are mullsmith's; anything else is left alone.
 		if !de.IsDir() || !id.Valid(name) {
 			continue
 		}

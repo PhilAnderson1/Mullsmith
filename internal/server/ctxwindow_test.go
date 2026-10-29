@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/store"
+	"mullsmith/internal/store"
 )
 
 // newWindowTest builds one Server with a canned windowProbe — installed

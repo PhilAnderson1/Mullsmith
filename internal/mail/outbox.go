@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // Job is one queued plain-text message.

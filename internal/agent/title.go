@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"gabkeep/internal/llm"
+	"mullsmith/internal/llm"
 )
 
 // TitleSystemPrompt asks the model for a conversation name. The phrase

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // Uploads carry pointers, never pictures (§7.2): whatever llm.vision

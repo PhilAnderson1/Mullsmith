@@ -1,6 +1,6 @@
 {
-  "name": "Gabkeep",
-  "short_name": "Gabkeep",
+  "name": "Mullsmith",
+  "short_name": "Mullsmith",
   "description": "Chat with your own local model, on your own server.",
   "start_url": "/",
   "scope": "/",

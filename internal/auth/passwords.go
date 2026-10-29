@@ -40,7 +40,7 @@ func init() {
 		"changeme123", "trustno1!", "dragon123", "monkey123", "shadow123",
 		"sunshine1", "princess1", "football1", "baseball1", "superman1",
 		"00000000000", "aaaaaaaaaa", "password1234", "passwort123", "motdepasse1",
-		"correcthorsebattery", "gabkeep123", "thisismypassword", "mypassword1",
+		"correcthorsebattery", "mullsmith123", "thisismypassword", "mypassword1",
 	} {
 		commonList[p] = true
 	}

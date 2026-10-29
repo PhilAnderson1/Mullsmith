@@ -8,9 +8,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"gabkeep/internal/id"
-	"gabkeep/internal/scratch"
-	"gabkeep/internal/store"
+	"mullsmith/internal/id"
+	"mullsmith/internal/scratch"
+	"mullsmith/internal/store"
 )
 
 // Field caps for conversation metadata (spec §9.11).

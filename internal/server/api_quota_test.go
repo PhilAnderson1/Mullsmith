@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
 )
 
 // --- audit finding 5: uploads must not share a stale quota picture ---------

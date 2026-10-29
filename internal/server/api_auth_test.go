@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
-	"gabkeep/internal/store"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
+	"mullsmith/internal/store"
 )
 
 // authTest is a scripted client: it bootstraps the CSRF cookie with a GET

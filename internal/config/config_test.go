@@ -221,7 +221,7 @@ func TestRelativePathsResolveAgainstConfigDir(t *testing.T) {
 }
 
 func TestEnvExpansion(t *testing.T) {
-	t.Setenv("GABKEEP_TEST_KEY", "sekret")
+	t.Setenv("MULLSMITH_TEST_KEY", "sekret")
 
 	load := func(body string) (*Config, error) { return Load(writeCfg(t, body)) }
 
@@ -233,10 +233,10 @@ func TestEnvExpansion(t *testing.T) {
 	// (the above only checks comments don't break parsing; real cases below)
 
 	// value substituted
-	if _, err := load(replaceLastLLM(`  api_key: "${GABKEEP_TEST_KEY}"`)); err != nil {
+	if _, err := load(replaceLastLLM(`  api_key: "${MULLSMITH_TEST_KEY}"`)); err != nil {
 		t.Fatalf("substitution: %v", err)
 	}
-	cfg, err = load(replaceLastLLM(`  api_key: "${GABKEEP_TEST_KEY}"`))
+	cfg, err = load(replaceLastLLM(`  api_key: "${MULLSMITH_TEST_KEY}"`))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestEnvExpansion(t *testing.T) {
 	}
 
 	// :- default allowed when unset
-	cfg, err = load(replaceLastLLM(`  api_key: "${GABKEEP_UNSET_VAR:-}"`))
+	cfg, err = load(replaceLastLLM(`  api_key: "${MULLSMITH_UNSET_VAR:-}"`))
 	if err != nil {
 		t.Fatalf("default form: %v", err)
 	}
@@ -254,8 +254,8 @@ func TestEnvExpansion(t *testing.T) {
 	}
 
 	// missing without default → error naming the variable
-	_, err = load(replaceLastLLM(`  api_key: "${GABKEEP_UNSET_VAR}"`))
-	if err == nil || !strings.Contains(err.Error(), "GABKEEP_UNSET_VAR") {
+	_, err = load(replaceLastLLM(`  api_key: "${MULLSMITH_UNSET_VAR}"`))
+	if err == nil || !strings.Contains(err.Error(), "MULLSMITH_UNSET_VAR") {
 		t.Fatalf("expected missing-var error, got: %v", err)
 	}
 }
@@ -615,12 +615,12 @@ func TestEmailValidation(t *testing.T) {
 	// minimalYAML in this file has no email: block and must keep loading.
 	const base = minimalYAML + `email:
   enabled: true
-  base_url: "https://gabkeep.example:3210"
+  base_url: "https://mullsmith.example:3210"
   smtp:
     host: "mail.example"
     authenticated_smtp: true
-    username: "gabkeep"
-    from: "gabkeep@example"
+    username: "mullsmith"
+    from: "mullsmith@example"
 `
 	if _, err := Load(writeCfg(t, base)); err != nil {
 		t.Fatalf("valid enabled config rejected: %v", err)
@@ -632,11 +632,11 @@ func TestEmailValidation(t *testing.T) {
 		wantErr string
 	}{
 		{"needs host", `host: "mail.example"`, `host: ""`, "email.smtp.host"},
-		{"needs from", `from: "gabkeep@example"`, `from: "gabkeep"`, "email.smtp.from"},
-		{"needs base_url", `  base_url: "https://gabkeep.example:3210"`, "", "email.base_url"},
-		{"base_url path", `https://gabkeep.example:3210"`, `https://x.example/app"`, "email.base_url"},
-		{"base_url scheme", `https://gabkeep.example:3210"`, `ftp://x.example"`, "email.base_url"},
-		{"auth needs username", `username: "gabkeep"`, `username: ""`, "email.smtp.username"},
+		{"needs from", `from: "mullsmith@example"`, `from: "mullsmith"`, "email.smtp.from"},
+		{"needs base_url", `  base_url: "https://mullsmith.example:3210"`, "", "email.base_url"},
+		{"base_url path", `https://mullsmith.example:3210"`, `https://x.example/app"`, "email.base_url"},
+		{"base_url scheme", `https://mullsmith.example:3210"`, `ftp://x.example"`, "email.base_url"},
+		{"auth needs username", `username: "mullsmith"`, `username: ""`, "email.smtp.username"},
 		{"auth on port 25", `host: "mail.example"`, "host: \"mail.example\"\n    port: 25", "port 25"},
 	}
 	for _, tc := range cases {
@@ -665,12 +665,12 @@ func TestEmailValidation(t *testing.T) {
 		t.Errorf("smtp port default = %d, want 587", cfg.Email.SMTP.Port)
 	}
 	cfg, err = Load(writeCfg(t, strings.Replace(base,
-		"base_url: \"https://gabkeep.example:3210\"",
-		"base_url: \"https://gabkeep.example:3210/\"", 1)))
+		"base_url: \"https://mullsmith.example:3210\"",
+		"base_url: \"https://mullsmith.example:3210/\"", 1)))
 	if err != nil {
 		t.Fatalf("trailing-slash base_url: %v", err)
 	}
-	if cfg.Email.BaseURL != "https://gabkeep.example:3210" {
+	if cfg.Email.BaseURL != "https://mullsmith.example:3210" {
 		t.Errorf("base_url = %q, want trailing slash stripped", cfg.Email.BaseURL)
 	}
 

@@ -15,8 +15,8 @@ import (
 	"context"
 	"time"
 
-	"gabkeep/internal/agent"
-	"gabkeep/internal/llm"
+	"mullsmith/internal/agent"
+	"mullsmith/internal/llm"
 )
 
 // windowGrace bounds how long a caller may wait for a first-ever probe.

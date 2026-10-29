@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/store"
+	"mullsmith/internal/store"
 )
 
 func testDB(t *testing.T) *store.DB {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "gabkeep.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "mullsmith.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,11 +41,11 @@ func putUser(t *testing.T, db *store.DB, email, pending, status string) *store.U
 // --- list-users (plan §8): pending rows must be visible and nameable -----
 
 // The default config path is the whole point of a "default install": bare
-// `gabkeep` (and bare `gabkeep admin …`) must find /etc/gabkeep/config.yaml
+// `mullsmith` (and bare `mullsmith admin …`) must find /etc/mullsmith/config.yaml
 // without being told (spec §2.1).
 func TestDefaultConfigPath(t *testing.T) {
-	if defaultConfigPath != "/etc/gabkeep/config.yaml" {
-		t.Errorf("defaultConfigPath = %q, want /etc/gabkeep/config.yaml", defaultConfigPath)
+	if defaultConfigPath != "/etc/mullsmith/config.yaml" {
+		t.Errorf("defaultConfigPath = %q, want /etc/mullsmith/config.yaml", defaultConfigPath)
 	}
 }
 

@@ -15,7 +15,7 @@ package runner
 // launcher as before (§9.9): the launcher execve's bwrap instead of the
 // interpreter directly, so rlimits are inherited by bwrap and the payload.
 //
-// If bwrap is missing or its namespaces do not work, gabkeep must refuse to
+// If bwrap is missing or its namespaces do not work, mullsmith must refuse to
 // start with code execution enabled (fail closed — NewForConfig/ProbeBwrap).
 
 import (
@@ -367,7 +367,7 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 		// Without this line, an OOM-killed script is indistinguishable
 		// from any other death — to the model and to the logs.
 		out.Stderr = strings.TrimSuffix(out.Stderr, "\n") +
-			"\n[gabkeep: the run's process tree exceeded its total memory budget; the kernel killed part of it]"
+			"\n[mullsmith: the run's process tree exceeded its total memory budget; the kernel killed part of it]"
 	}
 	return out, nil
 }
@@ -383,7 +383,7 @@ func exitCode(ps *os.ProcessState) int {
 
 // minimalEnv is the environment the LAUNCHER hands to bwrap (the payload's
 // own env is rebuilt by --clearenv/--setenv inside bwrapArgs). Nothing from
-// gabkeep's own environment — config secrets, API keys — ever gets here.
+// mullsmith's own environment — config secrets, API keys — ever gets here.
 func minimalEnv(scratchDir, workDir string) []string {
 	return []string{
 		"PATH=/usr/bin:/bin",

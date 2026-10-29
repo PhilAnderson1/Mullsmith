@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // view_image (llm.vision): the model asks to see an uploads/ picture,

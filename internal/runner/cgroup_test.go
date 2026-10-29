@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/internal/runner"
+	"mullsmith/internal/runner"
 )
 
 // --- audit2 finding 2: aggregate (per-run, not per-process) resource caps ---

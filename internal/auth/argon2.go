@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 const (
@@ -85,7 +85,7 @@ func VerifyPassword(password, encoded string) bool {
 
 // dummySalt is fixed so DummyVerify costs the same on every unknown-email
 // login attempt (timing equalisation, spec §9.1).
-var dummySalt = []byte("gabkeep-dummy-salt")
+var dummySalt = []byte("mullsmith-dummy-salt")
 
 // DummyVerify performs one real Argon2 computation of a throwaway value so
 // that unknown-email logins cost exactly what wrong-password logins cost:
@@ -94,7 +94,7 @@ var dummySalt = []byte("gabkeep-dummy-salt")
 // equalisation — unknown emails responded ~2x slower, an enumeration oracle
 // — and doubled the attacker-induced hashing load (audit finding 4).
 func DummyVerify(p config.Argon2) {
-	_ = argon2.IDKey([]byte("gabkeep-timing-equaliser"), dummySalt,
+	_ = argon2.IDKey([]byte("mullsmith-timing-equaliser"), dummySalt,
 		uint32(p.Time), uint32(p.Memory), uint8(p.Threads), keyLen) // #nosec G115 -- validated params
 	hashWorkCount.Add(1)
 }

@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // ErrBusy is returned when the user already has a run in flight or the
@@ -100,7 +100,7 @@ func (g *gate) acquire(ctx context.Context, userID string) (func(), error) {
 // --- construction from config (§9.9 startup validation) ------------------------
 
 // NewForConfig builds the (bubblewrap) runner when code execution is
-// enabled. The probe is a hard requirement: gabkeep must not serve
+// enabled. The probe is a hard requirement: mullsmith must not serve
 // code_run promises it cannot enforce, so a missing or non-functional
 // bwrap is a startup error, never a silent degradation.
 func NewForConfig(cfg *config.Config) (Runner, []string, error) {

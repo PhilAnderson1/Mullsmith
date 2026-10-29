@@ -1,8 +1,8 @@
 package server
 
 import (
-	"gabkeep/internal/store"
-	"gabkeep/internal/thinking"
+	"mullsmith/internal/store"
+	"mullsmith/internal/thinking"
 )
 
 // Server-side thinking-control plumbing (thinking-control-specification.md

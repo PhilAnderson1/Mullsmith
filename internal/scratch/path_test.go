@@ -219,7 +219,7 @@ func FuzzPathContainment(f *testing.F) {
 	for _, s := range seeds {
 		f.Add(s)
 	}
-	root := "/srv/gabkeep/scratchpad"
+	root := "/srv/mullsmith/scratchpad"
 	f.Fuzz(func(t *testing.T, rel string) {
 		segs, err := ParseRel(rel)
 		if err != nil {

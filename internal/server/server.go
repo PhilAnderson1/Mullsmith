@@ -13,16 +13,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gabkeep/internal/agent"
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
-	"gabkeep/internal/llm"
-	"gabkeep/internal/mail"
-	"gabkeep/internal/runner"
-	"gabkeep/internal/store"
-	"gabkeep/internal/thinking"
-	"gabkeep/internal/tools"
-	"gabkeep/web"
+	"mullsmith/internal/agent"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
+	"mullsmith/internal/llm"
+	"mullsmith/internal/mail"
+	"mullsmith/internal/runner"
+	"mullsmith/internal/store"
+	"mullsmith/internal/thinking"
+	"mullsmith/internal/tools"
+	"mullsmith/web"
 )
 
 // resolveThinking resolves the thinking-control runtime before anything
@@ -56,7 +56,7 @@ func resolveThinking(cfg *config.Config, logger *slog.Logger) {
 	}
 }
 
-// Server is the assembled gabkeep HTTP application.
+// Server is the assembled mullsmith HTTP application.
 type Server struct {
 	cfg        *config.Config
 	store      *store.DB
@@ -278,7 +278,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleMeta exposes only what the login/register screens need.
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"app":     "gabkeep",
+		"app":     "mullsmith",
 		"version": s.appVer,
 		"models":  s.cfg.LLM.Models,
 		// default_model lets the picker name the model a conversation with

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/scratch"
 )
 
 // fsReadLimit bounds what one fs_read hands to the model (§7.2: 256 KiB).

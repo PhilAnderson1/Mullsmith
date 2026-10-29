@@ -14,8 +14,8 @@ func resetLink(baseURL, token string) string {
 // ConfirmationMail activates a sign-up. The 24 h deadline mirrors the
 // pending-expiry sweep: link and pending account die together.
 func ConfirmationMail(baseURL, token string) (subject, body string) {
-	return "Confirm your gabkeep account",
-		"Confirm this email address to activate your gabkeep account:\n" +
+	return "Confirm your mullsmith account",
+		"Confirm this email address to activate your mullsmith account:\n" +
 			"\n" +
 			"    " + confirmLink(baseURL, token) + "\n" +
 			"\n" +
@@ -31,8 +31,8 @@ func ConfirmationMail(baseURL, token string) (subject, body string) {
 // never read like an account activation (field feedback: the two flows
 // arrived indistinguishable).
 func ConfirmationMailChange(baseURL, token string) (subject, body string) {
-	return "Confirm your gabkeep email address change",
-		"Confirm this email address to activate your Gabkeep email address change:\n" +
+	return "Confirm your mullsmith email address change",
+		"Confirm this email address to activate your Mullsmith email address change:\n" +
 			"\n" +
 			"    " + confirmLink(baseURL, token) + "\n" +
 			"\n" +
@@ -47,8 +47,8 @@ func ConfirmationMailChange(baseURL, token string) (subject, body string) {
 // ResetMail sets a new password. Completing it signs every existing
 // session out, which the text says so the user is not surprised.
 func ResetMail(baseURL, token string) (subject, body string) {
-	return "Reset your gabkeep password",
-		"Someone asked to reset the password on your gabkeep account.\n" +
+	return "Reset your mullsmith password",
+		"Someone asked to reset the password on your mullsmith account.\n" +
 			"\n" +
 			"    " + resetLink(baseURL, token) + "\n" +
 			"\n" +
@@ -64,8 +64,8 @@ func ResetMail(baseURL, token string) (subject, body string) {
 // the wording therefore never claims the change has happened, because at
 // send time it has not.
 func AddressChangedMail() (subject, body string) {
-	return "Your gabkeep account email change was requested",
-		"A change of the email address on your gabkeep account was requested.\n" +
+	return "Your mullsmith account email change was requested",
+		"A change of the email address on your mullsmith account was requested.\n" +
 			"Nothing has changed yet: the move takes effect only when the new\n" +
 			"address confirms through the link sent to it.\n" +
 			"\n" +

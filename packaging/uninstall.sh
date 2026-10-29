@@ -3,16 +3,16 @@
 set -eu
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Gabkeep must be uninstalled as root." >&2
+    echo "Mullsmith must be uninstalled as root." >&2
     exit 1
 fi
 
-echo "WARNING: This will permanently uninstall Gabkeep and delete:"
-echo "  - /usr/local/bin/gabkeep"
-echo "  - /usr/local/share/gabkeep (documentation)"
-echo "  - /etc/gabkeep (configuration and environment file)"
-echo "  - /var/lib/gabkeep (chat history database and all user files)"
-echo "  - /etc/systemd/system/gabkeep.service"
+echo "WARNING: This will permanently uninstall Mullsmith and delete:"
+echo "  - /usr/local/bin/mullsmith"
+echo "  - /usr/local/share/mullsmith (documentation)"
+echo "  - /etc/mullsmith (configuration and environment file)"
+echo "  - /var/lib/mullsmith (chat history database and all user files)"
+echo "  - /etc/systemd/system/mullsmith.service"
 echo ""
 echo "The configuration, chat history and user files cannot be recovered unless"
 echo "you have made a backup."
@@ -26,57 +26,57 @@ if [ "$confirmation" != "uninstall" ]; then
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl disable --now gabkeep.service >/dev/null 2>&1 || true
+    systemctl disable --now mullsmith.service >/dev/null 2>&1 || true
 fi
 
-rm -f /etc/systemd/system/gabkeep.service
-rm -f /usr/local/bin/gabkeep
-rm -rf /usr/local/share/gabkeep
-rm -rf /etc/gabkeep
-rm -rf /var/lib/gabkeep
+rm -f /etc/systemd/system/mullsmith.service
+rm -f /usr/local/bin/mullsmith
+rm -rf /usr/local/share/mullsmith
+rm -rf /etc/mullsmith
+rm -rf /var/lib/mullsmith
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
-    systemctl reset-failed gabkeep.service >/dev/null 2>&1 || true
+    systemctl reset-failed mullsmith.service >/dev/null 2>&1 || true
 fi
 
 echo ""
-printf "Remove the gabkeep system user and group? [y/N] "
+printf "Remove the mullsmith system user and group? [y/N] "
 IFS= read -r remove_account
 
 case "$remove_account" in
     y|Y|yes|YES|Yes)
-        if id gabkeep >/dev/null 2>&1; then
+        if id mullsmith >/dev/null 2>&1; then
             if command -v userdel >/dev/null 2>&1; then
-                if ! userdel gabkeep; then
-                    echo "WARNING: Could not remove the gabkeep user." >&2
+                if ! userdel mullsmith; then
+                    echo "WARNING: Could not remove the mullsmith user." >&2
                 fi
             elif command -v deluser >/dev/null 2>&1; then
-                if ! deluser gabkeep; then
-                    echo "WARNING: Could not remove the gabkeep user." >&2
+                if ! deluser mullsmith; then
+                    echo "WARNING: Could not remove the mullsmith user." >&2
                 fi
             else
-                echo "WARNING: userdel/deluser not found; the gabkeep user remains." >&2
+                echo "WARNING: userdel/deluser not found; the mullsmith user remains." >&2
             fi
         fi
 
-        if getent group gabkeep >/dev/null; then
+        if getent group mullsmith >/dev/null; then
             if command -v groupdel >/dev/null 2>&1; then
-                if ! groupdel gabkeep; then
-                    echo "WARNING: Could not remove the gabkeep group." >&2
+                if ! groupdel mullsmith; then
+                    echo "WARNING: Could not remove the mullsmith group." >&2
                 fi
             elif command -v delgroup >/dev/null 2>&1; then
-                if ! delgroup gabkeep; then
-                    echo "WARNING: Could not remove the gabkeep group." >&2
+                if ! delgroup mullsmith; then
+                    echo "WARNING: Could not remove the mullsmith group." >&2
                 fi
             else
-                echo "WARNING: groupdel/delgroup not found; the gabkeep group remains." >&2
+                echo "WARNING: groupdel/delgroup not found; the mullsmith group remains." >&2
             fi
         fi
         ;;
     *)
-        echo "Preserving the gabkeep system user and group."
+        echo "Preserving the mullsmith system user and group."
         ;;
 esac
 
-echo "Gabkeep has been uninstalled."
+echo "Mullsmith has been uninstalled."

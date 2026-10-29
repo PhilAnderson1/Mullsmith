@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
+	"mullsmith/internal/config"
 )
 
 // newRealToolServer wires a signed-in session to a server built exactly like

@@ -9,8 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/config"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
 )
 
 // --- audit finding 4: bound the Argon2 work, equalise its cost ---------------

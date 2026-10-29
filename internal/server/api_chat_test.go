@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/config"
-	"gabkeep/internal/store"
+	"mullsmith/internal/config"
+	"mullsmith/internal/store"
 )
 
 // --- fake OpenAI-compatible upstream ----------------------------------------
@@ -576,7 +576,7 @@ func TestChatClientDisconnectSavesPartial(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		a.ts.URL+"/api/v1/conversations/"+c.ID+"/messages", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Gabkeep-CSRF", a.csrf)
+	req.Header.Set("X-Mullsmith-CSRF", a.csrf)
 	for k, v := range a.cookies {
 		req.AddCookie(&http.Cookie{Name: k, Value: v})
 	}

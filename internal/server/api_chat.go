@@ -12,12 +12,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"gabkeep/internal/agent"
-	"gabkeep/internal/id"
-	"gabkeep/internal/llm"
-	"gabkeep/internal/scratch"
-	"gabkeep/internal/store"
-	"gabkeep/internal/tools"
+	"mullsmith/internal/agent"
+	"mullsmith/internal/id"
+	"mullsmith/internal/llm"
+	"mullsmith/internal/scratch"
+	"mullsmith/internal/store"
+	"mullsmith/internal/tools"
 )
 
 // --- POST /api/v1/conversations/{id}/messages — the core endpoint (spec §5.2) ----

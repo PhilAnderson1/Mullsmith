@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gabkeep/internal/store"
+	"mullsmith/internal/store"
 )
 
 // signedIn returns an authTest with one registered+logged-in user.
@@ -373,7 +373,7 @@ func TestStrictContentType(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, a.ts.URL+"/api/v1/conversations",
 		strings.NewReader(`{"title":"x"}`))
 	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("X-Gabkeep-CSRF", a.csrf)
+	req.Header.Set("X-Mullsmith-CSRF", a.csrf)
 	for k, v := range a.cookies {
 		req.AddCookie(&http.Cookie{Name: k, Value: v})
 	}
@@ -388,7 +388,7 @@ func TestStrictContentType(t *testing.T) {
 	req, _ = http.NewRequest(http.MethodPost, a.ts.URL+"/api/v1/conversations",
 		strings.NewReader(`{"title":"x"}`))
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("X-Gabkeep-CSRF", a.csrf)
+	req.Header.Set("X-Mullsmith-CSRF", a.csrf)
 	for k, v := range a.cookies {
 		req.AddCookie(&http.Cookie{Name: k, Value: v})
 	}

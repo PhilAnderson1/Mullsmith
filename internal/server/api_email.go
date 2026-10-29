@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"gabkeep/internal/auth"
-	"gabkeep/internal/mail"
-	"gabkeep/internal/store"
+	"mullsmith/internal/auth"
+	"mullsmith/internal/mail"
+	"mullsmith/internal/store"
 )
 
 // Token lifetimes (plan §5): the confirm TTL deliberately equals the

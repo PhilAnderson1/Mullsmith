@@ -3,7 +3,7 @@ package agent
 import (
 	"unicode/utf8"
 
-	"gabkeep/internal/llm"
+	"mullsmith/internal/llm"
 )
 
 // EstimateTokens approximates token counts: plain text is roughly

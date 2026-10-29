@@ -15,7 +15,7 @@ package runner
 // Delegate=yes (+ DelegateSubgroup=payload on systemd ≥ 254, which starts the
 // service in a child cgroup — the kernel forbids controllers where processes
 // live; without it, this file's self-placement does the same move). The
-// delegatee — gabkeep — owns its subtree and enables the controllers itself;
+// delegatee — mullsmith — owns its subtree and enables the controllers itself;
 // systemd deliberately leaves that to us.
 //
 // Usability is PROVEN, not assumed: DiscoverCgroupRoot only accepts a root it
@@ -50,7 +50,7 @@ const (
 	// JailDirPrefix names the per-run child cgroups (tests and the stale
 	// sweep look for it).
 	JailDirPrefix = "gk-jail-"
-	// selfSubgroup is where gabkeep moves its OWN process when the
+	// selfSubgroup is where mullsmith moves its OWN process when the
 	// delegation root is its unit cgroup and the kernel's
 	// no-internal-processes rule blocks enabling controllers there
 	// (systemd < 254 with no DelegateSubgroup). Sibling of the jails.
@@ -220,7 +220,7 @@ func relocateSelfInto(root string) bool {
 		[]byte(strconv.Itoa(os.Getpid())), 0o600) == nil
 }
 
-// sweepStaleJails removes empty gk-jail-* dirs from a previous gabkeep
+// sweepStaleJails removes empty gk-jail-* dirs from a previous mullsmith
 // lifetime (crash between the last run and rmdir). Busy ones stay — they
 // still meter whatever survived, and Run never reuses names.
 func sweepStaleJails(root string) {

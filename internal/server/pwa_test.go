@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"gabkeep/web"
+	"mullsmith/web"
 )
 
 // The PWA manifest is what turns "Add to home screen" into a standalone

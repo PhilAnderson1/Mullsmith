@@ -18,7 +18,7 @@ import (
 	"path"
 	"strings"
 
-	"gabkeep/internal/scratch"
+	"mullsmith/internal/scratch"
 )
 
 // ViewImageName is exported because both the registry's auto-approval
