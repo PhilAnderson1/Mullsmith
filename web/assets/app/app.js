@@ -598,9 +598,11 @@ function openConvRowMenu(target, ev) {
   const menu = $("#conv-row-menu");
   show(menu, true);
   const pad = 8;
-  let x = ev ? ev.clientX : target.li.getBoundingClientRect().right - 8;
-  let y = ev ? ev.clientY : target.li.getBoundingClientRect().bottom + 4;
   const w = menu.offsetWidth, h = menu.offsetHeight;
+  let x = ev ? ev.clientX : target.li.getBoundingClientRect().right - 8;
+  // Long press: the menu sits above the finger — below, the fingertip would
+  // hide it. The clamp below pushes it back down when the headroom is gone.
+  let y = ev ? ev.clientY - h - 12 : target.li.getBoundingClientRect().bottom + 4;
   x = Math.min(Math.max(x, pad), window.innerWidth - w - pad);
   y = Math.min(Math.max(y, pad), window.innerHeight - h - pad);
   menu.style.left = x + "px";
