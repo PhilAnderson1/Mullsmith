@@ -992,6 +992,11 @@ async function sendFromComposer() {
   autosizeComposer();
   const body = { content: text.trim() };
   if (attachments.length) body.attachment_paths = attachments.map((f) => f.path);
+  // Piggyback the level the selector shows: a thinking PATCH still in
+  // flight would otherwise let this turn snapshot the stored value from
+  // before the switch (the server persists this field before streaming).
+  const thinkSel = $("#thinking-select");
+  if (!thinkSel.disabled && thinkSel.value) body.thinking = thinkSel.value;
   await startGeneration(
     `/api/v1/conversations/${encodeURIComponent(state.currentId)}/messages`,
     body,
