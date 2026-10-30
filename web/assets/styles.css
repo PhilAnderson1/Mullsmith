@@ -1132,6 +1132,11 @@ body.settings-open .composer-stack { display: none; }
 }
 .danger-text { color: var(--danger); }
 @media (max-width: 480px) {
+  /* Phones: stack the row — name/meta across the full width, buttons
+     on their own line sharing it evenly. flex-wrap alone never fired,
+     because .f-main's min-width:0 lets the info squash to nothing
+     instead of forcing the buttons onto a second line. */
   .file-row { flex-wrap: wrap; }
+  .file-row .f-main { flex: 1 0 100%; }
   .file-row .btn { flex: 1; }
 }
