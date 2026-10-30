@@ -18,7 +18,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -480,34 +479,24 @@ func RemoveTree(root, userID, rel string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("%w: RemoveTree target %q is not a directory", ErrNotDir, rel)
 	}
-	dir, err := Resolve(root, userID, rel)
-	if err != nil {
-		return err
-	}
+	// The plan is built by the streaming pinned walker (astra2 finding 2):
+	// batched reads mean even an over-budget flood is refused before a
+	// whole directory has been loaded, instead of after.
 	var files, dirs []string
-	visited := 0
-	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err // unreadable anything ⇒ incomplete plan ⇒ abort
-		}
-		if visited++; visited > removeTreeEntryBudget {
-			return fmt.Errorf("remove %q: over %d entries, refusing to plan a delete this large",
-				rel, removeTreeEntryBudget)
-		}
-		sub, rerr := filepath.Rel(dir, p)
-		if rerr != nil || sub == "." {
-			return nil
-		}
-		treeRel := path.Join(rel, filepath.ToSlash(sub))
-		if d.IsDir() {
-			dirs = append(dirs, treeRel)
+	err = scanUserTree(root, userID, rel, removeTreeEntryBudget, func(e scanEntry) error {
+		if e.st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			dirs = append(dirs, e.rel)
 		} else {
-			files = append(files, treeRel)
+			files = append(files, e.rel) // regular, symlink, special: unlinked as leaves
 		}
 		return nil
 	})
-	if walkErr != nil {
-		return walkErr
+	if err != nil {
+		if errors.Is(err, errScanBudget) {
+			return fmt.Errorf("remove %q: over %d entries, refusing to plan a delete this large",
+				rel, removeTreeEntryBudget)
+		}
+		return err // unreadable anything ⇒ incomplete plan ⇒ abort
 	}
 	for _, f := range files {
 		if rerr := Remove(root, userID, f); rerr != nil && !errors.Is(rerr, ErrNotFound) {

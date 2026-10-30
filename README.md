@@ -262,13 +262,25 @@ them is reproducible from the commands above.
   manipulated into *asking* you to approve something. Keep `code_run: confirm`
   (the default) and never combine `code_run: auto` with open registration —
   mullsmith warns when you do.
+* **Code execution means trusted users.** Enabling `code_execution.enabled`
+  is a statement that the accounts you serve are trusted not to spend the
+  host down. The jail and the per-run cgroup v2 meter *do* hard-cap memory,
+  task count and CPU in the kernel — but nothing hard-caps **storage**.
+  The per-user byte quota, the storage watchdog and the bounded scans keep
+  usage honest and metered; a determined user can still consume disk and
+  inodes with legitimate primitives (empty files cost ~nothing against a
+  byte quota; deleted-but-still-open files evade accounting entirely). If
+  your population is not trusted, keep code execution off or gate
+  enrollment (invite-only/closed) — or move the scratch root onto a bounded
+  filesystem with project quotas, which is operator hardening, not a
+  feature gap (spec §9.9).
 * **Code execution is defence-in-depth, not a VM.** Every run is jailed by
   [bubblewrap](https://github.com/containers/bubblewrap): its own
   user/mount/PID/net namespaces, a root filesystem containing only a
   read-only `/usr` plus the user's own scratchpad at `/scratchpad` — root
-  mounted READ-ONLY, with `work/` the single writable overlay, while
-  `artifacts/` and `uploads/` are read-only overlays, so a script can never
-  litter the root beside the three directories — the database, other
+  mounted READ-ONLY, with `work/` and `artifacts/` as the writable overlays
+  (workspace and finished output) and `uploads/` read-only, so a script can
+  never litter the root beside the three directories — the database, other
   users' files and server configs have no path inside the jail — with
   rlimits, a scrubbed environment and no-new-privs underneath, and no
   network unless you set `allow_network: true` (mullsmith warns when you do).

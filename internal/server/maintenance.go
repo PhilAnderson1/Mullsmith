@@ -44,12 +44,14 @@ import (
 //
 // Fail-closed stance (§9.7): anything unreadable is logged and left
 // untouched — sweeping less is always safe, sweeping more is not. Each
-// pass is bounded (spec §9.11): at most sweepPass deletions per directory.
+// pass is bounded (spec §9.11): at most sweepPass deletions and at most
+// sweepInspections entry inspections per sweep.
 
 const (
 	maintenanceInterval = time.Hour
 	orphanMinAge        = 24 * time.Hour // never race an in-flight upload/scan
 	sweepPass           = 1000           // max deletions per directory per pass
+	sweepInspections    = 200_000        // max entries inspected per sweep pass (astra2 finding 3)
 
 	// pendingSignupTTL ages out never-confirmed sign-ups (disabled + NULL
 	// email) from created_at; resends do NOT extend it. Equals the
@@ -151,14 +153,16 @@ func (s *Server) sweepWarn(root, userID string) func(rel, note string) {
 	}
 }
 
-// sweepUnknownUser removes every regular file older than orphanMinAge in
-// a scratchpad directory with no user behind it. Empty directories are
-// left alone: they cost nothing, and a re-registered ULID never happens
-// anyway — they are simply too small to be worth a deletion rule.
+// sweepUnknownUser removes every regular file, symlink and special file
+// older than orphanMinAge in a scratchpad directory with no user behind
+// it. Empty directories are left alone: they cost nothing, and a
+// re-registered ULID never happens anyway — they are simply too small to
+// be worth a deletion rule.
 func (s *Server) sweepUnknownUser(root, userID string, now time.Time) int {
 	res, err := scratch.SweepTree(root, userID, ".", scratch.SweepSpec{
 		Now:        now,
 		FileMaxAge: orphanMinAge,
+		MaxEntries: sweepInspections, // a flooded orphan cannot burn the hour either
 		Warn:       s.sweepWarn(root, userID),
 	})
 	if err != nil {
@@ -173,23 +177,27 @@ func (s *Server) sweepUnknownUser(root, userID string, now time.Time) int {
 // is past ttl are rmdir'd post-order. Removing a file bumps its parent
 // directory's mtime, so a directory emptied this pass becomes rmdir-able
 // once IT has aged — one TTL later, at the next pass that finds it still
-// empty. Symlinks and special files are left alone with a warning; an
-// unreadable directory is skipped, never partially swept. Every operation
-// is fd-pinned (scratch.SweepTree, astra finding 2).
+// empty. Aged symlinks and special files go too (unlinked as themselves,
+// never followed — scratch.SweepTree); a young symlink is reported and
+// left alone. An unreadable directory is skipped, never partially swept.
+// Every operation is fd-pinned (scratch.SweepTree, astra finding 2) and
+// the pass is bounded (astra2 finding 3).
 func (s *Server) sweepTTL(root, userID, dir string, ttl time.Duration, now time.Time) {
 	res, err := scratch.SweepTree(root, userID, dir, scratch.SweepSpec{
 		Now:        now,
 		FileMaxAge: ttl,
 		DirMaxAge:  ttl,
 		MaxFiles:   sweepPass,
+		MaxEntries: sweepInspections,
 		Warn:       s.sweepWarn(root, userID),
 	})
 	if err != nil {
 		s.logger.Warn("sweep: dir not swept", "path", filepath.Join(root, userID, dir), "error", err)
 		return
 	}
-	if res.Files > 0 || res.Dirs > 0 || res.Capped {
-		s.logger.Info("ttl sweep", "dir", dir, "removed", res.Files, "dirs", res.Dirs, "capped", res.Capped)
+	if res.Files > 0 || res.Dirs > 0 || res.Capped || res.EntriesCapped {
+		s.logger.Info("ttl sweep", "dir", dir, "removed", res.Files, "dirs", res.Dirs,
+			"capped", res.Capped, "entries_capped", res.EntriesCapped)
 	}
 }
 

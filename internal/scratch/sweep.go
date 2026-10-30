@@ -29,30 +29,60 @@ import (
 // SweepSpec configures one SweepTree pass.
 type SweepSpec struct {
 	Now        time.Time              // clock for the age arithmetic
-	FileMaxAge time.Duration          // unlink regular files at least this old
+	FileMaxAge time.Duration          // unlink regular files (and symlinks/specials) at least this old
 	DirMaxAge  time.Duration          // rmdir empty directories at least this old; ≤0 leaves directories alone
 	MaxFiles   int                    // file-deletion budget per pass; ≤0 is unlimited
+	MaxEntries int                    // entry-inspection budget per pass; ≤0 is unlimited (astra2 finding 3)
 	Warn       func(rel, note string) // operator-visible: symlinks, unreadables; may be nil
 }
 
 // SweepStats reports what one pass did.
 type SweepStats struct {
-	Files  int
-	Dirs   int
-	Capped bool // the file budget was exhausted; untouched bytes wait for the next pass
+	Files         int
+	Dirs          int
+	Entries       int // entries inspected before the pass ended
+	Capped        bool // the file budget was exhausted; untouched bytes wait for the next pass
+	EntriesCapped bool // the inspection budget was exhausted; the rest of the tree waits too
 }
+
+// sweepMaxDepth caps descent: every pinned parent stays open while its
+// children are walked, so depth is also an fd budget. Beyond it a subtree is
+// reported and skipped (fail-closed), matching how unreadable corners are
+// handled. A var so tests can run small.
+var sweepMaxDepth = 512
 
 // SweepTree prunes rel (a directory inside the user's scratchpad; "." is the
 // user root) depth-first. For every regular file past FileMaxAge the file is
 // unlinked; with DirMaxAge set, directories that are empty by the time the
 // post-order visit reaches them and whose own mtime is past DirMaxAge are
 // rmdir'd — a directory emptied during this pass has had its mtime bumped by
-// the removals and therefore ages for the next one. Symlinks are reported
-// and left alone; special files are left alone silently; an unreadable or
-// vanished subtree is reported and skipped whole (fail-closed: sweeping less
-// is always safe, sweeping more is not). Removing a file can shift further
-// getdents positions, so a pass may miss entries — the next pass catches
-// them, which is the same bounded-sweep doctrine the caller already applies.
+// the removals and therefore ages for the next one. Symlinks and special
+// files age out like regular files (astra2 finding 3: an entry the sweep
+// could never delete would wall off, forever, everything ordered behind the
+// first read batch). Safety is unchanged by that widening: unlinkat against
+// a pinned parent removes a link as a link and a FIFO as a FIFO — the
+// target is never opened, never followed. A YOUNG symlink is still reported
+// and left alone, exactly as before. An unreadable or vanished subtree is
+// reported and skipped whole (fail-closed: sweeping less is always safe,
+// sweeping more is not). Removing a file can shift further getdents
+// positions, so a pass may miss entries — the next pass catches them, which
+// is the same bounded-sweep doctrine the caller already applies.
+//
+// Progress is BEST-EFFORT, not a guarantee (astra2 review): every pass
+// restarts each directory listing from the beginning and no cursor or
+// fairness state is kept — by design, the disk stays the single source of
+// truth (spec §8). Entries ordered behind a permanently undeletable prefix
+// (files a workload keeps young, an unreadable flood) can therefore starve
+// until that prefix ages out or is removed; the spec accepts this as a
+// self-scoped availability quirk under the code-execution trust model (§9.9).
+//
+// Two further bounds keep one pass cheap whatever the tree looks like
+// (astra2 finding 3): the deletion budget MaxFiles counts unlinks, so an
+// all-young tree never spends it — MaxEntries caps ENTRIES INSPECTED per
+// pass, and sweepMaxDepth caps descent (one pinned fd per level). All
+// leftovers are expected to be picked up by a later pass (best-effort —
+// see the progress note above; nothing is ever deleted wrongly, and
+// normally only timing is lost).
 func SweepTree(root, userID, rel string, spec SweepSpec) (SweepStats, error) {
 	segs, err := ParseRel(rel)
 	if err != nil {
@@ -74,107 +104,153 @@ func SweepTree(root, userID, rel string, spec SweepSpec) (SweepStats, error) {
 		cur = next
 	}
 	st := SweepStats{}
-	sweepDir(cur, rel, spec, &st)
+	sweepDir(cur, rel, 0, spec, &st)
 	_ = cur.Close() // traversal fd; nothing was written through it
 	return st, nil
 }
 
-// sweepReadBudget caps how many entries one sweep pass snapshots per
-// directory (astra finding 5): a flooded directory must not force the
-// hourly pass to allocate its whole listing. Deletions per directory per
-// pass are capped at sweepPass anyway, so enumerating far beyond this buys
-// nothing this hour — the next pass re-lists and continues. A var so tests
-// can run small.
-var sweepReadBudget = 20_000
+// sweepBatch is how many directory entries one batched read delivers
+// (astra2 review follow-up). Only the CURRENT batch stays alive while
+// children recurse, so a deep tree costs O(sweepBatch × depth) retained
+// entries — the previous whole-directory snapshot (20k) pinned a listing
+// per level and could multiply into millions. Work remains bounded by the
+// caller's MaxEntries, which is counted before each entry is touched, and
+// a batch is tiny enough that read-ahead beyond the budget is trivial.
+// A var so tests can prove correctness across batch boundaries.
+var sweepBatch = 512
 
-// sweepDir processes one pinned directory. The listing is snapshotted before
-// anything is deleted, so removals cannot shift getdents offsets under a
-// half-read iteration. Children recurse in place: post-order means a
-// directory's rmdir attempt happens after its last child was handled.
-func sweepDir(dirf *os.File, dirRel string, spec SweepSpec, st *SweepStats) {
-	if st.Capped {
+// sweepDir processes one pinned directory in batches. Deletions this pass
+// can shift not-yet-read getdents entries between batches, so some entries
+// may be missed until the next pass — the same bounded-sweep doctrine a
+// half-read listing always implied: deletions happen by name against a
+// pinned fd, never at a stale position, and duplicates are harmless
+// (fstatat/unlinkat answer ENOENT). Children recurse in place: post-order
+// means a directory's rmdir attempt happens after its last child was
+// handled.
+func sweepDir(dirf *os.File, dirRel string, depth int, spec SweepSpec, st *SweepStats) {
+	if st.Capped || st.EntriesCapped {
 		return
 	}
 	fd := int(dirf.Fd())
-	// One extra read decides whether the listing was truncated, rather
-	// than loading an unbounded directory to find out. ReadDir(n) reports
-	// an empty directory as io.EOF — that is an empty listing, not an
-	// unreadable one.
-	entries, err := dirf.ReadDir(sweepReadBudget + 1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		warnf(spec, dirRel, "unreadable directory skipped: "+err.Error())
-		return
-	}
-	if len(entries) > sweepReadBudget {
-		entries = entries[:sweepReadBudget]
-		warnf(spec, dirRel, "directory listing truncated this pass (more entries exist; next pass continues)")
-	}
-	for _, e := range entries {
-		if spec.MaxFiles > 0 && st.Files >= spec.MaxFiles {
-			st.Capped = true
+	for {
+		entries, err := dirf.ReadDir(sweepBatch)
+		for _, e := range entries {
+			if spec.MaxFiles > 0 && st.Files >= spec.MaxFiles {
+				st.Capped = true
+				return
+			}
+			if spec.MaxEntries > 0 && st.Entries >= spec.MaxEntries {
+				st.EntriesCapped = true
+				return // inspection budget spent (astra2 finding 3): a later pass picks up (best-effort)
+			}
+			st.Entries++
+			sweepEntry(fd, e.Name(), dirRel, depth, spec, st)
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return // drained; an empty directory reads as io.EOF, not failure
+			}
+			warnf(spec, dirRel, "unreadable directory skipped: "+err.Error())
 			return
 		}
-		name := e.Name()
-		sub := joinRel(dirRel, name)
-		var fst unix.Stat_t
-		if err := unix.Fstatat(fd, name, &fst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-			continue // vanished between listing and inspection — the bytes are gone
-		}
-		switch fst.Mode & unix.S_IFMT {
-		case unix.S_IFLNK:
+	}
+}
+
+// sweepEntry inspects and dispositions one entry of a pinned directory.
+// Every deletion names the entry within the pinned parent — a link is
+// unlinked as a link, never followed.
+func sweepEntry(fd int, name, dirRel string, depth int, spec SweepSpec, st *SweepStats) {
+	sub := joinRel(dirRel, name)
+	var fst unix.Stat_t
+	if err := unix.Fstatat(fd, name, &fst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return // vanished between listing and inspection — the bytes are gone
+	}
+	switch fst.Mode & unix.S_IFMT {
+	case unix.S_IFLNK:
+		if !agedPast(fst, spec.Now, spec.FileMaxAge) {
 			warnf(spec, sub, "symlink inside scratchpad tree (left alone)")
-		case unix.S_IFDIR:
-			if st.Capped {
-				continue // budget spent: no further traversal work this pass
-			}
-			cfd, err := unix.Openat(fd, name,
-				unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-			if err != nil {
-				// Unreadable, vanished, or swapped for a symlink since the
-				// fstatat — the fail-closed answer is the same for all:
-				// skip this subtree whole.
-				warnf(spec, sub, "unreadable directory skipped: "+err.Error())
-				continue
-			}
-			child := os.NewFile(uintptr(cfd), name)
-			sweepDir(child, sub, spec, st)
-			_ = child.Close()
-			if spec.DirMaxAge <= 0 {
-				continue
-			}
-			// Re-inspect by name, then unlink relative to the SAME pinned
-			// parent: whatever stands here at rmdir time is what goes —
-			// never anything through a link.
-			if err := unix.Fstatat(fd, name, &fst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-				continue
-			}
-			if fst.Mode&unix.S_IFMT != unix.S_IFDIR || !agedPast(fst, spec.Now, spec.DirMaxAge) {
-				continue
-			}
-			if err := unix.Unlinkat(fd, name, unix.AT_REMOVEDIR); err != nil {
-				// ENOTEMPTY: refilled (or never empty) — retried next pass.
-				// ENOENT/ENOTDIR: vanished or swapped — nothing to do.
-				if !errors.Is(err, unix.ENOTEMPTY) && !errors.Is(err, unix.ENOENT) &&
-					!errors.Is(err, unix.ENOTDIR) {
-					warnf(spec, sub, "rmdir failed: "+err.Error())
-				}
-				continue
-			}
-			st.Dirs++
-		case unix.S_IFREG:
-			if !agedPast(fst, spec.Now, spec.FileMaxAge) {
-				continue
-			}
-			if err := unix.Unlinkat(fd, name, 0); err != nil {
-				if !errors.Is(err, unix.ENOENT) {
-					warnf(spec, sub, "remove failed: "+err.Error())
-				}
-				continue
-			}
-			st.Files++
-		default:
-			// FIFO/socket/device: left alone, as the string-based sweep did.
+			return
 		}
+		// Aged: unlink as a link — the target is never opened, never
+		// followed, so this is no wider a power than file deletion
+		// and removes the permanent blockage the sweep could never
+		// clear before (astra2 finding 3).
+		if err := unix.Unlinkat(fd, name, 0); err != nil {
+			if !errors.Is(err, unix.ENOENT) {
+				warnf(spec, sub, "remove symlink failed: "+err.Error())
+			}
+			return
+		}
+		warnf(spec, sub, "aged symlink removed")
+		st.Files++
+	case unix.S_IFDIR:
+		if st.Capped || st.EntriesCapped {
+			return // budget spent: no further traversal work this pass
+		}
+		if depth+1 > sweepMaxDepth {
+			warnf(spec, sub, "subtree deeper than the sweep depth cap (skipped)")
+			return
+		}
+		cfd, err := unix.Openat(fd, name,
+			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			// Unreadable, vanished, or swapped for a symlink since the
+			// fstatat — the fail-closed answer is the same for all:
+			// skip this subtree whole.
+			warnf(spec, sub, "unreadable directory skipped: "+err.Error())
+			return
+		}
+		child := os.NewFile(uintptr(cfd), name)
+		sweepDir(child, sub, depth+1, spec, st)
+		_ = child.Close()
+		if spec.DirMaxAge <= 0 {
+			return
+		}
+		// Re-inspect by name, then unlink relative to the SAME pinned
+		// parent: whatever stands here at rmdir time is what goes —
+		// never anything through a link.
+		if err := unix.Fstatat(fd, name, &fst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return
+		}
+		if fst.Mode&unix.S_IFMT != unix.S_IFDIR || !agedPast(fst, spec.Now, spec.DirMaxAge) {
+			return
+		}
+		if err := unix.Unlinkat(fd, name, unix.AT_REMOVEDIR); err != nil {
+			// ENOTEMPTY: refilled (or never empty) — retried next pass.
+			// ENOENT/ENOTDIR: vanished or swapped — nothing to do.
+			if !errors.Is(err, unix.ENOTEMPTY) && !errors.Is(err, unix.ENOENT) &&
+				!errors.Is(err, unix.ENOTDIR) {
+				warnf(spec, sub, "rmdir failed: "+err.Error())
+			}
+			return
+		}
+		st.Dirs++
+	case unix.S_IFREG:
+		if !agedPast(fst, spec.Now, spec.FileMaxAge) {
+			return
+		}
+		if err := unix.Unlinkat(fd, name, 0); err != nil {
+			if !errors.Is(err, unix.ENOENT) {
+				warnf(spec, sub, "remove failed: "+err.Error())
+			}
+			return
+		}
+		st.Files++
+	default:
+		// FIFO/socket/device: aged ones go too (astra2 finding 3 —
+		// same permanent-blockage reasoning as symlinks). unlinkat
+		// never opens the special file, so a FIFO cannot block the
+		// sweep the way an open() would.
+		if !agedPast(fst, spec.Now, spec.FileMaxAge) {
+			return
+		}
+		if err := unix.Unlinkat(fd, name, 0); err != nil {
+			if !errors.Is(err, unix.ENOENT) {
+				warnf(spec, sub, "remove special file failed: "+err.Error())
+			}
+			return
+		}
+		st.Files++
 	}
 }
 

@@ -94,11 +94,7 @@ func TestQuotaScanEntryBudget(t *testing.T) {
 	}
 }
 
-func TestSweepReadBudgetCapsSnapshot(t *testing.T) {
-	oldRead := sweepReadBudget
-	sweepReadBudget = 5
-	t.Cleanup(func() { sweepReadBudget = oldRead })
-
+func TestSweepFloodDirectoryDefersViaBudget(t *testing.T) {
 	root := newRoot(t)
 	work := filepath.Join(root, testULID, "work")
 	flood(t, work, 12)
@@ -110,40 +106,84 @@ func TestSweepReadBudgetCapsSnapshot(t *testing.T) {
 		sweepAged(t, filepath.Join(work, e.Name()))
 	}
 
-	var warnings []string
 	now, maxAge := sweepNow(t)
-	spec := SweepSpec{Now: now, FileMaxAge: maxAge, MaxFiles: 100,
-		Warn: func(rel, note string) { warnings = append(warnings, rel+" "+note) }}
+	spec := SweepSpec{Now: now, FileMaxAge: maxAge, MaxFiles: 100, MaxEntries: 5}
 
 	st, err := SweepTree(root, testULID, "work", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Files != 5 {
-		t.Errorf("first pass deleted %d files, want exactly the read budget (5)", st.Files)
-	}
-	var sawTrunc bool
-	for _, w := range warnings {
-		if strings.Contains(w, "truncated") {
-			sawTrunc = true
-		}
-	}
-	if !sawTrunc {
-		t.Errorf("no truncation warning in %v", warnings)
+	if st.Files != 5 || !st.EntriesCapped || st.Entries != 5 {
+		t.Errorf("first pass = %+v, want 5 files/5 entries/entries-capped", st)
 	}
 	// The following passes finish the job — nothing is lost, only delayed.
-	for i := 0; i < 5 && st.Files > 0; i++ {
+	total := st.Files
+	for i := 0; i < 10 && st.Files > 0; i++ {
 		st, err = SweepTree(root, testULID, "work", spec)
 		if err != nil {
 			t.Fatal(err)
 		}
+		total += st.Files
 	}
 	ents, err = os.ReadDir(work)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ents) != 0 {
-		t.Errorf("%d files survived the bounded passes", len(ents))
+	if len(ents) != 0 || total != 12 {
+		t.Errorf("%d files survived (deleted %d total), want 0 survived / 12 deleted", len(ents), total)
+	}
+}
+
+// Tiny batches across several depths still sweep everything. Deletions may
+// shift unread getdents entries between batches, so completion is asserted
+// across repeated passes (the documented doctrine), never a single pass.
+func TestSweepTinyBatchesSweepDeepTrees(t *testing.T) {
+	old := sweepBatch
+	sweepBatch = 3
+	t.Cleanup(func() { sweepBatch = old })
+
+	root := newRoot(t)
+	base := filepath.Join(root, testULID, "work")
+	const nAged = 12
+	for _, dir := range []string{base, filepath.Join(base, "sub1"), filepath.Join(base, "sub2", "deeper")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < nAged/3; i++ {
+			p := filepath.Join(dir, string(rune('a'+i))+".bin")
+			if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sweepAged(t, p)
+		}
+	}
+	// One young file must survive every pass.
+	young := filepath.Join(base, "sub1", "fresh.bin")
+	if err := os.WriteFile(young, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	now, maxAge := sweepNow(t)
+	total := 0
+	for i := 0; i < 10; i++ {
+		st, err := SweepTree(root, testULID, "work", SweepSpec{
+			Now: now, FileMaxAge: maxAge, DirMaxAge: maxAge, MaxFiles: 100,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += st.Files
+		if st.Files == 0 {
+			break
+		}
+	}
+	if total != nAged {
+		t.Errorf("deleted %d aged files across passes, want %d", total, nAged)
+	}
+	mustExist(t, young)
+	left, _ := os.ReadDir(filepath.Join(base, "sub2"))
+	for _, e := range left {
+		mustExist(t, filepath.Join(base, "sub2", e.Name()))
 	}
 }
 

@@ -5,7 +5,6 @@ package scratch
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -30,24 +29,6 @@ var errScanBudget = errors.New("scratch: entry budget exceeded")
 // gets near this; a var so tests can run small.
 var scanEntryBudget = 50_000
 
-// scanAbort decides how a WalkDir callback error affects a quota scan
-// (audit2 finding 3, accounting bypass): an entry that vanished mid-walk
-// (the user deleted it, a maintenance sweep collected it) contributes zero
-// bytes and must NOT fail the scan — the race is routine and the bytes are
-// genuinely gone. Every other error (unreadable directory after a hostile
-// chmod 000, I/O failure, metadata we cannot read) means the total would be
-// a guess, so it aborts: quota decisions must never trust an incomplete
-// scan. Callers surface the failure; hiding bytes makes usage
-// unverifiable, not free.
-//
-// d may be nil when err != nil; callers must check err before touching d.
-func scanAbort(err error) error {
-	if err == nil || errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
 // DirSizeExceeds reports whether the regular-file bytes under the user
 // root exceed limit, short-circuiting the walk as soon as the running
 // total crosses it (audit finding 5: the code_run watchdog polls once per
@@ -58,45 +39,21 @@ func scanAbort(err error) error {
 // were about to authorize. A missing user root is the one incomplete tree
 // that legitimately reports zero usage: a fresh user holds no bytes.
 // Walking more than scanEntryBudget entries is itself such an error
-// (astra finding 5), so a flooded directory cannot burn CPU forever.
+// (astra finding 5), so a flooded directory cannot burn CPU forever — and
+// the scan streams through pinned descriptors in batches, so even the
+// worst single directory cannot force a large allocation first (astra2
+// finding 2).
 func DirSizeExceeds(root, userID string, limit int64) (bool, error) {
-	dir, err := UserRoot(root, userID)
-	if err != nil {
-		return false, err
-	}
 	var total int64
-	var visited int
-	var rootMissing bool
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		// Astra finding 5: empty files are ~free against the byte quota yet
-		// make every walk expensive, and the watchdog re-walks on each
-		// poll. Past the budget the answer is UNKNOWN (an error), never a
-		// partial total — the fail-closed callers then act on unknown.
-		if visited++; visited > scanEntryBudget {
-			return fmt.Errorf("%w: over %d entries under %s", errScanBudget, scanEntryBudget, dir)
-		}
-		if err != nil {
-			if p == dir && errors.Is(err, fs.ErrNotExist) {
-				rootMissing = true
-				return nil
-			}
-			return scanAbort(err)
-		}
-		if d.Type().IsRegular() {
-			info, ierr := d.Info()
-			if ierr != nil {
-				return scanAbort(ierr) // metadata unreadable ⇒ total incomplete
-			}
-			total += info.Size()
+	err := scanUserTree(root, userID, ".", scanEntryBudget, func(e scanEntry) error {
+		if e.st.Mode&unix.S_IFMT == unix.S_IFREG {
+			total += e.st.Size
 			if total > limit {
 				return errOverLimit
 			}
 		}
 		return nil
 	})
-	if rootMissing {
-		return false, nil
-	}
 	switch {
 	case errors.Is(err, errOverLimit):
 		return true, nil
@@ -253,39 +210,17 @@ func RemoveUserDirs(root, userID string) error {
 // (fail closed, audit2 finding 3): an unreadable directory — a script's
 // chmod 000 trick — or unreadable metadata aborts the walk instead of
 // silently contributing nothing. A missing user root legitimately sums to
-// zero. Like DirSizeExceeds, exceeding scanEntryBudget entries fails the
-// scan as unknown (astra finding 5).
+// zero. Like DirSizeExceeds, exceeding scanEntryBudget entries (or the
+// depth cap) fails the scan as unknown, and the scan itself streams in
+// batches through pinned descriptors (astra2 finding 2).
 func DirSize(root, userID string) (int64, error) {
-	dir, err := UserRoot(root, userID)
-	if err != nil {
-		return 0, err
-	}
 	var total int64
-	var visited int
-	var rootMissing bool
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if visited++; visited > scanEntryBudget {
-			return fmt.Errorf("%w: over %d entries under %s", errScanBudget, scanEntryBudget, dir)
-		}
-		if err != nil {
-			if p == dir && errors.Is(err, fs.ErrNotExist) {
-				rootMissing = true
-				return nil
-			}
-			return scanAbort(err)
-		}
-		if d.Type().IsRegular() {
-			info, ierr := d.Info()
-			if ierr != nil {
-				return scanAbort(ierr)
-			}
-			total += info.Size()
+	err := scanUserTree(root, userID, ".", scanEntryBudget, func(e scanEntry) error {
+		if e.st.Mode&unix.S_IFMT == unix.S_IFREG {
+			total += e.st.Size
 		}
 		return nil
 	})
-	if rootMissing {
-		return 0, nil
-	}
 	if err != nil {
 		return 0, err
 	}

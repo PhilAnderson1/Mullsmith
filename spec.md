@@ -893,17 +893,32 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   pre-flight, the watchdog — which cancels the run — and the final weigh-in all fail
   closed); restoring read access restores accounting with nothing to repair. Only
   filesystem-level quotas (ext4 project quotas / XFS) are a true hard ceiling;
-  deployment defers them by
-  operator choice.
+  operating without one is accepted under the code-execution trust model
+  (§9.9), not an open defect.
 - Enumeration itself is bounded too (astra finding 5): empty files cost ~zero metered
   bytes yet make every walk expensive, so no host path loads an unbounded listing —
   `fs_list` reads at most 200 entries (+1 to know more exist) and answers `truncated`;
   a quota scan visits at most 50k entries and then returns **"usage could not be
   verified"**, which the existing fail-closed doctrine already handles (watchdog kills
-  the run, writes are refused until the TTL sweep clears the flood); the sweep snapshots
-  at most 20k entries per directory per pass (its deletions were already capped per
-  pass); and `RemoveTree` refuses to plan a delete over 1M entries rather than holding
-  the plan in RAM — refusal deletes nothing, the hourly sweep is the backstop. Entry
+  the run, writes are refused until the TTL sweep clears the flood); quota scans and
+  `RemoveTree`'s plan walk stream in batches through pinned descriptors
+  (astra2 finding 2) — the scans hold a batch per level of tree depth, plus
+  the delete plan itself, never a whole directory listing;
+  the sweep reads directories in small batches (512), so its memory is
+  O(batch × depth) rather than a whole listing per level, and a global
+  200k-entry inspection budget plus a depth cap bound the whole sweep pass
+  (astra2 finding 3; review follow-up), and — since an entry the sweep could never delete would
+  permanently block everything ordered behind the first read batch — aged symlinks and
+  special files in swept areas are unlinked like files, as themselves, never following
+  the link; and `RemoveTree` refuses to plan a delete over 1M entries rather than holding
+  the plan in RAM — refusal deletes nothing, the hourly sweep is the backstop.
+  Sweep progress itself is **best-effort, not a guarantee**: passes restart
+  every directory listing from the beginning and keep no cursor or fairness
+  state — by design, the disk stays the single source of truth (§8) — so
+  entries ordered behind a permanently undeletable prefix (files a workload
+  keeps young, an unreadable flood) can starve until that prefix ages out or
+  is removed; a self-scoped availability quirk, accepted under the
+  code-execution trust model (§9.9). Entry
   counts, and files deleted while still open (which evade pathname accounting entirely),
   stay beyond what the daemon can meter: bounding them is the same operator story —
   project quotas or a separate bounded scratch filesystem.
@@ -944,6 +959,24 @@ the app fetches **no third-party assets at runtime** (no CDN fonts/scripts — C
 which also matters for privacy). `Server` header is just `mullsmith` (no version detail).
 
 ### 9.9 Code execution sandbox (defense in depth)
+
+**Trust model when code execution is enabled.** The layers below are
+defense-in-depth against a runaway or hostile *payload* escaping its jail
+or reaching other users' data. Resource limits split cleanly: the per-run
+cgroup v2 meter is a genuine kernel-enforced hard cap on **memory, task
+count and CPU** for the whole process tree — a multiplying or spinning
+script cannot exhaust the host. **Storage has no hard ceiling**, and no
+in-daemon mechanism can supply one: the byte quota, storage watchdog and
+bounded scans (§9.7, §9.11) keep usage honest and metered, but a user
+spending disk and inodes on legitimate primitives — empty files, deep
+trees, deleted-but-open files — cannot be stopped short of service.
+Mullsmith therefore defines `code_execution.enabled: true` as
+**trusted users only**: enabling it is the operator's decision that the
+serving population may cost the host its storage, and public-facing
+deployments should keep code execution off or gate enrollment
+(invite-only/closed). When a hard aggregate storage ceiling is wanted it
+lives in filesystem configuration — project quotas or a bounded scratch
+filesystem (§9.7) — operator hardening, not a deferred defect.
 
 One enforcement path, fail closed: **bubblewrap (bwrap)** plus a **per-run cgroup
 v2 meter** for resources. At startup mullsmith probes a real jail; if bwrap is
@@ -1053,7 +1086,7 @@ open registration (startup warns).
 | SSE hygiene | server-side heartbeat comments every 15 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU). Every frame write+flush carries a **rolling 10 s write deadline** (armed per frame, cleared after): a stalled reader (TCP zero window, no FIN) once blocked the write in a syscall forever — heartbeat included, holding its mutex — pinning a generation slot until restart; now the deadline error surfaces, flush errors propagate (`statusWriter.FlushError`), and the generation cancels (audit finding 10) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; small reader pool; TTL job deletes bounded per pass (≤ 1 000 rows/files) |
 | Disk exhaustion | per-user quota + global free-space floor (§9.7); upload commits, `fs_write` and `code_run` staging share one quota lock, so individually-passing writes cannot jointly overrun; staging pre-checks sizes before copying; per-run storage watchdog + final weigh-in detect quota/floor breaches (§9.11); artifact expiry and the work/ desk TTL ride one mtime sweep (§8) — with the disk as
-the only file state there is nothing else that could orphan. App-level accounting is honest, not kernel-enforced — FS-level quotas remain the only hard ceiling (deferred, §9.7) |
+the only file state there is nothing else that could orphan. App-level accounting is honest, not kernel-enforced — FS-level quotas remain the only hard ceiling (§9.7); under the code-execution trust model (§9.9) that ceiling is operator hardening, since enabling code execution means the user population is trusted not to spend the host down |
 | Code exec | timeout + output caps + global per-user concurrency (§9.9) |
 
 ### 9.12 Secrets, sensitive data & error handling

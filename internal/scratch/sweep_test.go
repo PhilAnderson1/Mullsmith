@@ -10,8 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func sweepNow(t *testing.T) (time.Time, time.Duration) {
@@ -225,4 +228,159 @@ func TestSweepFileBudget(t *testing.T) {
 	if left != 2 {
 		t.Errorf("%d files left, want 2", left)
 	}
+}
+
+// Astra2 finding 3: aged symlinks and special files age out like regular
+// files — an entry the sweep could never delete would wall off everything
+// ordered behind the first read batch, forever. Deletion must still touch
+// only the link/special itself, never the target.
+func TestSweepDeletesAgedSymlinksAndSpecials(t *testing.T) {
+	root := newRoot(t)
+	work := filepath.Join(root, testULID, "work")
+	outside := t.TempDir()
+	target := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(target, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lf := filepath.Join(work, "link-file")
+	ld := filepath.Join(work, "link-dir")
+	os.Symlink(target, lf)
+	os.Symlink(outside, ld)
+	old := time.Now().Add(-48 * time.Hour)
+	tv := []unix.Timeval{{Sec: int64(old.Unix())}, {Sec: int64(old.Unix())}}
+	if err := unix.Lutimes(lf, tv); err != nil { // Chtimes would touch the TARGET
+		t.Fatal(err)
+	}
+	if err := unix.Lutimes(ld, tv); err != nil {
+		t.Fatal(err)
+	}
+	pipe := filepath.Join(work, "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sweepAged(t, pipe)
+	fresh := filepath.Join(work, "fresh-link")
+	os.Symlink(target, fresh) // young: left alone, as ever
+
+	var warns []string
+	now, age := sweepNow(t)
+	st, err := SweepTree(root, testULID, "work", SweepSpec{
+		Now: now, FileMaxAge: age, MaxFiles: 100,
+		Warn: func(rel, note string) { warns = append(warns, rel+": "+note) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Files != 3 {
+		t.Fatalf("stats = %+v, want 3 removals (2 links + fifo)", st)
+	}
+	mustGone(t, lf)
+	mustGone(t, ld)
+	mustGone(t, pipe)
+	mustExist(t, fresh)
+	mustExist(t, target) // the link's target survives its link
+	if ents, _ := os.ReadDir(outside); len(ents) != 1 {
+		t.Errorf("outside tree changed: %v", ents)
+	}
+	removed := 0
+	for _, w := range warns {
+		if strings.Contains(w, "aged symlink removed") {
+			removed++
+		}
+	}
+	if removed != 2 {
+		t.Errorf("%d symlink-removal warnings, want 2 (audit trail): %v", removed, warns)
+	}
+}
+
+// Astra2 finding 3: MaxEntries bounds the whole traversal, not one
+// directory — a tree with nothing eligible for deletion can no longer
+// consume an hour of walk work, and the capped remainder is swept once
+// the budget lifts.
+func TestSweepGlobalInspectionBudget(t *testing.T) {
+	root := newRoot(t)
+	work := filepath.Join(root, testULID, "work")
+	if err := os.Mkdir(filepath.Join(work, "inner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p1 := filepath.Join(work, "old-a.bin")
+	os.WriteFile(p1, []byte("x"), 0o600)
+	sweepAged(t, p1)
+	p2 := filepath.Join(work, "inner", "old-b.bin")
+	os.WriteFile(p2, []byte("x"), 0o600)
+	sweepAged(t, p2)
+	for i := 0; i < 20; i++ { // young chaff: inspected, never deletable
+		os.WriteFile(filepath.Join(work, string(rune('A'+i))+".tmp"), []byte("x"), 0o600)
+	}
+
+	now, age := sweepNow(t)
+	st, err := SweepTree(root, testULID, "work", SweepSpec{
+		Now: now, FileMaxAge: age, MaxFiles: 100, MaxEntries: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.EntriesCapped || st.Entries != 1 {
+		t.Errorf("stats = %+v, want exactly 1 entry inspected then entries-capped", st)
+	}
+	if st.Files > 1 { // at most one deletion is reachable on one inspection
+		t.Errorf("%d files deleted under a 1-entry budget", st.Files)
+	}
+	// The capped remainder waits, it is not lost: an uncapped pass clears
+	// everything.
+	if _, err := SweepTree(root, testULID, "work", SweepSpec{
+		Now: now, FileMaxAge: age, MaxFiles: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustGone(t, p1)
+	mustGone(t, p2)
+}
+
+// Astra2 finding 3: descent is capped too — each level pins a descriptor,
+// so a pathological depth cannot hold the pass open forever. Over-cap
+// subtrees are reported and skipped; a workable cap sweeps them.
+func TestSweepDepthCapSkipsDeepSubtree(t *testing.T) {
+	oldD := sweepMaxDepth
+	sweepMaxDepth = 2
+	t.Cleanup(func() { sweepMaxDepth = oldD })
+
+	root := newRoot(t)
+	deep := filepath.Join(root, testULID, "work")
+	for i := 0; i < 3; i++ {
+		deep = filepath.Join(deep, "d")
+	}
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(deep, "old.bin")
+	os.WriteFile(p, []byte("x"), 0o600)
+	sweepAged(t, p)
+
+	var warns []string
+	now, age := sweepNow(t)
+	if _, err := SweepTree(root, testULID, "work", SweepSpec{
+		Now: now, FileMaxAge: age, MaxFiles: 100,
+		Warn: func(rel, note string) { warns = append(warns, rel+": "+note) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustExist(t, p) // beyond the cap: skipped whole
+	sawDepth := false
+	for _, w := range warns {
+		if strings.Contains(w, "deeper than the sweep depth cap") {
+			sawDepth = true
+		}
+	}
+	if !sawDepth {
+		t.Errorf("no depth-cap warning in %v", warns)
+	}
+	sweepMaxDepth = 8
+	if _, err := SweepTree(root, testULID, "work", SweepSpec{
+		Now: now, FileMaxAge: age, MaxFiles: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustGone(t, p)
 }
