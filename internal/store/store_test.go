@@ -26,7 +26,7 @@ func mkUser(email string) *User {
 		Email:        email,
 		Name:         "Test",
 		PasswordHash: "x",
-		Status:       "active",
+		Status:       "enabled",
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

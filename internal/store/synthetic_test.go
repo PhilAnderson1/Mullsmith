@@ -63,7 +63,7 @@ func seedThrough0011(t *testing.T, path string) {
 	}
 	if _, err := db.Exec(`
 		INSERT INTO users(id, email, name, password_hash, status, default_system_prompt, created_at, updated_at)
-		VALUES ('u-ana', 'ana@example.com', 'Ana', 'h1', 'active', 'be brief', 100, 100);
+		VALUES ('u-ana', 'ana@example.com', 'Ana', 'h1', 'enabled', 'be brief', 100, 100);
 		INSERT INTO conversations(id, user_id, title, model, system_prompt, created_at, updated_at)
 		VALUES ('c-1', 'u-ana', 'T', '', '', 100, 100);
 		INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at)

@@ -282,7 +282,7 @@ users (
                                              -- confirmed accounts always carry the address
   name          TEXT NOT NULL,
   password_hash TEXT NOT NULL,           -- argon2id
-  status        TEXT NOT NULL DEFAULT 'active',   -- active | disabled (pending sign-up, §9.17)
+  status        TEXT NOT NULL DEFAULT 'enabled',  -- enabled | unconfirmed (pending sign-up) | disabled (admin suspension, §9.17)
   default_system_prompt TEXT NOT NULL DEFAULT '',
   unconfirmed_email TEXT,                -- address awaiting its confirm click; NULL = none pending
   created_at    INTEGER NOT NULL,
@@ -405,7 +405,7 @@ with no internals leaked (§9.12).
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). The account opens carrying one placeholder `New chat` conversation (same transaction), so the first login lands ready for typing (§8). 409 on duplicate email. Respects `registration` mode. With `email.enabled` (§9.17): the address waits in `unconfirmed_email`, the row is `disabled`, no session cookie, and the answer is `201 {email, email_confirmation_required}` + a confirmation mail. |
+| POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). The account opens carrying one placeholder `New chat` conversation (same transaction), so the first login lands ready for typing (§8). 409 on duplicate email. Respects `registration` mode. With `email.enabled` (§9.17): the address waits in `unconfirmed_email`, the row is `unconfirmed`, no session cookie, and the answer is `201 {email, email_confirmation_required}` + a confirmation mail. |
 | POST | `/api/v1/auth/login` | `{email, password, remember_me}` → sets session cookie; `remember_me` (from the login checkbox) selects persistent vs browser-session cookie (§9.1). Rate limited + lockout. Never matches a pending (unconfirmed) account. |
 | POST | `/api/v1/auth/logout` | Destroys session. |
 | GET  | `/api/v1/auth/me` | `{id, email, unconfirmed_email, name, created_at, default_system_prompt, quota: {used_bytes, total_bytes}}` |
@@ -413,7 +413,7 @@ with no internals leaked (§9.12).
 | POST | `/api/v1/auth/password` | `{current, new}` change password; revokes other sessions. |
 | POST | `/api/v1/auth/forgot-password` | `{email}` — public, `email.enabled` only (404 otherwise). Mails a one-shot reset link (30 min) to a confirmed, active account. Answers one byte-identical generic 200 for every outcome (§9.17). Rate limited per IP and per address. |
 | POST | `/api/v1/auth/reset-password` | `{token, password}` — public. Policy checked before the token burns; sets the new hash, activates, revokes every session, consumes the token in one transaction. Dead links (any flavour) → one generic 400 `invalid_token`. |
-| POST | `/api/v1/auth/confirm-email` | `{token}` — public. The one copy `unconfirmed_email` → `email`, flips a pending sign-up to `active`. Address re-pointed / token spent → 400; claimed by someone else in the meantime → 409 `email_taken`. |
+| POST | `/api/v1/auth/confirm-email` | `{token}` — public. The one copy `unconfirmed_email` → `email`, flips a pending sign-up to `enabled`. Address re-pointed / token spent → 400; claimed by someone else in the meantime → 409 `email_taken`. |
 | POST | `/api/v1/auth/resend-confirm` | `{email}` — public. Re-mails a never-confirmed sign-up (old link dies, 24 h window is not extended). Same generic-200 answer as forgot-password. |
 | POST | `/api/v1/auth/me/cancel-email` | Authenticated. Clears a pending address change (`unconfirmed_email` → null, confirm tokens deleted). Returns the fresh `me` payload. |
 | POST | `/api/v1/auth/me/delete` | Authenticated. Irreversible self-service deletion: the user row goes and every FK cascades with it (sessions, conversations → messages → tool calls & attachment links, `auth_tokens`); the scratchpad directory is removed immediately (not left to the orphan sweep); response 204 with the session cookie cleared. The UI gates the call behind a confirmation dialog (§10). |
@@ -629,7 +629,7 @@ output is data, never instructions; approval gates bound the blast radius).
    the address.
 4. Features-off (`email.enabled: false`): create session, set cookies, return `201`.
    With `email.enabled` (§9.17): the address goes to `unconfirmed_email`, the row is
-   `disabled`, the confirmation mail is queued once row and workspace exist, and the
+   `unconfirmed`, the confirmation mail is queued once row and workspace exist, and the
    answer is `201 {email, email_confirmation_required}` — no session, no cookie. A
    never-confirmed row is swept after 24 h (§9.17); its scratchpad dir is then
    indistinguishable from any deleted account's and joins the orphan sweep below.
@@ -1204,11 +1204,15 @@ initiates a connection carrying credentials. Doctrine:
   invalidates the prior unconsumed token. TTLs: 30 min reset, 24 h confirm.
   Completing a reset also revokes every session of the account.
 - **Pending sign-ups own nothing usable**: the address lives in `unconfirmed_email`
-  with `email IS NULL` and `status = 'disabled'`, invisible to login,
+  with `email IS NULL` and `status = 'unconfirmed'`, invisible to login,
   forgot-password and every address-keyed lookup; the placeholder chat (§8)
   and scratchpad dirs come with the row and go with it — FK cascade plus
   the orphan sweep — nothing lingers. Older than 24 h the row is
   swept away hourly (admin CLI `list-users` names them, `delete-user` by id).
+  `status = 'disabled'` is reserved for administrative suspension and nothing
+  sets it (§9.17), which is why the activation writes (confirmation, reset
+  completion) can set `enabled` unconditionally: they only ever promote an
+  `unconfirmed` sign-up, and for an enabled account the write is a no-op.
 - **Transport**: SMTP AUTH only ever after STARTTLS or over implicit TLS (465);
   authenticated send on bare port 25 is a config error, and the client refuses
   cleartext AUTH even if coaxed. Addresses and subjects are CRLF-injection

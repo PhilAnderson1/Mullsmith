@@ -53,7 +53,7 @@ const (
 	sweepPass           = 1000           // max deletions per directory per pass
 	sweepInspections    = 200_000        // max entries inspected per sweep pass (astra2 finding 3)
 
-	// pendingSignupTTL ages out never-confirmed sign-ups (disabled + NULL
+	// pendingSignupTTL ages out never-confirmed sign-ups (unconfirmed + NULL
 	// email) from created_at; resends do NOT extend it. Equals the
 	// confirmation token TTL so links and rows die together (plan §3).
 	pendingSignupTTL = 24 * time.Hour
@@ -80,7 +80,7 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 
 // sweepAuthDB prunes expired one-shot tokens and deletes pending sign-ups
 // past their 24 h window (plan §3, §11.2 — dead data must not accumulate;
-// the disabled+NULL-email predicate matches nothing else). No mail on
+// the unconfirmed+NULL-email predicate matches nothing else). No mail on
 // expiry: the address was never proven deliverable.
 func (s *Server) sweepAuthDB(ctx context.Context) {
 	now := time.Now()

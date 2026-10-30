@@ -638,7 +638,7 @@ func TestExpiredSessionRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	u := &store.User{Email: "exp@b.io", Name: "E", PasswordHash: "x", Status: "active",
+	u := &store.User{Email: "exp@b.io", Name: "E", PasswordHash: "x", Status: "enabled",
 		CreatedAt: now, UpdatedAt: now}
 	if err := a.db.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
@@ -680,7 +680,7 @@ func TestSlidingRenewal(t *testing.T) {
 	ctx := context.Background()
 	raw, hash, _ := auth.NewSessionToken()
 	now := time.Now()
-	u := &store.User{Email: "slide@b.io", Name: "S", PasswordHash: "x", Status: "active",
+	u := &store.User{Email: "slide@b.io", Name: "S", PasswordHash: "x", Status: "enabled",
 		CreatedAt: now, UpdatedAt: now}
 	if err := a.db.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)

@@ -150,6 +150,19 @@ func (d *DB) UpdateProfile(ctx context.Context, userID, name, email, defaultProm
 	return nil
 }
 
+// Account-lifecycle values for users.status (spec §9.17).
+// StatusUnconfirmed is a pending sign-up: email NULL, address parked in
+// unconfirmed_email, invisible to login and every address-keyed lookup.
+// StatusEnabled is what a session may use. StatusDisabled is reserved
+// for administrative suspension — nothing sets it except that admin
+// action, and reactivation never happens implicitly (outstanding links
+// must not resurrect a suspended account).
+const (
+	StatusEnabled     = "enabled"
+	StatusUnconfirmed = "unconfirmed"
+	StatusDisabled    = "disabled"
+)
+
 // SetUserStatus activates or disables an account (admin action; disabled
 // users are rejected at login and on every authenticated request).
 func (d *DB) SetUserStatus(ctx context.Context, userID, status string) error {
@@ -308,14 +321,14 @@ func (d *DB) EmailAvailable(ctx context.Context, email string) (bool, error) {
 }
 
 // UserByPendingEmail finds a never-confirmed sign-up by its pending
-// address — exactly the pending invariant's shape (disabled + NULL
-// email), which is all resend-confirm may match. Active accounts
+// address — exactly the pending invariant's shape (unconfirmed + NULL
+// email), which is all resend-confirm may match. Enabled accounts
 // mid-Settings-change are deliberately NOT matched: that flow lives behind
 // an authenticated session, where a second PATCH re-points the target.
 // Binary comparison per the normalization doctrine above (audit1 L-3).
 func (d *DB) UserByPendingEmail(ctx context.Context, email string) (*User, error) {
 	return scanUser(d.sqlDB.QueryRowContext(ctx,
 		`SELECT `+userCols+` FROM users
-		 WHERE email IS NULL AND status = 'disabled' AND unconfirmed_email = ?`,
-		email))
+		 WHERE email IS NULL AND status = ? AND unconfirmed_email = ?`,
+		StatusUnconfirmed, email))
 }

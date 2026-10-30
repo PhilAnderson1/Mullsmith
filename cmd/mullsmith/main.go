@@ -354,7 +354,7 @@ func adminCreateUser(ctx context.Context, cfg *config.Config, db *store.DB, args
 		Email:        emailNorm, // canonical form, like every other write (L-3)
 		Name:         *name,
 		PasswordHash: hash,
-		Status:       "active",
+		Status:       store.StatusEnabled,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

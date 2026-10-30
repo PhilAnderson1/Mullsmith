@@ -128,7 +128,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Only confirmed, active accounts get mail: pending sign-ups hold NULL
 	// email and miss the lookup entirely (their escape is resend-confirm);
 	// admin-disabled ones stay disabled — an inbox cannot overrule that.
-	if user != nil && user.Status == "active" {
+	if user != nil && user.Status == store.StatusEnabled {
 		raw, err := s.store.CreateToken(r.Context(), store.TokenResetPassword,
 			user.ID, user.Email, time.Now().Add(resetTokenTTL))
 		if err != nil {
@@ -193,7 +193,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	// One transaction: new hash + status='active' + revoke ALL sessions.
+	// One transaction: new hash + status='enabled' + revoke ALL sessions.
 	if err := s.store.CompletePasswordReset(r.Context(), userID, hash, time.Now()); err != nil {
 		if errors.Is(err, store.ErrUserNotFound) {
 			invalidToken(w, r) // account deleted between mail and click
@@ -279,7 +279,7 @@ func (s *Server) handleResendConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only never-confirmed sign-ups (disabled + NULL email) can resend:
+	// Only never-confirmed sign-ups (unconfirmed + NULL email) can resend:
 	// a confirmed address is forgot-password's business, and a mid-Settings
 	// change is re-pointed by a second PATCH, not by this public route.
 	user, err := s.store.UserByPendingEmail(r.Context(), email)

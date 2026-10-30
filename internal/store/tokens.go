@@ -100,8 +100,8 @@ func (d *DB) DeleteUnusedTokens(ctx context.Context, kind, userID string) error 
 // ConfirmEmail applies a confirmation token — ONE rule for both flows (new
 // sign-up and Settings address change are literally the same operation):
 // while the token's bound address still equals users.unconfirmed_email,
-// copy it into email, clear the pending value and set status='active'
-// (activating a sign-up; a harmless no-op for an active account changing
+// copy it into email, clear the pending value and set status enabled
+// (activating a sign-up; a harmless no-op for an enabled account changing
 // its address). The UNIQUE index re-read at that instant is the final
 // availability arbiter.
 //
@@ -149,8 +149,8 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 	}
 	_, err = tx.ExecContext(ctx,
 		`UPDATE users SET email = unconfirmed_email, unconfirmed_email = NULL,
-		         status = 'active', updated_at = ? WHERE id = ?`,
-		now.Unix(), userID)
+		         status = ?, updated_at = ? WHERE id = ?`,
+		StatusEnabled, now.Unix(), userID)
 	if isUnique(err, "users.email") {
 		// Someone claimed the address between mail-out and click. Clear
 		// the doomed pending value (so a resend cannot re-mint against it)
@@ -171,7 +171,7 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 }
 
 // CompletePasswordReset applies a reset atomically: new hash, status
-// 'active' (the reset proves mailbox control — see plan §5 interplay) and
+// 'enabled' (the reset proves mailbox control — see plan §5 interplay) and
 // revocation of ALL sessions. Half-applying these three is exactly what a
 // stolen session surviving a "successful" reset would look like.
 func (d *DB) CompletePasswordReset(ctx context.Context, userID, hash string, now time.Time) error {
@@ -181,8 +181,8 @@ func (d *DB) CompletePasswordReset(ctx context.Context, userID, hash string, now
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx,
-		`UPDATE users SET password_hash = ?, status = 'active', updated_at = ? WHERE id = ?`,
-		hash, now.Unix(), userID)
+		`UPDATE users SET password_hash = ?, status = ?, updated_at = ? WHERE id = ?`,
+		hash, StatusEnabled, now.Unix(), userID)
 	if err != nil {
 		return err
 	}
@@ -205,15 +205,15 @@ func (d *DB) DeleteExpiredTokens(ctx context.Context, now time.Time) (int64, err
 }
 
 // DeleteExpiredPendingUsers deletes never-confirmed sign-ups — exactly
-// status='disabled' AND email IS NULL, the invariant's precise definition
-// of "pending" (admin-disabled accounts always hold a confirmed address and
-// are never matched) — created before cutoff. Their auth_tokens cascade
-// via FK; the abandoned scratchpad directory goes to the existing
-// unknown-user sweep (§8). Returns rows removed.
+// status='unconfirmed' AND email IS NULL, the invariant's precise
+// definition of "pending" (suspended accounts always hold a confirmed
+// address and are never matched) — created before cutoff. Their
+// auth_tokens cascade via FK; the abandoned scratchpad directory goes to
+// the existing unknown-user sweep (§8). Returns rows removed.
 func (d *DB) DeleteExpiredPendingUsers(ctx context.Context, cutoff time.Time) (int64, error) {
 	res, err := d.sqlDB.ExecContext(ctx,
-		`DELETE FROM users WHERE status = 'disabled' AND email IS NULL AND created_at < ?`,
-		cutoff.Unix())
+		`DELETE FROM users WHERE status = ? AND email IS NULL AND created_at < ?`,
+		StatusUnconfirmed, cutoff.Unix())
 	if err != nil {
 		return 0, err
 	}

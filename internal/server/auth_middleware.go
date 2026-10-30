@@ -104,7 +104,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 			return
 		}
-		if user == nil || user.Status != "active" {
+		if user == nil || user.Status != store.StatusEnabled {
 			unauthenticated(w, r)
 			return
 		}

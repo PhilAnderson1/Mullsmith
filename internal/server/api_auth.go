@@ -225,10 +225,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// unconfirmed_email until the confirm click; nothing
 		// credential-facing can see this account yet.
 		user.UnconfirmedEmail = email
-		user.Status = "disabled"
+		user.Status = store.StatusUnconfirmed
 	} else {
 		user.Email = email
-		user.Status = "active"
+		user.Status = store.StatusEnabled
 	}
 	if err := s.store.Register(r.Context(), user, strings.TrimSpace(body.Invite)); err != nil {
 		switch {
@@ -346,7 +346,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.hashRun(w, r, func() error { ok = auth.VerifyPassword(body.Password, user.PasswordHash); return nil }) {
 		return
 	}
-	if !ok || user.Status != "active" {
+	if !ok || user.Status != store.StatusEnabled {
 		s.locks.Fail(lockKey, s.cfg.Auth.MaxFailedLogins, 15*time.Minute)
 		s.logger.Warn("login failed", "reason", "bad_password", "ip", ip, "user", user.ID)
 		invalidCredentials(w, r)

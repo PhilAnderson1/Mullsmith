@@ -56,8 +56,8 @@ func TestDefaultConfigPath(t *testing.T) {
 func TestAdminListUsersShowsPendingRows(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	active := putUser(t, db, "shown@cli.io", "", "active")
-	pending := putUser(t, db, "", "typo@cli.io", "disabled")
+	active := putUser(t, db, "shown@cli.io", "", "enabled")
+	pending := putUser(t, db, "", "typo@cli.io", "unconfirmed")
 
 	var buf bytes.Buffer
 	if code := adminListUsers(ctx, db, &buf, nil); code != 0 {
@@ -65,8 +65,8 @@ func TestAdminListUsersShowsPendingRows(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		active.ID + "  shown@cli.io  active",
-		pending.ID + "  <pending: typo@cli.io>  disabled",
+		active.ID + "  shown@cli.io  enabled",
+		pending.ID + "  <pending: typo@cli.io>  unconfirmed",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list-users output missing %q:\n%s", want, out)
@@ -79,8 +79,8 @@ func TestAdminListUsersShowsPendingRows(t *testing.T) {
 func TestAdminDeleteUserByIdAndEmail(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	pending := putUser(t, db, "", "gone@cli.io", "disabled")
-	active := putUser(t, db, "bye@cli.io", "", "active")
+	pending := putUser(t, db, "", "gone@cli.io", "unconfirmed")
+	active := putUser(t, db, "bye@cli.io", "", "enabled")
 
 	// Pending sign-up: ONLY its id names it (the address lives in
 	// unconfirmed_email, which no delete lookup may match).
@@ -111,7 +111,7 @@ func TestAdminDeleteUserRemovesScratchpad(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	root := t.TempDir()
-	u := putUser(t, db, "scratch@cli.io", "", "active")
+	u := putUser(t, db, "scratch@cli.io", "", "enabled")
 	if err := scratch.EnsureUserDirs(root, u.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -127,11 +127,11 @@ func TestAdminDeleteUserRemovesScratchpad(t *testing.T) {
 func TestAdminDeleteUserUnknownTarget(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	confirmed := putUser(t, db, "keep@cli.io", "", "active")
+	confirmed := putUser(t, db, "keep@cli.io", "", "enabled")
 
 	// Unknown id, and the pending address (deletable ONLY by id — naming
 	// the pending address must miss, same invariant as login).
-	pending := putUser(t, db, "", "wait@cli.io", "disabled")
+	pending := putUser(t, db, "", "wait@cli.io", "unconfirmed")
 	for _, target := range []string{"nosuchid", "wait@cli.io"} {
 		var buf bytes.Buffer
 		if code := adminDeleteUser(ctx, db, t.TempDir(), &buf, []string{target}); code == 0 {

@@ -25,7 +25,7 @@ func maintServer(t *testing.T) (*Server, string) {
 func maintUser(t *testing.T, db *store.DB, root string) string {
 	t.Helper()
 	u := &store.User{ID: id.New(), Email: "maint-" + id.New()[:8] + "@test.io", Name: "M",
-		PasswordHash: "x", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		PasswordHash: "x", Status: "enabled", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := db.CreateUser(context.Background(), u); err != nil {
 		t.Fatal(err)
 	}

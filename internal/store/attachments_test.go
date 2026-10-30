@@ -189,7 +189,7 @@ func TestMigration0006DropsFilesRegistry(t *testing.T) {
 	uid, mid, fid := id.New(), id.New(), id.New()
 	now := time.Now().Unix()
 	if _, err := raw.Exec(`INSERT INTO users(id,email,name,password_hash,status,created_at,updated_at)
-		VALUES(?,?,'t','h','active',?,?)`, uid, "old@x.io", now, now); err != nil {
+		VALUES(?,?,'t','h','enabled',?,?)`, uid, "old@x.io", now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := raw.Exec(`INSERT INTO conversations(id,user_id,title,model,created_at,updated_at)

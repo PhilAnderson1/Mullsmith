@@ -341,7 +341,7 @@ func TestSignupConfirmPendingLifecycle(t *testing.T) {
 		t.Errorf("sign-up confirm mail must read as an activation:\n%s", regJob.Body)
 	}
 
-	// DB shape: disabled + NULL email + address in unconfirmed_email.
+	// DB shape: unconfirmed + NULL email + address in unconfirmed_email.
 	ctx := context.Background()
 	users, err := a.db.ListUsers(ctx)
 	if err != nil {
@@ -351,8 +351,8 @@ func TestSignupConfirmPendingLifecycle(t *testing.T) {
 		t.Fatalf("users = %d, want 1", len(users))
 	}
 	pending := &users[0]
-	if pending.Status != "disabled" || pending.Email != "" || pending.UnconfirmedEmail != "fresh@pending.io" {
-		t.Errorf("pending row = %+v, want disabled/NULL/confirmed-address", pending)
+	if pending.Status != "unconfirmed" || pending.Email != "" || pending.UnconfirmedEmail != "fresh@pending.io" {
+		t.Errorf("pending row = %+v, want unconfirmed/NULL/confirmed-address", pending)
 	}
 
 	// Login is impossible before confirming.
@@ -413,7 +413,7 @@ func TestSignupConfirmPendingLifecycle(t *testing.T) {
 	}
 	resp.Body.Close()
 	got, _ := a.db.UserByID(ctx, pending.ID)
-	if got.Email != "fresh@pending.io" || got.UnconfirmedEmail != "" || got.Status != "active" {
+	if got.Email != "fresh@pending.io" || got.UnconfirmedEmail != "" || got.Status != "enabled" {
 		t.Errorf("after confirm: %+v", got)
 	}
 	resp = a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
@@ -547,7 +547,7 @@ func TestSettingsEmailConfirmSwapsAndTakenReports(t *testing.T) {
 	// Someone claims the address first (direct DB write — the race state).
 	ctx := context.Background()
 	rival := &store.User{
-		Email: target, Name: "Rival", PasswordHash: "x", Status: "active",
+		Email: target, Name: "Rival", PasswordHash: "x", Status: "enabled",
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := a.db.CreateUser(ctx, rival); err != nil {

@@ -285,7 +285,7 @@ func TestConversationCrossUserIsolation(t *testing.T) {
 func mkStoreUser(t *testing.T, a *authTest, email string) *store.User {
 	t.Helper()
 	now := time.Now()
-	u := &store.User{Email: email, Name: "X", PasswordHash: "x", Status: "active",
+	u := &store.User{Email: email, Name: "X", PasswordHash: "x", Status: "enabled",
 		CreatedAt: now, UpdatedAt: now}
 	if err := a.db.CreateUser(context.Background(), u); err != nil {
 		t.Fatal(err)

@@ -65,8 +65,8 @@ func seedThrough0007(t *testing.T, path string) {
 	}
 	if _, err := db.Exec(`
 		INSERT INTO users(id, email, name, password_hash, status, default_system_prompt, created_at, updated_at)
-		VALUES ('u-ana', 'ana@example.com', 'Ana', 'h1', 'active', 'be brief', 100, 100),
-		       ('u-bo',  'Bo@Example.com',  'Bo',  'h2', 'active', '',          200, 200);
+		VALUES ('u-ana', 'ana@example.com', 'Ana', 'h1', 'enabled', 'be brief', 100, 100),
+		       ('u-bo',  'Bo@Example.com',  'Bo',  'h2', 'enabled', '',          200, 200);
 		INSERT INTO sessions(id_hash, user_id, created_at, expires_at, remembered, last_seen_at)
 		VALUES (x'aa', 'u-ana', 100, 99999999999, 0, 100),
 		       (x'bb', 'u-ana', 100, 99999999999, 1, 100),
@@ -102,7 +102,7 @@ func TestMigration0008Rebuild(t *testing.T) {
 	if err != nil || ana == nil {
 		t.Fatalf("ana missing after rebuild: %v", err)
 	}
-	if ana.Name != "Ana" || ana.DefaultSystemPrompt != "be brief" || ana.Status != "active" {
+	if ana.Name != "Ana" || ana.DefaultSystemPrompt != "be brief" || ana.Status != "enabled" {
 		t.Errorf("ana changed by rebuild: %+v", ana)
 	}
 	if ana.UnconfirmedEmail != "" {
@@ -137,8 +137,8 @@ func TestMigration0008Rebuild(t *testing.T) {
 	// Two pending (NULL email) sign-ups coexist — the reason '' could not
 	// have been used as the placeholder.
 	p1, p2 := mkUser(""), mkUser("")
-	p1.UnconfirmedEmail, p1.Status = "p1@pending.io", "disabled"
-	p2.UnconfirmedEmail, p2.Status = "p2@pending.io", "disabled"
+	p1.UnconfirmedEmail, p1.Status = "p1@pending.io", "unconfirmed"
+	p2.UnconfirmedEmail, p2.Status = "p2@pending.io", "unconfirmed"
 	if err := db.CreateUser(ctx, p1); err != nil {
 		t.Fatalf("first pending row: %v", err)
 	}
@@ -155,9 +155,9 @@ func TestConfirmEmailOneRule(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// --- sign-up activation: disabled + NULL email + pending -> confirmed ---
+	// --- sign-up activation: unconfirmed + NULL email + pending -> confirmed ---
 	su := mkUser("")
-	su.Email, su.UnconfirmedEmail, su.Status = "", "new@sign.io", "disabled"
+	su.Email, su.UnconfirmedEmail, su.Status = "", "new@sign.io", "unconfirmed"
 	if err := db.CreateUser(ctx, su); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestConfirmEmailOneRule(t *testing.T) {
 		t.Fatalf("sign-up confirm: found=%v err=%v", found, err)
 	}
 	got, _ := db.UserByID(ctx, su.ID)
-	if got.Email != "new@sign.io" || got.UnconfirmedEmail != "" || got.Status != "active" {
+	if got.Email != "new@sign.io" || got.UnconfirmedEmail != "" || got.Status != "enabled" {
 		t.Errorf("after confirm: %+v, want email copied, pending cleared, active", got)
 	}
 	// One-shot: the same token is dead now.
@@ -191,7 +191,7 @@ func TestConfirmEmailOneRule(t *testing.T) {
 		t.Fatalf("settings confirm: found=%v err=%v", found, err)
 	}
 	got, _ = db.UserByID(ctx, st.ID)
-	if got.Email != "new@move.io" || got.UnconfirmedEmail != "" || got.Status != "active" {
+	if got.Email != "new@move.io" || got.UnconfirmedEmail != "" || got.Status != "enabled" {
 		t.Errorf("settings change result: %+v", got)
 	}
 
@@ -228,7 +228,7 @@ func TestConfirmEmailOneRule(t *testing.T) {
 	// --- taken-in-the-meantime: pending cleared, ErrEmailTakenNow ---
 	claim := "claimed@x.io"
 	loser := mkUser("")
-	loser.UnconfirmedEmail, loser.Status = claim, "disabled"
+	loser.UnconfirmedEmail, loser.Status = claim, "unconfirmed"
 	if err := db.CreateUser(ctx, loser); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestConfirmEmailOneRule(t *testing.T) {
 		t.Fatalf("taken race: found=%v err=%v, want false ErrEmailTakenNow", found, err)
 	}
 	got, _ = db.UserByID(ctx, loser.ID)
-	if got.Email != "" || got.UnconfirmedEmail != "" || got.Status != "disabled" {
+	if got.Email != "" || got.UnconfirmedEmail != "" || got.Status != "unconfirmed" {
 		t.Errorf("loser must keep its shape with pending cleared: %+v", got)
 	}
 	if w, _ := db.UserByID(ctx, winner.ID); w.Email != claim {
@@ -303,7 +303,7 @@ func TestResetTokenLifecycle(t *testing.T) {
 	if err := db.CompletePasswordReset(ctx, dis.ID, "newhash", now); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := db.UserByID(ctx, dis.ID); got.PasswordHash != "newhash" || got.Status != "active" {
+	if got, _ := db.UserByID(ctx, dis.ID); got.PasswordHash != "newhash" || got.Status != "enabled" {
 		t.Errorf("reset not applied: %+v", got)
 	}
 	if n, _ := db.DeleteSessionsForUser(ctx, u.ID, nil); n != 1 {
@@ -332,7 +332,7 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 		t.Error("confirmed email must not be available")
 	}
 	pend := mkUser("")
-	pend.UnconfirmedEmail, pend.Status = "pend@x.io", "disabled"
+	pend.UnconfirmedEmail, pend.Status = "pend@x.io", "unconfirmed"
 	if err := db.CreateUser(ctx, pend); err != nil {
 		t.Fatal(err)
 	}
@@ -353,10 +353,10 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 		t.Errorf("token sweep: n=%d err=%v, want 1", n, err)
 	}
 
-	// --- pending sign-up expiry: disabled+NULL-email past the window dies,
+	// --- pending sign-up expiry: unconfirmed+NULL-email past the window dies,
 	// everything else survives ---
 	old1 := mkUser("")
-	old1.ID, old1.UnconfirmedEmail, old1.Status = "01OLDPENDING0000000000000a", "gone@x.io", "disabled"
+	old1.ID, old1.UnconfirmedEmail, old1.Status = "01OLDPENDING0000000000000a", "gone@x.io", "unconfirmed"
 	old1.CreatedAt, old1.UpdatedAt = now.Add(-25*time.Hour), now.Add(-25*time.Hour)
 	if err := db.CreateUser(ctx, old1); err != nil {
 		t.Fatal(err)
@@ -365,7 +365,7 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 		t.Fatal(err)
 	}
 	young := mkUser("")
-	young.UnconfirmedEmail, young.Status = "young@x.io", "disabled"
+	young.UnconfirmedEmail, young.Status = "young@x.io", "unconfirmed"
 	if err := db.CreateUser(ctx, young); err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestPendingUserVisibility(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	p := mkUser("")
-	p.UnconfirmedEmail, p.Status = "only@pending.io", "disabled"
+	p.UnconfirmedEmail, p.Status = "only@pending.io", "unconfirmed"
 	if err := db.Register(ctx, p, ""); err != nil {
 		t.Fatal(err)
 	}
