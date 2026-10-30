@@ -294,7 +294,9 @@ func TestResetTokenLifecycle(t *testing.T) {
 		t.Error("one-shot violated")
 	}
 
-	// CompletePasswordReset: hash + active + ALL sessions gone, atomically.
+	// CompletePasswordReset: new hash + ALL sessions gone, atomically —
+	// and status preserved: a reset must never resurrect a suspension
+	// (spec §9.17).
 	dis := mkUser("dis@abl.io")
 	dis.Status = "disabled"
 	if err := db.CreateUser(ctx, dis); err != nil {
@@ -303,8 +305,8 @@ func TestResetTokenLifecycle(t *testing.T) {
 	if err := db.CompletePasswordReset(ctx, dis.ID, "newhash", now); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := db.UserByID(ctx, dis.ID); got.PasswordHash != "newhash" || got.Status != "enabled" {
-		t.Errorf("reset not applied: %+v", got)
+	if got, _ := db.UserByID(ctx, dis.ID); got.PasswordHash != "newhash" || got.Status != "disabled" {
+		t.Errorf("reset not applied, or worse, reactivated: %+v", got)
 	}
 	if n, _ := db.DeleteSessionsForUser(ctx, u.ID, nil); n != 1 {
 		t.Errorf("session for reset user: expected 1 revoked, got %d", n)
@@ -407,5 +409,141 @@ func TestPendingUserVisibility(t *testing.T) {
 	}
 	if ok, _ := db.EmailAvailable(ctx, "only@pending.io"); ok {
 		t.Error("pending address must block re-registration")
+	}
+}
+
+// --- admin suspension (spec §9.17): disable is a cut, enable is its
+// mirror, and no link issued earlier can undo either ---
+
+func countRows(t *testing.T, db *DB, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := db.sqlDB.QueryRow(query, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestDisableEnableUser(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	u := mkUser("susp@me.io")
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	_, sh, _ := auth.NewSessionToken()
+	if err := db.CreateSession(ctx, &Session{
+		IDHash: sh, UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A reset link and an email-change confirm link, both minted while
+	// the account still worked.
+	rawReset, err := db.CreateToken(ctx, TokenResetPassword, u.ID, "susp@me.io", now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetUnconfirmedEmail(ctx, u.ID, "newer@me.io", now); err != nil {
+		t.Fatal(err)
+	}
+	rawConfirm, err := db.CreateToken(ctx, TokenConfirmEmail, u.ID, "newer@me.io", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := db.DisableUser(ctx, u.ID)
+	if err != nil || !applied {
+		t.Fatalf("disable: applied=%v err=%v", applied, err)
+	}
+	if got, _ := db.UserByID(ctx, u.ID); got.Status != StatusDisabled {
+		t.Errorf("status after disable = %q", got.Status)
+	}
+	// The cut is total: sessions and both links die with the privilege.
+	if n := countRows(t, db, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, u.ID); n != 0 {
+		t.Errorf("%d sessions survived the disable", n)
+	}
+	if n := countRows(t, db, `SELECT COUNT(*) FROM auth_tokens WHERE user_id = ?`, u.ID); n != 0 {
+		t.Errorf("%d auth tokens survived the disable", n)
+	}
+	if _, _, found, err := db.ConsumeToken(ctx, TokenResetPassword, rawReset, now); found || err != nil {
+		t.Errorf("a reset link issued before the suspension is still consumable: found=%v err=%v", found, err)
+	}
+	if found, err := db.ConfirmEmail(ctx, rawConfirm, now); found || err != nil {
+		t.Errorf("a confirm link issued before the suspension is still alive: found=%v err=%v", found, err)
+	}
+	// Even the CLI reset path cannot write the status.
+	if err := db.CompletePasswordReset(ctx, u.ID, "newhash", now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.UserByID(ctx, u.ID); got.Status != StatusDisabled {
+		t.Error("CompletePasswordReset resurrected a suspended account")
+	}
+	if applied, err := db.DisableUser(ctx, u.ID); err != nil || applied {
+		t.Errorf("re-disable: applied=%v err=%v, want false, no error", applied, err)
+	}
+
+	// Enable lifts suspensions ONLY — a pending sign-up activates through
+	// its confirmation link, never through this door.
+	pending := mkUser("")
+	pending.UnconfirmedEmail, pending.Status = "pend@susp.io", StatusUnconfirmed
+	if err := db.CreateUser(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := db.DisableUser(ctx, pending.ID); err != nil || applied {
+		t.Errorf("disable of a pending sign-up: applied=%v err=%v, want false", applied, err)
+	}
+	if applied, err := db.EnableUser(ctx, pending.ID); err != nil || applied {
+		t.Errorf("enable of a pending sign-up: applied=%v err=%v, want false", applied, err)
+	}
+
+	if applied, err := db.EnableUser(ctx, u.ID); err != nil || !applied {
+		t.Fatalf("enable: applied=%v err=%v", applied, err)
+	}
+	if got, _ := db.UserByID(ctx, u.ID); got.Status != StatusEnabled {
+		t.Errorf("status after enable = %q", got.Status)
+	}
+	if applied, _ := db.EnableUser(ctx, u.ID); applied {
+		t.Error("enable of an enabled account must answer false")
+	}
+}
+
+// Defense in depth behind disable's token cut: even a suspended account
+// holding a live confirm link (an impossible state unless the cut was
+// bypassed) completes its address change but keeps its suspension — the
+// activation write belongs to pending sign-ups (email IS NULL) only.
+func TestConfirmEmailNeverResurrects(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now()
+	u := mkUser("ban@me.io")
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetUnconfirmedEmail(ctx, u.ID, "moved@me.io", now); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := db.CreateToken(ctx, TokenConfirmEmail, u.ID, "moved@me.io", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sqlDB.ExecContext(ctx, `UPDATE users SET status = ? WHERE id = ?`,
+		StatusDisabled, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	found, err := db.ConfirmEmail(ctx, raw, now)
+	if err != nil || !found {
+		t.Fatalf("confirm on the forged state: found=%v err=%v", found, err)
+	}
+	got, err := db.UserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != "moved@me.io" {
+		t.Errorf("address change did not complete: %+v", got)
+	}
+	if got.Status != StatusDisabled {
+		t.Errorf("a confirm link lifted a suspension: status = %q", got.Status)
 	}
 }

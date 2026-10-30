@@ -149,3 +149,59 @@ func TestAdminDeleteUserUnknownTarget(t *testing.T) {
 		t.Errorf("delete-user with no target = %d, want 2", code)
 	}
 }
+
+// --- disable-user / enable-user: suspension round-trip and refusals ------
+
+func TestAdminDisableEnableUser(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	u := putUser(t, db, "sus@cli.io", "", "enabled")
+
+	var buf bytes.Buffer
+	if code := adminSetSuspended(ctx, db, &buf, []string{"sus@cli.io"}, true); code != 0 {
+		t.Fatalf("disable by email = %d, want 0; out=%s", code, buf.String())
+	}
+	if !strings.Contains(buf.String(), "disabled user "+u.ID) {
+		t.Errorf("disable output = %q", buf.String())
+	}
+	if got, _ := db.UserByID(ctx, u.ID); got.Status != store.StatusDisabled {
+		t.Errorf("status after disable = %q", got.Status)
+	}
+
+	// Idempotence is a refusal the operator can read, not silence.
+	buf.Reset()
+	if code := adminSetSuspended(ctx, db, &buf, []string{u.ID}, true); code != 1 {
+		t.Errorf("re-disable = %d, want 1", code)
+	}
+	if got, _ := db.UserByID(ctx, u.ID); got.Status != store.StatusDisabled {
+		t.Errorf("re-disable changed status to %q", got.Status)
+	}
+
+	buf.Reset()
+	if code := adminSetSuspended(ctx, db, &buf, []string{u.ID}, false); code != 0 {
+		t.Fatalf("enable = %d, want 0; out=%s", code, buf.String())
+	}
+	if got, _ := db.UserByID(ctx, u.ID); got.Status != store.StatusEnabled {
+		t.Errorf("status after enable = %q", got.Status)
+	}
+	if code := adminSetSuspended(ctx, db, &buf, []string{u.ID}, false); code != 1 {
+		t.Errorf("enable of an enabled account = %d, want 1", code)
+	}
+
+	// Pending sign-ups are already unusable — suspending one is refused,
+	// and enabling one must never happen (confirmation is the only door).
+	pending := putUser(t, db, "", "wait2@cli.io", "unconfirmed")
+	if code := adminSetSuspended(ctx, db, &buf, []string{pending.ID}, true); code != 1 {
+		t.Errorf("disable of pending = %d, want 1", code)
+	}
+	if got, _ := db.UserByID(ctx, pending.ID); got.Status != store.StatusUnconfirmed {
+		t.Errorf("pending status changed to %q", got.Status)
+	}
+	if code := adminSetSuspended(ctx, db, &buf, []string{pending.ID}, false); code != 1 {
+		t.Errorf("enable of pending = %d, want 1", code)
+	}
+
+	if code := adminSetSuspended(ctx, db, &buf, []string{"nobody@cli.io"}, true); code != 1 {
+		t.Errorf("unknown target = %d, want 1", code)
+	}
+}

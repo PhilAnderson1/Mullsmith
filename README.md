@@ -120,6 +120,10 @@ mullsmith admin reset-password <email>         (prompts, or mails a reset
                                              link when email.enabled; revokes all sessions)
 mullsmith admin list-users                     every account incl. pending sign-ups
 mullsmith admin delete-user <id-or-email>
+mullsmith admin disable-user <id-or-email>     suspend: login refused now, all sessions
+                                             and outstanding reset/confirm links revoked
+mullsmith admin enable-user <id-or-email>      lift a suspension (cannot activate a
+                                             pending sign-up — its link does that)
 ```
 
 `admin create-user` run as root hands the new user's scratchpad directories to

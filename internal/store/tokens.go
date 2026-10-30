@@ -100,9 +100,10 @@ func (d *DB) DeleteUnusedTokens(ctx context.Context, kind, userID string) error 
 // ConfirmEmail applies a confirmation token — ONE rule for both flows (new
 // sign-up and Settings address change are literally the same operation):
 // while the token's bound address still equals users.unconfirmed_email,
-// copy it into email, clear the pending value and set status enabled
-// (activating a sign-up; a harmless no-op for an enabled account changing
-// its address). The UNIQUE index re-read at that instant is the final
+// copy it into email, clear the pending value and — only for a pending
+// sign-up (email IS NULL) — set status enabled; an enabled account
+// changing its address keeps its status, and a suspended one stays
+// suspended (spec §9.17). The UNIQUE index re-read at that instant is the final
 // availability arbiter.
 //
 // found=false covers every dead-link flavour with one answer: absent,
@@ -147,9 +148,15 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 		now.Unix(), TokenConfirmEmail, auth.HashToken(raw)); err != nil {
 		return false, err
 	}
+	// Activation is for pending sign-ups ONLY (email IS NULL): an enabled
+	// account changing its address keeps its status, and a suspended one
+	// stays suspended through the click — no link outranks an admin
+	// disable (spec §9.17). The CASE reads the pre-update row, which is
+	// exactly the distinction wanted.
 	_, err = tx.ExecContext(ctx,
 		`UPDATE users SET email = unconfirmed_email, unconfirmed_email = NULL,
-		         status = ?, updated_at = ? WHERE id = ?`,
+		         status = CASE WHEN email IS NULL THEN ? ELSE status END,
+		         updated_at = ? WHERE id = ?`,
 		StatusEnabled, now.Unix(), userID)
 	if isUnique(err, "users.email") {
 		// Someone claimed the address between mail-out and click. Clear
@@ -170,10 +177,15 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 	return true, tx.Commit()
 }
 
-// CompletePasswordReset applies a reset atomically: new hash, status
-// 'enabled' (the reset proves mailbox control — see plan §5 interplay) and
-// revocation of ALL sessions. Half-applying these three is exactly what a
-// stolen session surviving a "successful" reset would look like.
+// CompletePasswordReset applies a reset atomically: new hash and
+// revocation of ALL sessions. Half-applying these two is exactly what a
+// stolen session surviving a "successful" reset would look like. The
+// status is deliberately NOT touched (spec §9.17): pending sign-ups
+// cannot reach a reset at all (forgot-password mails only enabled
+// addresses — their escape is resend-confirm), so a status write here
+// could only ever do the wrong thing — resurrecting a suspended account
+// on a link minted before the suspension. The admin CLI reset shares this
+// path and keeps a suspension exactly where it was.
 func (d *DB) CompletePasswordReset(ctx context.Context, userID, hash string, now time.Time) error {
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -181,8 +193,8 @@ func (d *DB) CompletePasswordReset(ctx context.Context, userID, hash string, now
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx,
-		`UPDATE users SET password_hash = ?, status = ?, updated_at = ? WHERE id = ?`,
-		hash, StatusEnabled, now.Unix(), userID)
+		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
+		hash, now.Unix(), userID)
 	if err != nil {
 		return err
 	}

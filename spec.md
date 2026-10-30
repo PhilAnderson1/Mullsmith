@@ -71,6 +71,8 @@ mullsmith admin create-user                # non-interactive account creation fo
 mullsmith admin invite [n]                 # mint n single-use invite codes (default 1) → stdout
 mullsmith admin list-users                 # every account, incl. pending sign-ups (§9.17)
 mullsmith admin delete-user <id-or-email>  # remove an account + its scratchpad (id also names pending ones)
+mullsmith admin disable-user <id-or-email> # suspend: login refused, sessions + outstanding links revoked
+mullsmith admin enable-user <id-or-email>  # lift a suspension
 ```
 
 On startup Mullsmith: loads config → opens/creates SQLite DB → applies embedded schema
@@ -1209,10 +1211,19 @@ initiates a connection carrying credentials. Doctrine:
   and scratchpad dirs come with the row and go with it — FK cascade plus
   the orphan sweep — nothing lingers. Older than 24 h the row is
   swept away hourly (admin CLI `list-users` names them, `delete-user` by id).
-  `status = 'disabled'` is reserved for administrative suspension and nothing
-  sets it (§9.17), which is why the activation writes (confirmation, reset
-  completion) can set `enabled` unconditionally: they only ever promote an
-  `unconfirmed` sign-up, and for an enabled account the write is a no-op.
+  `status = 'disabled'` is administrative suspension and nothing else sets
+  it: `admin disable-user` flips `enabled → disabled` and, in the same
+  transaction, deletes every session and every outstanding one-shot token
+  of the account — a link issued while the account worked can never undo
+  the operator's action (astra2 review). Login and the middleware refuse
+  anything but `enabled`, so a live session dies on the suspended user's
+  next request. The activation writes cannot overrule a suspension:
+  confirmation promotes pending sign-ups only (`email IS NULL` — a
+  suspended account completing an address change stays suspended) and
+  reset completion never touches the status at all (only `enabled`
+  accounts can receive a reset mail in the first place).
+  `admin enable-user` lifts suspensions only — it cannot activate a
+  pending sign-up, whose door is the confirmation link.
 - **Transport**: SMTP AUTH only ever after STARTTLS or over implicit TLS (465);
   authenticated send on bare port 25 is a config error, and the client refuses
   cleartext AUTH even if coaxed. Addresses and subjects are CRLF-injection

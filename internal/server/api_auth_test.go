@@ -665,8 +665,9 @@ func TestDisabledUserRejected(t *testing.T) {
 	if u == nil {
 		t.Fatal("register did not create the user")
 	}
-	if err := a.db.SetUserStatus(ctx, u.ID, "disabled"); err != nil {
-		t.Fatal(err)
+	changed, err := a.db.DisableUser(ctx, u.ID)
+	if err != nil || !changed {
+		t.Fatalf("disable: changed=%v err=%v", changed, err)
 	}
 	resp := a.do(http.MethodGet, "/api/v1/auth/me", nil)
 	if resp.StatusCode != 401 {

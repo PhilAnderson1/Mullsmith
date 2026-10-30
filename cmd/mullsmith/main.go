@@ -9,6 +9,8 @@
 //	mullsmith [-config /path/to/config.yaml] admin reset-password <email> [-password P]
 //	mullsmith [-config /path/to/config.yaml] admin list-users
 //	mullsmith [-config /path/to/config.yaml] admin delete-user <id-or-email>
+//	mullsmith [-config /path/to/config.yaml] admin disable-user <id-or-email>
+//	mullsmith [-config /path/to/config.yaml] admin enable-user  <id-or-email>
 package main
 
 import (
@@ -76,6 +78,9 @@ func run(args []string) int {
 		fmt.Fprintln(out, "                                       link when email.enabled); revokes all sessions")
 		fmt.Fprintln(out, "  admin list-users                     every account incl. pending sign-ups")
 		fmt.Fprintln(out, "  admin delete-user <id-or-email>      remove an account (id names pending ones)")
+		fmt.Fprintln(out, "  admin disable-user <id-or-email>     suspend: login refused now, sessions and")
+		fmt.Fprintln(out, "                                       outstanding reset/confirm links revoked")
+		fmt.Fprintln(out, "  admin enable-user <id-or-email>      lift a suspension (login again)")
 	}
 	cfgPath := fs.String("config", defaultConfigPath, "path to YAML config file")
 	showVersion := fs.Bool("version", false, "print version information and exit")
@@ -254,7 +259,7 @@ func expireSessionsLoop(ctx context.Context, db *store.DB, logger *slog.Logger) 
 
 func adminMain(cfgPath string, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mullsmith [-config CFG] admin <invite|create-user|reset-password|list-users|delete-user> [...]")
+		fmt.Fprintln(os.Stderr, "usage: mullsmith [-config CFG] admin <invite|create-user|reset-password|list-users|delete-user|disable-user|enable-user> [...]")
 		return 2
 	}
 	cfg, err := config.Load(cfgPath)
@@ -287,6 +292,10 @@ func adminMain(cfgPath string, args []string) int {
 		return adminListUsers(ctx, db, os.Stdout, args[1:])
 	case "delete-user":
 		return adminDeleteUser(ctx, db, cfg.Scratchpad.Root, os.Stdout, args[1:])
+	case "disable-user":
+		return adminSetSuspended(ctx, db, os.Stdout, args[1:], true)
+	case "enable-user":
+		return adminSetSuspended(ctx, db, os.Stdout, args[1:], false)
 	default:
 		fmt.Fprintf(os.Stderr, "mullsmith: unknown admin command %q\n", args[0])
 		return 2
@@ -520,6 +529,26 @@ func adminEmailLabel(u store.User) string {
 	return "<pending: " + u.UnconfirmedEmail + ">"
 }
 
+// resolveAdminUser names an account by id, falling back to a confirmed
+// email — the addressing delete-user, disable-user and enable-user all
+// accept. Id first: pending sign-ups can ONLY be named that way (their
+// address lives in unconfirmed_email, which no lookup key matches — same
+// invariant as login). A nil user is "no such account", never an error.
+func resolveAdminUser(ctx context.Context, db *store.DB, target string) (*store.User, error) {
+	u, err := db.UserByID(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil && strings.Contains(target, "@") {
+		// Canonical form, or no match is possible (L-3); an unparseable
+		// target simply keeps the "not found" answer below.
+		if lookup, ok := auth.NormalizeEmail(target); ok {
+			return db.UserByEmail(ctx, lookup)
+		}
+	}
+	return u, nil
+}
+
 // adminDeleteUser removes an account by id or confirmed email, scratchpad
 // included. Id first: pending sign-ups can ONLY be named that way (their
 // address lives in unconfirmed_email, which no lookup key matches — same
@@ -537,21 +566,10 @@ func adminDeleteUser(ctx context.Context, db *store.DB, scratchRoot string, out 
 		return 2
 	}
 	target := fs.Arg(0)
-	u, err := db.UserByID(ctx, target)
+	u, err := resolveAdminUser(ctx, db, target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mullsmith:", err)
 		return 1
-	}
-	if u == nil && strings.Contains(target, "@") {
-		// Canonical form, or no match is possible (L-3); an unparseable
-		// target simply keeps the "not found" answer below.
-		if lookup, ok := auth.NormalizeEmail(target); ok {
-			u, err = db.UserByEmail(ctx, lookup)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "mullsmith:", err)
-				return 1
-			}
-		}
 	}
 	if u == nil {
 		fmt.Fprintf(os.Stderr, "mullsmith: no account with that id or confirmed email: %s\n", target)
@@ -575,6 +593,71 @@ func adminDeleteUser(ctx context.Context, db *store.DB, scratchRoot string, out 
 		return 0
 	}
 	fmt.Fprintf(out, "deleted user %s (%s); removed the scratchpad\n", u.ID, adminEmailLabel(*u))
+	return 0
+}
+
+// adminSetSuspended implements disable-user and enable-user. Suspension
+// is the whole story at once (spec §9.17): DisableUser drops sessions and
+// outstanding one-shot links in the same transaction as the status, so
+// nothing issued while the account worked can undo the operator's action.
+// Every answer names the current status, so a no-op never needs guessing.
+func adminSetSuspended(ctx context.Context, db *store.DB, out io.Writer, args []string, suspend bool) int {
+	name := "enable-user"
+	if suspend {
+		name = "disable-user"
+	}
+	fs := flag.NewFlagSet("admin "+name, flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintf(os.Stderr, "usage: admin %s <id-or-email>\n", name)
+		return 2
+	}
+	target := fs.Arg(0)
+	u, err := resolveAdminUser(ctx, db, target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mullsmith:", err)
+		return 1
+	}
+	if u == nil {
+		fmt.Fprintf(os.Stderr, "mullsmith: no account with that id or confirmed email: %s\n", target)
+		return 1
+	}
+	switch {
+	case suspend && u.Status == store.StatusDisabled:
+		fmt.Fprintf(os.Stderr, "mullsmith: %s is already disabled\n", u.ID)
+		return 1
+	case suspend && u.Status == store.StatusUnconfirmed:
+		// Already unusable — suspending a pending sign-up would invent a
+		// state no confirmation click can undo (the guard there preserves
+		// the status). Delete it if it should not age out.
+		fmt.Fprintf(os.Stderr, "mullsmith: %s is a pending sign-up — already unusable, swept after 24 h (delete-user removes it now)\n", u.ID)
+		return 1
+	case !suspend && u.Status != store.StatusDisabled:
+		fmt.Fprintf(os.Stderr, "mullsmith: %s is not disabled (status %s) — nothing to enable\n", u.ID, u.Status)
+		return 1
+	}
+	changed := false
+	if suspend {
+		changed, err = db.DisableUser(ctx, u.ID)
+	} else {
+		changed, err = db.EnableUser(ctx, u.ID)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mullsmith: %s:", name)
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if !changed {
+		fmt.Fprintf(os.Stderr, "mullsmith: account vanished or changed mid-%s; nothing applied\n", name)
+		return 1
+	}
+	if suspend {
+		fmt.Fprintf(out, "disabled user %s (%s); sessions and outstanding links revoked\n", u.ID, adminEmailLabel(*u))
+	} else {
+		fmt.Fprintf(out, "enabled user %s (%s); login is open again\n", u.ID, adminEmailLabel(*u))
+	}
 	return 0
 }
 

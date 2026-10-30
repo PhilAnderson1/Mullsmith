@@ -163,18 +163,54 @@ const (
 	StatusDisabled    = "disabled"
 )
 
-// SetUserStatus activates or disables an account (admin action; disabled
-// users are rejected at login and on every authenticated request).
-func (d *DB) SetUserStatus(ctx context.Context, userID, status string) error {
-	res, err := d.sqlDB.ExecContext(ctx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`,
-		status, time.Now().Unix(), userID)
+// DisableUser suspends an account (admin disable-user): status
+// 'disabled', every session revoked and every outstanding one-shot token
+// revoked, atomically. Login and the auth middleware refuse anything but
+// 'enabled', so sessions die on the suspended user's next request even
+// without the delete; the token cut is the essential half — a reset or
+// confirmation link issued BEFORE the suspension must not resurrect the
+// account afterwards (spec §9.17). Only an enabled account can be
+// suspended: pending sign-ups are already unusable and sweep themselves
+// (false answers "nothing changed", the caller explains via the status).
+func (d *DB) DisableUser(ctx context.Context, userID string) (bool, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE users SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		StatusDisabled, time.Now().Unix(), userID, StatusEnabled)
+	if err != nil {
+		return false, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrUserNotFound
+		return false, nil // unknown id, or not an enabled account — change nothing
 	}
-	return nil
+	// Sessions and links die with the privilege, one transaction: no
+	// window where the status says disabled but a live token does not.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tokens WHERE user_id = ?`, userID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// EnableUser lifts a suspension (admin enable-user), and ONLY one: an
+// 'unconfirmed' sign-up activates through its confirmation link, never
+// through this door. Sessions are not restored — there is nothing to
+// restore; the user logs in again and the middleware admits them.
+func (d *DB) EnableUser(ctx context.Context, userID string) (bool, error) {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE users SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		StatusEnabled, time.Now().Unix(), userID, StatusDisabled)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // Register creates the user and, when invite != "", consumes the invite in
