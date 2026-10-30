@@ -65,8 +65,15 @@ scratchpad:
 llm:
   endpoint: "http://127.0.0.1:8081/v1"   # your OpenAI-compatible server
   api_key: "${MULLSMITH_LLM_API_KEY:-}"
-  model: "your-model-name"
-  models: []                             # picker list; the model above is always in it
+  # The one model list: every entry is a picker item. Exactly one entry
+  # may claim default: true — with no claim anywhere the first entry is
+  # the default, so a single-model deployment writes no marking. Each
+  # entry carries its own thinking_profile ("none" hides the dropdown for
+  # that model); there is no inheritance between entries.
+  models:
+    - id: "your-model-name"
+      default: true
+      # thinking_profile: qwen3_8
   max_context_tokens: -1                 # -1 = read the window from the endpoint's /models listing;
                                          # set a number to pin it. When auto-detection finds
                                          # nothing, the meter shows plain token counts and an
@@ -87,20 +94,20 @@ llm:
   # The switch shows or hides the per-chat thinking dropdown. Omitted or
   # false, requests keep the existing transport and no selector appears.
   # True shows it, with endpoint_type selecting the request convention
-  # for the URL above (must name a catalogue entry) and thinking_profile
-  # the choices offered for the model above ("none" hides the list). The
-  # two files ARE the catalogues — nothing is baked into the binary, so
-  # an edit, an addition or a deletion all take effect on restart.
-  # endpoint_type needs endpoints_file; a named thinking_profile needs
-  # profiles_file ("none" is built in). Relative paths resolve against
-  # this file's directory. There is deliberately no default_thinking:
-  # every conversation starts at the built-in Default (sends no override)
-  # and the user's pick is conversation state.
+  # for the URL above (must name a catalogue entry — it is a property of
+  # the URL, so it stays deployment-level) and each llm.models entry's
+  # thinking_profile the choices offered for THAT model ("none" hides
+  # the list). The two files ARE the catalogues — nothing is baked into
+  # the binary, so an edit, an addition or a deletion all take effect on
+  # restart. endpoint_type needs endpoints_file; a named thinking_profile
+  # needs profiles_file ("none" is built in). Relative paths resolve
+  # against this file's directory. There is deliberately no
+  # default_thinking: every conversation starts at the built-in Default
+  # (sends no override) and the user's pick is conversation state.
   thinking_selector_enable: false # true = show the dropdown
   endpoints_file: ./endpoints.yaml        # request-field recipes per endpoint type
-  profiles_file: ./thinking-profiles.yaml # choice lists per model
+  profiles_file: ./thinking-profiles.yaml # choice lists per profile id
   endpoint_type: gufo             # must speak protocol openai_chat
-  thinking_profile: qwen3_8       # or "none" to hide the list
 
 tools:
   web_search:

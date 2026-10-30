@@ -123,7 +123,7 @@ func NewClient(cfg *config.Config, transport http.RoundTripper) *Client {
 		endpoint:    strings.TrimRight(cfg.LLM.Endpoint, "/"),
 		route:       route,
 		apiKey:      cfg.LLM.APIKey,
-		model:       cfg.LLM.Model,
+		model:       cfg.LLM.DefaultModelID(),
 		maxTokens:   cfg.LLM.MaxTokensResponse,
 		temperature: cfg.LLM.DefaultTemperature,
 		http:        &http.Client{Transport: transport}, // no global timeout: streaming

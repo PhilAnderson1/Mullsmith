@@ -102,9 +102,14 @@ type profilesFile struct {
 // name a different model), so applicability always names the model the
 // request will actually carry.
 type Settings struct {
-	EndpointURL   string
-	EndpointType  string
+	EndpointURL  string
+	EndpointType string
+	// ProfileID is the DEFAULT entry's profile — the deployment-level
+	// fallback for models outside the picker. ModelProfiles names every
+	// picker entry's own profile ("" = the built-in "none"); the choice
+	// list follows the conversation's model.
 	ProfileID     string
+	ModelProfiles map[string]string
 	MaxOutput     int // llm.max_tokens_response; 0 = uncapped
 	EndpointsFile string
 	ProfilesFile  string
@@ -118,12 +123,25 @@ type Settings struct {
 
 // Runtime is one validated, resolved selection. A nil *Runtime means the
 // feature is off: legacy configuration, no selector, existing transport.
-type Runtime struct {
-	set      Settings
-	ep       *Endpoint
+// modelState is one model's effective view: its profile's usable options
+// and the warnings their exclusions produced.
+type modelState struct {
 	profID   string
-	choices  []Option // usable profile options, UI order, Default excluded
+	choices  []Option
 	warnings []string
+}
+
+// Runtime is the validated selection: the endpoint fragment recipes, the
+// profile catalogue, and the effective choices PER PICKER MODEL (the
+// dropdown describes a model, and picker entries may name different
+// profiles). states is built eagerly at Build and never mutated after;
+// choices for models outside the picker are computed on demand from the
+// default profile.
+type Runtime struct {
+	set    Settings
+	ep     *Endpoint
+	profs  map[string]*Profile
+	states map[string]*modelState
 }
 
 // Build parses the catalogue files named by the settings (the sole
@@ -136,7 +154,13 @@ func Build(set Settings) (*Runtime, error) {
 	// exists exactly when the operator spelled out an endpoint type or a
 	// non-"none" profile (the pre-switch behaviour, kept intact).
 	explicit := set.SelectorEnable != nil
-	enabled := set.EndpointType != "" || (set.ProfileID != "" && set.ProfileID != profileNone)
+	anyProfile := set.ProfileID != "" && set.ProfileID != profileNone
+	for _, p := range set.ModelProfiles {
+		if p != "" && p != profileNone {
+			anyProfile = true
+		}
+	}
+	enabled := set.EndpointType != "" || anyProfile
 	if explicit {
 		enabled = *set.SelectorEnable
 	}
@@ -159,19 +183,19 @@ func Build(set Settings) (*Runtime, error) {
 		if explicit {
 			return nil, errors.New("llm.thinking_selector_enable requires llm.endpoint_type")
 		}
-		return nil, fmt.Errorf("llm.thinking_profile %q requires llm.endpoint_type", set.ProfileID)
+		if set.ProfileID != "" && set.ProfileID != profileNone {
+			return nil, fmt.Errorf("llm.thinking_profile %q requires llm.endpoint_type", set.ProfileID)
+		}
+		return nil, errors.New("a llm.models thinking_profile requires llm.endpoint_type")
 	}
 	// The catalogue files are the only place an ID can come from, so a
 	// selection is unusable without the file its IDs live in.
 	if set.EndpointsFile == "" {
 		return nil, errors.New("llm.endpoint_type requires llm.endpoints_file: the endpoint catalogue is an external file")
 	}
-	profID := set.ProfileID
-	if profID == "" {
-		profID = profileNone
-	}
-	if profID != profileNone && set.ProfilesFile == "" {
-		return nil, fmt.Errorf("llm.thinking_profile %q requires llm.profiles_file: the profile catalogue is an external file", profID)
+	defPID := set.ProfileID
+	if defPID == "" {
+		defPID = profileNone
 	}
 	endpoints, profiles, err := loadCatalogues(set)
 	if err != nil {
@@ -181,23 +205,63 @@ func Build(set Settings) (*Runtime, error) {
 	if !ok {
 		return nil, fmt.Errorf("llm.endpoint_type %q: no such entry in the endpoint catalogue", epType)
 	}
-	prof, ok := profiles[profID]
-	if !ok {
-		return nil, fmt.Errorf("llm.thinking_profile %q: no such entry in the profile catalogue", profID)
-	}
 	if ep.Protocol != protocolOpenAI {
 		return nil, fmt.Errorf("llm.endpoint_type %q uses protocol %q, which this build does not implement (only %q); "+
 			"selecting it would send a request body the native route cannot read",
 			set.EndpointType, ep.Protocol, protocolOpenAI)
 	}
-	rt := &Runtime{set: set, ep: ep, profID: profID}
-	usable, warnings, err := rt.usableOptions(prof)
-	if err != nil {
-		return nil, err
+	// Every profile any model resolves to is validated and reduced to
+	// its usable options NOW — a picker entry naming a missing profile
+	// is a startup error, and no lookup happens mid-flight.
+	rt := &Runtime{set: set, ep: ep, profs: profiles, states: map[string]*modelState{}}
+	pids := []string{defPID}
+	for _, p := range set.ModelProfiles {
+		if p == "" {
+			p = profileNone
+		}
+		pids = append(pids, p)
 	}
-	rt.choices = usable
-	rt.warnings = warnings
+	for _, pid := range pids {
+		if _, done := rt.states[pid]; done {
+			continue
+		}
+		if pid != profileNone && set.ProfilesFile == "" {
+			return nil, fmt.Errorf("thinking_profile %q requires llm.profiles_file: the profile catalogue is an external file", pid)
+		}
+		prof, ok := profiles[pid]
+		if !ok {
+			return nil, fmt.Errorf("thinking_profile %q: no such entry in the profile catalogue", pid)
+		}
+		usable, warnings, err := rt.usableOptions(pid, prof)
+		if err != nil {
+			return nil, err
+		}
+		rt.states[pid] = &modelState{profID: pid, choices: usable, warnings: warnings}
+	}
 	return rt, nil
+}
+
+// profileID names the profile in force for a model: its picker entry's
+// (an entry spelling no profile means the built-in "none" — entries
+// state the truth, they do not inherit), else the deployment default for
+// models outside the picker entirely.
+func (r *Runtime) profileID(model string) string {
+	if pid, ok := r.set.ModelProfiles[model]; ok {
+		if pid == "" {
+			return profileNone
+		}
+		return pid
+	}
+	if r.set.ProfileID != "" {
+		return r.set.ProfileID
+	}
+	return profileNone
+}
+
+// stateFor returns the model's validated view; every profile it can name
+// was built and checked at Build, so the lookup cannot miss.
+func (r *Runtime) stateFor(model string) *modelState {
+	return r.states[r.profileID(model)]
 }
 
 // loadCatalogues decodes the two operator files — the sole source for
@@ -455,7 +519,7 @@ func validateProfile(id string, p *Profile) error {
 // warning; a budget preset that could never leave room for the answer is
 // a configuration error, and a nonempty profile with nothing usable left
 // rejects the combination rather than silently hiding every control.
-func (r *Runtime) usableOptions(prof *Profile) ([]Option, []string, error) {
+func (r *Runtime) usableOptions(profID string, prof *Profile) ([]Option, []string, error) {
 	var (
 		usable   []Option
 		warnings []string
@@ -464,7 +528,7 @@ func (r *Runtime) usableOptions(prof *Profile) ([]Option, []string, error) {
 		if _, ok := r.ep.Requests[o.Mode]; !ok {
 			warnings = append(warnings, fmt.Sprintf(
 				"profile %q option %q: endpoint %q offers no %q request — choice hidden",
-				r.profID, o.ID, r.set.EndpointType, o.Mode))
+				profID, o.ID, r.set.EndpointType, o.Mode))
 			continue
 		}
 		switch o.Mode {
@@ -472,7 +536,7 @@ func (r *Runtime) usableOptions(prof *Profile) ([]Option, []string, error) {
 			if len(r.ep.EffortValues) > 0 && !slices.Contains(r.ep.EffortValues, o.Effort) {
 				warnings = append(warnings, fmt.Sprintf(
 					"profile %q option %q: endpoint %q does not accept effort %q — choice hidden",
-					r.profID, o.ID, r.set.EndpointType, o.Effort))
+					profID, o.ID, r.set.EndpointType, o.Effort))
 				continue
 			}
 		case "budget":
@@ -480,13 +544,13 @@ func (r *Runtime) usableOptions(prof *Profile) ([]Option, []string, error) {
 			if o.BudgetTokens < lo || (hi > 0 && o.BudgetTokens > hi) {
 				warnings = append(warnings, fmt.Sprintf(
 					"profile %q option %q: budget %d outside endpoint %q range — choice hidden",
-					r.profID, o.ID, o.BudgetTokens, r.set.EndpointType))
+					profID, o.ID, o.BudgetTokens, r.set.EndpointType))
 				continue
 			}
 			if r.set.MaxOutput > 0 && o.BudgetTokens >= r.set.MaxOutput {
 				return nil, nil, fmt.Errorf(
 					"profile %q option %q: budget %d leaves no room inside max_tokens_response %d",
-					r.profID, o.ID, o.BudgetTokens, r.set.MaxOutput)
+					profID, o.ID, o.BudgetTokens, r.set.MaxOutput)
 			}
 		}
 		usable = append(usable, o)
@@ -494,7 +558,7 @@ func (r *Runtime) usableOptions(prof *Profile) ([]Option, []string, error) {
 	if len(prof.Options) > 0 && len(usable) == 0 {
 		return nil, nil, fmt.Errorf(
 			"profile %q has no option endpoint %q can express (%s) — pick a different combination",
-			r.profID, r.set.EndpointType, strings.Join(warnings, "; "))
+			profID, r.set.EndpointType, strings.Join(warnings, "; "))
 	}
 	return usable, warnings, nil
 }
@@ -528,10 +592,20 @@ type PublicChoice struct {
 // selected ("none").
 func (r *Runtime) Enabled() bool { return r != nil && r.ep != nil }
 
-// SelectorVisible reports a profile with at least one usable option.
-// "none" (or a legacy config) hides the selector entirely: the feature is
-// off, and a model that thinks by default keeps thinking.
-func (r *Runtime) SelectorVisible() bool { return r != nil && len(r.choices) > 0 }
+// SelectorVisible reports that some picker model has at least one usable
+// option. All-"none" (or a legacy config) hides the selector entirely:
+// the feature is off, and a model that thinks by default keeps thinking.
+func (r *Runtime) SelectorVisible() bool {
+	if r == nil || r.ep == nil {
+		return false
+	}
+	for _, st := range r.states {
+		if len(st.choices) > 0 {
+			return true
+		}
+	}
+	return false
+}
 
 // Route is the request path appended to the base URL, exactly once.
 func (r *Runtime) Route() string {
@@ -541,34 +615,47 @@ func (r *Runtime) Route() string {
 	return r.ep.Path
 }
 
-// Warnings are the exclusions logged at startup (hidden options).
+// Warnings are the exclusions logged at startup (hidden options); each
+// line already names the profile that produced it. Iteration is by
+// sorted profile id, so the order is stable.
 func (r *Runtime) Warnings() []string {
 	if r == nil {
 		return nil
 	}
-	return r.warnings
+	pids := make([]string, 0, len(r.states))
+	for pid := range r.states {
+		pids = append(pids, pid)
+	}
+	slices.Sort(pids)
+	var out []string
+	for _, pid := range pids {
+		out = append(out, r.states[pid].warnings...)
+	}
+	return out
 }
 
-// Choices returns the full UI list: built-in Default first, then the
-// usable profile options in profile order.
-func (r *Runtime) Choices() []PublicChoice {
-	out := make([]PublicChoice, 0, len(r.choices)+1)
+// Choices returns the UI list for one model: built-in Default first,
+// then that model's profile's usable options in profile order.
+func (r *Runtime) Choices(model string) []PublicChoice {
+	st := r.stateFor(model)
+	out := make([]PublicChoice, 0, len(st.choices)+1)
 	out = append(out, PublicChoice{ID: DefaultID, Label: DefaultLabel})
-	for _, o := range r.choices {
+	for _, o := range st.choices {
 		out = append(out, PublicChoice{ID: o.ID, Label: o.Label})
 	}
 	return out
 }
 
-// Resolve maps a choice ID ("" = Default) to its full option.
-func (r *Runtime) Resolve(id string) (Choice, bool) {
+// ResolveFor maps a choice ID ("" = Default) to its full option under
+// the model's profile.
+func (r *Runtime) ResolveFor(model, id string) (Choice, bool) {
 	if r == nil {
 		return Choice{}, false
 	}
 	if id == "" || id == DefaultID {
 		return Choice{ID: DefaultID, Label: DefaultLabel}, true
 	}
-	for _, o := range r.choices {
+	for _, o := range r.stateFor(model).choices {
 		if o.ID == id {
 			return Choice{ID: o.ID, Label: o.Label, Mode: o.Mode,
 				Effort: o.Effort, BudgetTokens: o.BudgetTokens}, true
@@ -592,18 +679,19 @@ func (r *Runtime) ResolveSaved(id, fingerprint, model string) (string, bool) {
 	if fingerprint != r.Fingerprint(model) {
 		return "", false
 	}
-	if _, ok := r.Resolve(id); !ok {
+	if _, ok := r.ResolveFor(model, id); !ok {
 		return "", false
 	}
 	return id, true
 }
 
 // Fingerprint is the stable applicability context for a saved choice:
-// endpoint URL, model ID, endpoint type and profile ID — never the API
-// key (§5).
+// endpoint URL, model ID, endpoint type and the profile IN FORCE FOR
+// THAT MODEL — never the API key (§5). A model switch therefore keeps a
+// saved choice only when its profile and choices genuinely still apply.
 func (r *Runtime) Fingerprint(model string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		r.set.EndpointURL, model, r.set.EndpointType, r.profID,
+		r.set.EndpointURL, model, r.set.EndpointType, r.profileID(model),
 	}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }

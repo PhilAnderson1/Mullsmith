@@ -22,7 +22,7 @@ func testCfg() *config.Config {
 		Server: config.Server{
 			Listen: "127.0.0.1:0",
 		},
-		LLM:  config.LLM{Models: []string{"m1"}},
+		LLM:  config.LLM{Models: []config.LLMModel{{ID: "m1", Default: true}}},
 		Auth: config.Auth{Registration: "invite-only"},
 		// config.Load applies these defaults; struct-literal test configs
 		// must set them too or bodyLimit rejects every POST (max=0).

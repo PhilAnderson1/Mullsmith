@@ -13,19 +13,19 @@ import (
 // already complete for its operation (§3). The result is a fresh copy on
 // every call, so a request never inherits a previous turn's fields and
 // the chat layer is free to merge it destructively into its payload.
-func (r *Runtime) Fragment(c Choice) (map[string]any, error) {
+func (r *Runtime) Fragment(model string, c Choice) (map[string]any, error) {
 	if r == nil {
 		return nil, fmt.Errorf("thinking control is not configured; choice %q cannot be sent", c.ID)
 	}
 	if !r.SelectorVisible() {
-		return nil, fmt.Errorf("thinking selector is off (profile %q): choice %q cannot be sent", r.profID, c.ID)
+		return nil, fmt.Errorf("thinking selector is off (profile %q): choice %q cannot be sent", r.profileID(model), c.ID)
 	}
 	if c.ID == DefaultID {
 		return nil, nil
 	}
-	if _, ok := r.Resolve(c.ID); !ok {
+	if _, ok := r.ResolveFor(model, c.ID); !ok {
 		// Never trust a client-provided choice past this point (§6).
-		return nil, fmt.Errorf("unknown thinking choice %q for profile %q", c.ID, r.profID)
+		return nil, fmt.Errorf("unknown thinking choice %q for profile %q", c.ID, r.profileID(model))
 	}
 	frag, ok := r.ep.Requests[c.Mode]
 	if !ok {

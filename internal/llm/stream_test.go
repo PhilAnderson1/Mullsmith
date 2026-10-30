@@ -36,7 +36,7 @@ func sseServer(t *testing.T, body string) *httptest.Server {
 func clientFor(ts *httptest.Server, transport http.RoundTripper) *Client {
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL + "/v1"
-	cfg.LLM.Model = "test-model"
+	cfg.LLM.Models = []config.LLMModel{{ID: "test-model", Default: true}}
 	cfg.LLM.MaxTokensResponse = 128
 	return NewClient(cfg, transport)
 }
@@ -305,7 +305,7 @@ func TestStreamRequestBody(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL + "/v1"
-	cfg.LLM.Model = "default-model"
+	cfg.LLM.Models = []config.LLMModel{{ID: "default-model", Default: true}}
 	cfg.LLM.APIKey = "sekret"
 	cfg.LLM.MaxTokensResponse = 64
 	cfg.LLM.DefaultTemperature = 0.7
@@ -532,7 +532,7 @@ func TestClientRouteFromEndpointDefinition(t *testing.T) {
 	ts, last := captureServer(t)
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL + "/proxy/v1"
-	cfg.LLM.Model = "m"
+	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
 	cfg.LLM.MaxTokensResponse = 128
 	cfg.Thinking = gufoQwen38(t)
 	c := NewClient(cfg, nil)
@@ -551,14 +551,14 @@ func TestStreamThinkingFragment(t *testing.T) {
 	ts, last := captureServer(t)
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL + "/v1"
-	cfg.LLM.Model = "m"
+	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
 	cfg.LLM.MaxTokensResponse = 128
 	rt := gufoQwen38(t)
 	cfg.Thinking = rt
 	c := NewClient(cfg, nil)
 
-	high, _ := rt.Resolve("high")
-	frag, err := rt.Fragment(high)
+	high, _ := rt.ResolveFor("", "high")
+	frag, err := rt.Fragment("", high)
 	if err != nil {
 		t.Fatal(err)
 	}

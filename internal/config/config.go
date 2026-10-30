@@ -239,16 +239,31 @@ type Runtime struct {
 	Binary string `yaml:"binary"`
 }
 
+// LLMModel is one entry of the llm.models picker (§2.2): the model ID
+// sent to the endpoint, whether conversations with no explicit choice run
+// on it, and which thinking-profile catalogue entry names its dropdown.
+// Every fact about a model lives ON its entry — nothing is implied by
+// position except the fallback default — so the list has one honest shape
+// with no shorthand form.
+type LLMModel struct {
+	ID              string `yaml:"id"`
+	Default         bool   `yaml:"default"`
+	ThinkingProfile string `yaml:"thinking_profile"`
+}
+
 type LLM struct {
-	Endpoint           string   `yaml:"endpoint"`
-	APIKey             string   `yaml:"api_key"`
-	Model              string   `yaml:"model"`
-	Models             []string `yaml:"models"`
-	MaxContextTokens   int      `yaml:"max_context_tokens"`
-	DefaultTemperature float64  `yaml:"default_temperature"`
-	RequestTimeout     Duration `yaml:"request_timeout"`
-	MaxTokensResponse  int      `yaml:"max_tokens_response"`
-	ShowReasoning      bool     `yaml:"show_reasoning"`
+	Endpoint string `yaml:"endpoint"`
+	APIKey   string `yaml:"api_key"`
+	// Models is the one list: the picker, and where each model's
+	// behaviour lives. Exactly one entry may claim default: true; none
+	// claiming it means the first entry (so a one-model deployment needs
+	// no marking at all — Validate still requires at least one entry).
+	Models             []LLMModel `yaml:"models"`
+	MaxContextTokens   int        `yaml:"max_context_tokens"`
+	DefaultTemperature float64    `yaml:"default_temperature"`
+	RequestTimeout     Duration   `yaml:"request_timeout"`
+	MaxTokensResponse  int        `yaml:"max_tokens_response"`
+	ShowReasoning      bool       `yaml:"show_reasoning"`
 	// Vision lets the model see pictures at all: with it on, the
 	// view_image tool is offered (§7.2) and the turns it creates carry
 	// OpenAI image_url content parts. Uploads are never embedded on
@@ -257,17 +272,18 @@ type LLM struct {
 	Vision              bool `yaml:"vision"`
 	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"` // per-picture cap for view_image (default 4 MiB)
 
-	// Thinking control (thinking-control-specification.md §2). All five
+	// Thinking control (thinking-control-specification.md §2). All four
 	// are optional: with the switch omitted or false, the existing
-	// transport is kept and no thinking selector appears. When enabled
-	// true, endpoint_type must name a catalogue entry (the sample config
-	// shows the usual pair); thinking_profile may stay empty for "none".
-	// The two files are the sole source of the catalogues — nothing is
-	// built in beyond "none" — so endpoint_type requires endpoints_file
-	// and a named profile requires profiles_file (relative paths resolve
-	// against this config file's directory). Omitting the switch entirely
-	// keeps the legacy rule: a selector exists exactly when an endpoint
-	// type (or non-"none" profile) is spelled out. There is no
+	// transport is kept and no thinking selector appears. The choice
+	// LIST moved to the model entries (llm.models[].thinking_profile):
+	// the dropdown describes a model, and picker models may differ.
+	// endpoint_type stays here — it is a property of the URL, one request
+	// convention per deployment. The two files are the sole source of the
+	// catalogues — nothing is built in beyond "none" — so endpoint_type
+	// requires endpoints_file and a named profile requires profiles_file
+	// (relative paths resolve against this config file's directory).
+	// Omitting the switch entirely keeps the legacy rule: a selector
+	// exists exactly when an endpoint type is spelled out. There is no
 	// default_thinking here on purpose: a conversation starts at the
 	// built-in Default and the user's choice is conversation state, not
 	// another global LLM setting.
@@ -275,7 +291,51 @@ type LLM struct {
 	EndpointsFile          string `yaml:"endpoints_file"`
 	ProfilesFile           string `yaml:"profiles_file"`
 	EndpointType           string `yaml:"endpoint_type"`
-	ThinkingProfile        string `yaml:"thinking_profile"`
+}
+
+// DefaultModelID is the entry conversations with no explicit choice run
+// on: the one marked default (setDefaults guarantees one exists whenever
+// the list does), else the first. "" only with no models at all, which
+// Validate refuses.
+func (l *LLM) DefaultModelID() string {
+	for _, m := range l.Models {
+		if m.Default {
+			return m.ID
+		}
+	}
+	if len(l.Models) > 0 {
+		return l.Models[0].ID
+	}
+	return ""
+}
+
+// ModelNames is the picker list, config order.
+func (l *LLM) ModelNames() []string {
+	names := make([]string, 0, len(l.Models))
+	for _, m := range l.Models {
+		names = append(names, m.ID)
+	}
+	return names
+}
+
+// ThinkingProfileFor names the profile entry in force for a model: its
+// own, or the default entry's for anything not on the list (a
+// conversation still running a model the picker has since dropped).
+func (l *LLM) ThinkingProfileFor(model string) string {
+	for _, m := range l.Models {
+		if m.ID == model {
+			return m.ThinkingProfile
+		}
+	}
+	for _, m := range l.Models {
+		if m.Default {
+			return m.ThinkingProfile
+		}
+	}
+	if len(l.Models) > 0 {
+		return l.Models[0].ThinkingProfile
+	}
+	return ""
 }
 
 type Tools struct {
@@ -515,17 +575,22 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// First, an untyped pass: it sees the file as written (so retired
+	// keys can answer with a migration message before the strict decoder
+	// below fails on them with a raw YAML complaint), and it feeds
+	// Validate's cap-syntax check.
 	var c Config
+	var rawDoc map[string]any
+	if err := yaml.Unmarshal([]byte(expanded), &rawDoc); err == nil {
+		c.rawDoc = rawDoc
+		if err := legacyModelKeys(rawDoc); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	dec := yaml.NewDecoder(strings.NewReader(expanded))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
-	}
-	// Second, untyped pass for Validate's cap-syntax check: it sees which
-	// keys were actually spelled out before defaults touched anything.
-	var rawDoc map[string]any
-	if err := yaml.Unmarshal([]byte(expanded), &rawDoc); err == nil {
-		c.rawDoc = rawDoc
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -550,9 +615,13 @@ func Load(path string) (*Config, error) {
 	// endpoint/profile combination must be cross-checked before the
 	// server ever serves a choice list.
 	rt, err := thinking.Build(thinking.Settings{
-		EndpointURL:    c.LLM.Endpoint,
-		EndpointType:   c.LLM.EndpointType,
-		ProfileID:      c.LLM.ThinkingProfile,
+		EndpointURL:  c.LLM.Endpoint,
+		EndpointType: c.LLM.EndpointType,
+		// The choice list is per model now: the default entry's profile
+		// is the deployment-level one (and the fallback for models that
+		// left the picker), and every entry's own name rides along.
+		ProfileID:      c.LLM.ThinkingProfileFor(c.LLM.DefaultModelID()),
+		ModelProfiles:  c.LLM.ModelProfiles(),
 		MaxOutput:      c.LLM.MaxTokensResponse,
 		EndpointsFile:  c.LLM.EndpointsFile,
 		ProfilesFile:   c.LLM.ProfilesFile,
@@ -563,6 +632,45 @@ func Load(path string) (*Config, error) {
 	}
 	c.Thinking = rt
 	return &c, nil
+}
+
+// legacyModelKeys answers the pre-picker era of model config with the
+// exact new spelling instead of a raw YAML complaint from the strict
+// decoder: `model:` and a llm-level `thinking_profile:` are retired keys,
+// and string items under `models:` predate the entry maps.
+func legacyModelKeys(doc map[string]any) error {
+	llmSec, ok := doc["llm"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if _, ok := llmSec["model"]; ok {
+		return errors.New(`llm.model has moved into llm.models — write, e.g., ` +
+			`models: [{id: "<model>", default: true}] (default may be omitted when only one model is listed)`)
+	}
+	if _, ok := llmSec["thinking_profile"]; ok {
+		return errors.New(`llm.thinking_profile has moved into llm.models — spell thinking_profile on each entry: ` +
+			`- {id: "<model>", thinking_profile: <profile-id>}`)
+	}
+	if items, ok := llmSec["models"].([]any); ok {
+		for _, it := range items {
+			if _, isMap := it.(map[string]any); !isMap {
+				return errors.New(`llm.models entries are maps now — spell each one, e.g., ` +
+					`- {id: "<model>", default: true, thinking_profile: <profile-id>}`)
+			}
+		}
+	}
+	return nil
+}
+
+// ModelProfiles projects the picker entries onto their profile ids for
+// the thinking runtime; an entry spelling no profile contributes ""
+// (= built-in "none" there).
+func (l *LLM) ModelProfiles() map[string]string {
+	out := make(map[string]string, len(l.Models))
+	for _, m := range l.Models {
+		out[m.ID] = m.ThinkingProfile
+	}
+	return out
 }
 
 // resolveAgainst anchors one configured path at base and cleans it;
@@ -698,23 +806,20 @@ func (c *Config) setDefaults() {
 	if c.LLM.MaxTokensResponse == 0 {
 		c.LLM.MaxTokensResponse = 4096
 	}
-	if len(c.LLM.Models) == 0 && c.LLM.Model != "" {
-		c.LLM.Models = []string{c.LLM.Model}
-	}
-	// The default model is always pickable: a conversation with no explicit
-	// choice RUNS on it, and the picker shows the model actually in use —
-	// it must be able to name (and re-select) it. Validation reads the same
-	// list, so allowing it here keeps picker and API honest with each other.
-	if c.LLM.Model != "" {
-		found := false
+	// None of the entries claims default ⇒ the first one is it: the
+	// fallback that lets a one-model list skip the marking entirely
+	// (Validate caps the claims at one, so after this there is exactly
+	// one whenever the list has any entries).
+	if len(c.LLM.Models) > 0 {
+		marked := false
 		for _, m := range c.LLM.Models {
-			if m == c.LLM.Model {
-				found = true
+			if m.Default {
+				marked = true
 				break
 			}
 		}
-		if !found {
-			c.LLM.Models = append(c.LLM.Models, c.LLM.Model)
+		if !marked {
+			c.LLM.Models[0].Default = true
 		}
 	}
 	if c.LLM.RequestTimeout == 0 {
@@ -935,8 +1040,28 @@ func (c *Config) Validate() error {
 	case u.Host == "":
 		f.bad("llm.endpoint: host required")
 	}
-	if c.LLM.Model == "" {
-		f.bad("llm.model: required")
+	// llm.models: the one list. At least one entry; ids required and
+	// unique; at most one default claim (the none-claimed case folded
+	// onto the first entry by setDefaults).
+	if len(c.LLM.Models) == 0 {
+		f.bad(`llm.models: required — spell at least one entry, e.g., - {id: "<model>", default: true}`)
+	}
+	seenModel := map[string]bool{}
+	defaults := 0
+	for i, m := range c.LLM.Models {
+		if strings.TrimSpace(m.ID) == "" {
+			f.bad("llm.models[%d].id: required", i)
+		} else if seenModel[m.ID] {
+			f.bad("llm.models: duplicate entry %q", m.ID)
+		} else {
+			seenModel[m.ID] = true
+		}
+		if m.Default {
+			defaults++
+		}
+	}
+	if defaults > 1 {
+		f.bad("llm.models: at most one entry may set default: true")
 	}
 	// llm.max_context_tokens: -1 is the off-sentinel for auto-detection
 	// (the window is taken from the endpoint's /models context_length);

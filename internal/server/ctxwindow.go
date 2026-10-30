@@ -49,9 +49,9 @@ func (s *Server) probeEndpointWindow(ctx context.Context) (int, bool) {
 		s.logger.Info("context-window probe failed", "err", err)
 		return 0, false
 	}
-	window, ok := llm.ContextLengthFor(models, s.cfg.LLM.Model)
+	window, ok := llm.ContextLengthFor(models, s.cfg.LLM.DefaultModelID())
 	if !ok {
-		s.logger.Info("endpoint reports no context window", "model", s.cfg.LLM.Model)
+		s.logger.Info("endpoint reports no context window", "model", s.cfg.LLM.DefaultModelID())
 		return 0, false
 	}
 	return window, true
@@ -127,7 +127,7 @@ func (s *Server) doProbe() {
 	defer cancel()
 	if window, ok := s.windowProbe(ctx); ok && window > 0 {
 		if prev := s.ctxWindow.Swap(int64(window)); prev != int64(window) {
-			s.logger.Info("context window discovered", "tokens", window, "model", s.cfg.LLM.Model)
+			s.logger.Info("context window discovered", "tokens", window, "model", s.cfg.LLM.DefaultModelID())
 		}
 	}
 }

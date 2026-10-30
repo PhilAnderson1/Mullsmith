@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,9 +23,11 @@ import (
 // and the catalogues only ever come from files).
 func thinkingCfg(t *testing.T, endpoint string) *config.Config {
 	cfg := chatCfg(t, endpoint)
-	cfg.LLM.Models = []string{"m1", "m2"}
+	cfg.LLM.Models = []config.LLMModel{
+		{ID: "m1", Default: true, ThinkingProfile: "qwen3_8"},
+		{ID: "m2", ThinkingProfile: "qwen3_8"},
+	}
 	cfg.LLM.EndpointType = "gufo"
-	cfg.LLM.ThinkingProfile = "qwen3_8"
 	cfg.LLM.EndpointsFile = filepath.Join("..", "..", "configs", "endpoints.yaml")
 	cfg.LLM.ProfilesFile = filepath.Join("..", "..", "configs", "thinking-profiles.yaml")
 	cfg.Tools.Agent.MaxToolRounds = 4
@@ -99,18 +102,23 @@ func TestThinkingMetaAndDefaultProjection(t *testing.T) {
 
 	var meta struct {
 		Thinking *struct {
-			Choices []struct {
+			ChoicesByModel map[string][]struct {
 				ID    string `json:"id"`
 				Label string `json:"label"`
-			} `json:"choices"`
+			} `json:"choices_by_model"`
 		} `json:"thinking"`
 	}
 	getJSON(t, a, "/api/v1/meta", &meta)
 	if meta.Thinking == nil {
 		t.Fatal("meta.thinking = null with a visible profile")
 	}
+	// Every picker model gets its own list; the SPA reads the row
+	// matching the conversation's active model.
+	if len(meta.Thinking.ChoicesByModel) != 2 {
+		t.Fatalf("choices_by_model = %v, want a row per picker model", meta.Thinking.ChoicesByModel)
+	}
 	var got []string
-	for _, c := range meta.Thinking.Choices {
+	for _, c := range meta.Thinking.ChoicesByModel["m1"] {
 		got = append(got, c.ID)
 	}
 	want := []string{"default", "off", "low", "medium", "high"}
@@ -121,6 +129,15 @@ func TestThinkingMetaAndDefaultProjection(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("choices = %v, want %v", got, want)
 		}
+	}
+	// m2 names the same profile, so its row matches — spelled per model,
+	// not shared by reference assumption.
+	var got2 []string
+	for _, c := range meta.Thinking.ChoicesByModel["m2"] {
+		got2 = append(got2, c.ID)
+	}
+	if strings.Join(got2, ",") != strings.Join(got, ",") {
+		t.Errorf("m2 row = %v, want same as m1 %v", got2, got)
 	}
 
 	// New chats project Default.

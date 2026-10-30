@@ -1990,12 +1990,25 @@ async function onModelChange(ev) {
   } catch (err) {
     handleErr(err, "set model");
   }
+  // The dropdown describes the model now in force, so it is rebuilt
+  // after a switch either way: a profile-less model hides the row, and
+  // a saved choice outside the new model's list falls back to Default.
+  populateThinkingChoices();
+  syncThinkingSelect();
 }
 
 // --- thinking-level selector -----------------------------------------------------
 
+// The list for the model the conversation actually runs on (its own
+// pick, else the server default). A model since removed from the picker
+// has no row: the server still applies the default profile's list, but
+// the SPA cannot name it, so the selector goes quiet (Default only).
 function thinkingChoices() {
-  return (state.meta && state.meta.thinking && state.meta.thinking.choices) || [];
+  const th = state.meta && state.meta.thinking;
+  if (!th || !th.choices_by_model) return [];
+  const active = (state.currentConv && state.currentConv.model)
+    || state.meta.default_model || "";
+  return th.choices_by_model[active] || [];
 }
 
 // Build the dropdown from /api/v1/meta. Only the built-in Default (or

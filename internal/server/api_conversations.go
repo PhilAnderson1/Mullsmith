@@ -163,7 +163,7 @@ func (s *Server) validateModel(model string) bool {
 	if model == "" {
 		return true // server default
 	}
-	for _, m := range s.cfg.LLM.Models {
+	for _, m := range s.cfg.LLM.ModelNames() {
 		if m == model {
 			return true
 		}

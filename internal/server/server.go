@@ -34,13 +34,21 @@ import (
 // works exactly as the loader would run it.
 func resolveThinking(cfg *config.Config, logger *slog.Logger) {
 	if cfg.Thinking == nil {
-		if cfg.LLM.EndpointType == "" && (cfg.LLM.ThinkingProfile == "" || cfg.LLM.ThinkingProfile == "none") {
-			return // legacy config: no selector, existing transport
+		prof := cfg.LLM.ThinkingProfileFor(cfg.LLM.DefaultModelID())
+		anyProfile := prof != "" && prof != "none"
+		for _, p := range cfg.LLM.ModelProfiles() {
+			if p != "" && p != "none" {
+				anyProfile = true
+			}
+		}
+		if cfg.LLM.EndpointType == "" && !anyProfile {
+			return // no selector, existing transport
 		}
 		rt, err := thinking.Build(thinking.Settings{
 			EndpointURL:   cfg.LLM.Endpoint,
 			EndpointType:  cfg.LLM.EndpointType,
-			ProfileID:     cfg.LLM.ThinkingProfile,
+			ProfileID:     prof,
+			ModelProfiles: cfg.LLM.ModelProfiles(),
 			MaxOutput:     cfg.LLM.MaxTokensResponse,
 			EndpointsFile: cfg.LLM.EndpointsFile,
 			ProfilesFile:  cfg.LLM.ProfilesFile,
@@ -280,19 +288,20 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"app":     "mullsmith",
 		"version": s.appVer,
-		"models":  s.cfg.LLM.Models,
+		"models":  s.cfg.LLM.ModelNames(),
 		// default_model lets the picker name the model a conversation with
 		// no explicit choice actually runs on.
-		"default_model":  s.cfg.LLM.Model,
+		"default_model":  s.cfg.LLM.DefaultModelID(),
 		"registration":   s.cfg.Auth.Registration,
 		"remember_login": s.cfg.Auth.RememberLogin,
 		// email_features drives the SPA's forgot-link / confirmation copy
 		// exactly like remember_login and registration drive theirs.
 		"email_features": s.cfg.Email.Enabled,
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
-		// Thinking selector: the choices configured for this deployment's
-		// endpoint/model, or null when the feature is off — the SPA hides
-		// the selector on null. Only id+label cross the wire: request
+		// Thinking selector: the choice list per picker model (a model's
+		// dropdown describes its model), or null when the feature is off —
+		// the SPA hides the selector on null and per-model rows on empty.
+		// Only id+label cross the wire: request
 		// templates and credentials stay server-side.
 		"thinking": s.thinkingMeta(),
 		// The context window in force for the SPA's meter and fullness

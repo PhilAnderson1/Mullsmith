@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const minimalYAML = `
+// minimalBase is the required-keys config minus the llm.models entry —
+// tests that must spell their own model list (with per-entry thinking
+// profiles, say) build on this one.
+const minimalBase = `
 server:
   listen: "127.0.0.1:8090"
 database:
@@ -20,8 +23,17 @@ scratchpad:
   root: "./data/scratchpad"
 llm:
   endpoint: "http://127.0.0.1:8081/v1"
-  model: "test-model"
 `
+
+// minimalYAML adds the picker list: one entry, its default status left
+// to the first-entry fallback so the fallback itself stays under test.
+const minimalYAML = minimalBase + `  models:
+    - id: "test-model"
+`
+
+// modelsYAML spells a full llm.models block for tests built on
+// minimalBase: entries is the already-indented list body.
+func modelsYAML(entries string) string { return "  models:\n" + entries }
 
 func writeCfg(t *testing.T, body string) string {
 	t.Helper()
@@ -91,8 +103,8 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Server.HSTSMaxAge != -1 {
 		t.Errorf("hsts_max_age default = %d, want -1 off-sentinel", cfg.Server.HSTSMaxAge)
 	}
-	if len(cfg.LLM.Models) != 1 || cfg.LLM.Models[0] != "test-model" {
-		t.Errorf("models default = %v", cfg.LLM.Models)
+	if len(cfg.LLM.Models) != 1 || cfg.LLM.Models[0].ID != "test-model" || !cfg.LLM.Models[0].Default {
+		t.Errorf("models default = %+v, want test-model marked default by the first-entry fallback", cfg.LLM.Models)
 	}
 }
 
@@ -305,7 +317,7 @@ scratchpad:
   root: ./data/scratchpad
 llm:
   endpoint: "http://x/v1"
-  model: m
+  models: [{id: m}]
   typo_field: true
 `
 	if _, err := Load(writeCfg(t, body)); err == nil {
@@ -355,8 +367,7 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 		"database.dir":                               "required; per-machine path",
 		"scratchpad.root":                            "required; per-machine path",
 		"scratchpad.code_execution.allowed_runtimes": "host-specific interpreter paths — code default is the empty list",
-		"llm.model":                                  "required; the template holds a placeholder",
-		"llm.models":                                 "derived from llm.model (the default model is always pickable)",
+		"llm.models":                                 "required; the template holds a placeholder id (entries carry each model's default/thinking_profile)",
 		"llm.api_key":                                "secret via ${ENV} expansion — environment-dependent at test time",
 		"llm.default_temperature":                    "zero is a meaningful LLM value, so zero-collapse cannot carry 0.7; code default is 0",
 		"auth.remember_login":                        "bool zero-collapse — template opts in; code default keeps the checkbox off",
@@ -384,6 +395,9 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 		// turns carry exactly one picture, so there is no per-message
 		// inline budget left to configure (§7.2).
 		"llm.vision_max_images": true,
+		// Retired with per-model picker entries: the choice list lives on
+		// llm.models entries now, and legacyModelKeys rejects this spelling.
+		"llm.thinking_profile": true,
 	}
 	for path, codeDefault := range miniLeaf {
 		if _, ok := exceptions[path]; !ok && !leafEqual(codeDefault, tmplLeaf[path]) {
@@ -485,7 +499,7 @@ server:
   listen: "nope"
 database: {dir: ./db}
 scratchpad: {root: ./sp}
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"server.listen",
 		},
@@ -499,7 +513,7 @@ server:
   write_timeout: -2s
 database: {dir: ./db}
 scratchpad: {root: ./sp}
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"server.write_timeout",
 		},
@@ -511,7 +525,7 @@ server:
   shutdown_grace: -15s
 database: {dir: ./db}
 scratchpad: {root: ./sp}
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"server.shutdown_grace",
 		},
@@ -529,7 +543,7 @@ llm: {endpoint: "http://x/v1"}
 			`
 database: {dir: ./db}
 scratchpad: {root: ./sp}
-llm: {endpoint: "http://x/v1", model: m, max_context_tokens: 4096, max_tokens_response: 8000}
+llm: {endpoint: "http://x/v1", models: [{id: m}], max_context_tokens: 4096, max_tokens_response: 8000}
 `,
 			"max_tokens_response",
 		},
@@ -569,7 +583,7 @@ scratchpad:
     run_as_user: nobody
     allowed_runtimes:
       - { id: python3, binary: python3 }
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"absolute path",
 		},
@@ -584,7 +598,7 @@ scratchpad:
     mode: "isolated"
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"removed",
 		},
@@ -599,7 +613,7 @@ scratchpad:
     run_as_user: nobody
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"run_as_user",
 		},
@@ -614,7 +628,7 @@ scratchpad:
     container_image: python:3
     allowed_runtimes:
       - { id: python3, binary: /usr/bin/python3 }
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"container_image",
 		},
@@ -741,7 +755,7 @@ server:
   trusted_proxies: ["192.168.0.0/24", "10.0.0.5"]
 database: {dir: ./db}
 scratchpad: {root: ./sp}
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `
 	cfg, err := Load(writeCfg(t, body))
 	if err != nil {
@@ -766,7 +780,7 @@ server:
   listen: "0.0.0.0:8090"
 database: {dir: ./db}
 scratchpad: {root: ./sp}
-llm: {endpoint: "http://x/v1", model: m}
+llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `
 	cfg, err := Load(writeCfg(t, body))
 	if err != nil {
@@ -814,31 +828,61 @@ func TestCheckIOWritable(t *testing.T) {
 	}
 }
 
-func TestLoadModelsAlwaysContainsDefault(t *testing.T) {
-	// The picker shows the model a conversation actually runs on, and the
-	// same list validates per-conversation choices — so the default model
-	// must be in it even when the admin curated an explicit list.
-	cfg, err := Load(writeCfg(t, minimalYAML+"  models: [\"alpha\", \"beta\"]\n"))
+func TestLoadModelsDefaultAndValidation(t *testing.T) {
+	// Unmarked list ⇒ the first entry is the default.
+	cfg, err := Load(writeCfg(t, minimalBase+modelsYAML(
+		"    - id: \"alpha\"\n    - id: \"beta\"\n")))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := []string{"alpha", "beta", "test-model"}
-	if len(cfg.LLM.Models) != len(want) {
-		t.Fatalf("models = %v, want %v", cfg.LLM.Models, want)
-	}
-	for i := range want {
-		if cfg.LLM.Models[i] != want[i] {
-			t.Fatalf("models = %v, want %v", cfg.LLM.Models, want)
-		}
+	if cfg.LLM.DefaultModelID() != "alpha" || cfg.LLM.ModelNames()[1] != "beta" {
+		t.Errorf("default/first = %q / %v", cfg.LLM.DefaultModelID(), cfg.LLM.ModelNames())
 	}
 
-	// Already present ⇒ not duplicated.
-	cfg, err = Load(writeCfg(t, minimalYAML+"  models: [\"test-model\", \"alpha\"]\n"))
+	// Marked entry wins over position.
+	cfg, err = Load(writeCfg(t, minimalBase+modelsYAML(
+		"    - id: \"alpha\"\n    - id: \"beta\"\n      default: true\n")))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(cfg.LLM.Models) != 2 || cfg.LLM.Models[1] != "alpha" {
-		t.Errorf("models = %v, want no duplicate of test-model", cfg.LLM.Models)
+	if cfg.LLM.DefaultModelID() != "beta" {
+		t.Errorf("default = %q, want the marked beta", cfg.LLM.DefaultModelID())
+	}
+
+	// A single entry needs no marking at all.
+	cfg, err = Load(writeCfg(t, minimalBase+modelsYAML("    - id: \"solo\"\n")))
+	if err != nil || !cfg.LLM.Models[0].Default || cfg.LLM.DefaultModelID() != "solo" {
+		t.Errorf("solo entry: err=%v default=%v", err, cfg.LLM.Models)
+	}
+
+	for _, tc := range []struct{ name, yaml string }{
+		{"no models at all", minimalBase},
+		{"two defaults claimed", minimalBase + modelsYAML(
+			"    - id: \"a\"\n      default: true\n    - id: \"b\"\n      default: true\n")},
+		{"duplicate ids", minimalBase + modelsYAML(
+			"    - id: \"a\"\n    - id: \"a\"\n")},
+		{"entry without id", minimalBase + modelsYAML("    - default: true\n")},
+	} {
+		if _, err := Load(writeCfg(t, tc.yaml)); err == nil {
+			t.Errorf("%s accepted", tc.name)
+		}
+	}
+}
+
+// The pre-picker spellings answer with the new shape, not a raw YAML
+// complaint: `model:`, an llm-level `thinking_profile:`, and string
+// items in `models:` are all migration messages.
+func TestLoadLegacyModelKeys(t *testing.T) {
+	cases := []struct{ name, yaml, want string }{
+		{"llm.model", minimalBase + "  model: \"old-way\"\n", "has moved into llm.models"},
+		{"llm.thinking_profile", minimalYAML + "  thinking_profile: qwen3_8\n", "thinking_profile has moved into llm.models"},
+		{"string models", minimalBase + "  models: [\"old-way\"]\n", "entries are maps"},
+	}
+	for _, tc := range cases {
+		_, err := Load(writeCfg(t, tc.yaml))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to say %q", tc.name, err, tc.want)
+		}
 	}
 }
 
@@ -936,7 +980,6 @@ scratchpad:
 llm:
   endpoint: "http://192.168.0.2:8080/v1"
   api_key: ""
-  model: "Qwen3.8 Flash Next"
   max_context_tokens: 32768
   default_temperature: 0.7
   request_timeout: 5m
@@ -947,7 +990,12 @@ llm:
   endpoints_file: ./endpoints.yaml
   profiles_file: ./thinking-profiles.yaml
   endpoint_type: gufo
-  thinking_profile: qwen3_8
+  models:
+    - id: "Qwen3.8 Flash Next"
+      default: true
+      thinking_profile: qwen3_8
+    - id: "quiet-model"
+      thinking_profile: operator_p
 `
 	p := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
@@ -957,13 +1005,15 @@ llm:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.LLM.Model != "Qwen3.8 Flash Next" || cfg.LLM.MaxContextTokens != 32768 ||
+	if cfg.LLM.DefaultModelID() != "Qwen3.8 Flash Next" || cfg.LLM.MaxContextTokens != 32768 ||
 		cfg.LLM.DefaultTemperature != 0.7 || cfg.LLM.MaxTokensResponse != 16384 ||
 		!cfg.LLM.Vision || cfg.LLM.RequestTimeout.D() != 5*time.Minute {
 		t.Errorf("existing llm values changed meaning: %+v", cfg.LLM)
 	}
-	if cfg.LLM.EndpointType != "gufo" || cfg.LLM.ThinkingProfile != "qwen3_8" {
-		t.Errorf("new fields = %q / %q", cfg.LLM.EndpointType, cfg.LLM.ThinkingProfile)
+	if cfg.LLM.EndpointType != "gufo" ||
+		cfg.LLM.ThinkingProfileFor("Qwen3.8 Flash Next") != "qwen3_8" ||
+		cfg.LLM.ThinkingProfileFor("quiet-model") != "operator_p" {
+		t.Errorf("new fields = %q / %v", cfg.LLM.EndpointType, cfg.LLM.ModelProfiles())
 	}
 	if want := filepath.Join(dir, "endpoints.yaml"); cfg.LLM.EndpointsFile != want {
 		t.Errorf("endpoints_file = %q, want resolved %q", cfg.LLM.EndpointsFile, want)
@@ -972,7 +1022,7 @@ llm:
 		t.Fatal("runtime not resolved")
 	}
 	var ids []string
-	for _, c := range cfg.Thinking.Choices() {
+	for _, c := range cfg.Thinking.Choices("Qwen3.8 Flash Next") {
 		ids = append(ids, c.ID)
 	}
 	want := []string{"default", "off", "low", "medium", "high"}
@@ -984,21 +1034,32 @@ llm:
 			t.Fatalf("choices = %v, want %v", ids, want)
 		}
 	}
+	// The second entry's empty profile offers only the built-in Default:
+	// the dropdown follows the model, per entry.
+	if q := cfg.Thinking.Choices("quiet-model"); len(q) != 1 || q[0].ID != "default" {
+		t.Errorf("quiet-model choices = %v, want just default", q)
+	}
 }
 
 // An explicitly selected but unknown ID, or a broken catalogue file, is
 // a startup error — config.Load fails, the server never boots half-on.
 func TestLoadThinkingFailures(t *testing.T) {
-	cases := []struct{ name, tail string }{
-		{"unknown endpoint_type", "  endpoint_type: nope\n  thinking_profile: qwen3_8\n"},
-		{"unknown thinking_profile", "  endpoint_type: gufo\n  thinking_profile: nope\n"},
-		{"profile without type", "  thinking_profile: qwen3_8\n"},
-		{"native protocol", "  endpoint_type: ollama\n  thinking_profile: qwen3_5\n"},
+	cases := []struct{ name, epType, profile string }{
+		{"unknown endpoint_type", "nope", "qwen3_8"},
+		{"unknown thinking_profile", "gufo", "nope"},
+		{"profile without type", "", "qwen3_8"},
+		{"native protocol", "ollama", "qwen3_5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Load(writeCfg(t, minimalYAML+catalogueTail(t)+"  "+tc.tail)); err == nil {
-				t.Errorf("config accepted: %s", tc.tail)
+			extra := ""
+			if tc.epType != "" {
+				extra = "  endpoint_type: " + tc.epType + "\n"
+			}
+			body := minimalBase + catalogueTail(t) + extra +
+				modelsYAML("    - id: \"test-model\"\n      thinking_profile: "+tc.profile+"\n")
+			if _, err := Load(writeCfg(t, body)); err == nil {
+				t.Errorf("config accepted: %s / %s", tc.epType, tc.profile)
 			}
 		})
 	}
@@ -1014,8 +1075,9 @@ func TestLoadThinkingFailures(t *testing.T) {
 			t.Error("endpoint_type without endpoints_file accepted")
 		}
 		// Endpoint catalogue present, profile named without its file.
-		if _, err := Load(writeCfg(t, minimalYAML+repoCatalogueLine(t, "endpoints.yaml")+
-			"  endpoint_type: gufo\n  thinking_profile: qwen3_8\n")); err == nil {
+		if _, err := Load(writeCfg(t, minimalBase+repoCatalogueLine(t, "endpoints.yaml")+
+			"  endpoint_type: gufo\n"+
+			modelsYAML("    - id: \"test-model\"\n      thinking_profile: qwen3_8\n"))); err == nil {
 			t.Error("thinking_profile without profiles_file accepted")
 		}
 		// "none" is built in, so the profile file stays optional then.
@@ -1035,7 +1097,9 @@ func TestLoadThinkingSelectorEnable(t *testing.T) {
 		}
 	})
 	t.Run("enable with the full pair shows the selector", func(t *testing.T) {
-		cfg, err := Load(writeCfg(t, minimalYAML+catalogueTail(t)+"  thinking_selector_enable: true\n  endpoint_type: gufo\n  thinking_profile: qwen3_8\n"))
+		cfg, err := Load(writeCfg(t, minimalBase+catalogueTail(t)+
+			"  thinking_selector_enable: true\n  endpoint_type: gufo\n"+
+			modelsYAML("    - id: \"test-model\"\n      thinking_profile: qwen3_8\n")))
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -1047,7 +1111,9 @@ func TestLoadThinkingSelectorEnable(t *testing.T) {
 		}
 	})
 	t.Run("disable overrides a spelled-out selection", func(t *testing.T) {
-		cfg, err := Load(writeCfg(t, minimalYAML+"  thinking_selector_enable: false\n  endpoint_type: gufo\n  thinking_profile: qwen3_8\n"))
+		cfg, err := Load(writeCfg(t, minimalBase+
+			"  thinking_selector_enable: false\n  endpoint_type: gufo\n"+
+			modelsYAML("    - id: \"test-model\"\n      thinking_profile: qwen3_8\n")))
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}

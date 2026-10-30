@@ -40,9 +40,11 @@ func gufoQwen38(t *testing.T) *Runtime {
 	return rt
 }
 
-func choiceIDs(rt *Runtime) []string {
+func choiceIDs(rt *Runtime) []string { return idsOf(rt.Choices("")) }
+
+func idsOf(cs []PublicChoice) []string {
 	var ids []string
-	for _, c := range rt.Choices() {
+	for _, c := range cs {
 		ids = append(ids, c.ID)
 	}
 	return ids
@@ -68,14 +70,14 @@ func TestGufoQwen38ChoicesAndFragments(t *testing.T) {
 		t.Fatalf("choices = %v, want default off low medium high", got)
 	}
 
-	high, ok := rt.Resolve("high")
+	high, ok := rt.ResolveFor("", "high")
 	if !ok {
 		t.Fatal("high missing")
 	}
 	if high.Label != "High" {
 		t.Errorf("label = %q, want High", high.Label)
 	}
-	frag, err := rt.Fragment(high)
+	frag, err := rt.Fragment("", high)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +86,8 @@ func TestGufoQwen38ChoicesAndFragments(t *testing.T) {
 		t.Errorf("High fragment = %s", got)
 	}
 
-	off, _ := rt.Resolve("off")
-	frag, err = rt.Fragment(off)
+	off, _ := rt.ResolveFor("", "off")
+	frag, err = rt.Fragment("", off)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,11 +99,11 @@ func TestGufoQwen38ChoicesAndFragments(t *testing.T) {
 	}
 
 	// Default sends no override at all.
-	def, ok := rt.Resolve("")
+	def, ok := rt.ResolveFor("", "")
 	if !ok || def.ID != DefaultID {
 		t.Fatalf(`Resolve("") = %+v`, def)
 	}
-	if frag, err := rt.Fragment(def); frag != nil || err != nil {
+	if frag, err := rt.Fragment("", def); frag != nil || err != nil {
 		t.Errorf("Default fragment = %v (%v), want nil", frag, err)
 	}
 }
@@ -114,8 +116,8 @@ func TestProfileEffortsAndMissingOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	high, _ := oss.Resolve("high")
-	frag, err := oss.Fragment(high)
+	high, _ := oss.ResolveFor("", "high")
+	frag, err := oss.Fragment("", high)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +137,10 @@ func TestProfileEffortsAndMissingOff(t *testing.T) {
 }
 
 // Every supplied profile walked against every openai_chat endpoint:
-// recipes and allowlists exclude choices (§5 step 3) with warnings, a
-// toggle profile on an effort-only endpoint has nothing usable and is
-// rejected, and no combination sneaks effort+budget together.
+// recipes and allowlists exclude choices (§5 step 3) with warnings and
+// no combination sneaks effort+budget together. Since the lm_studio
+// entry learned an off recipe (reasoning_effort: none), every profile in
+// the catalogue has at least one expressible option on every endpoint.
 func TestRecipeAndAllowlistFiltering(t *testing.T) {
 	openaiEndpoints := []string{"gufo", "llama_cpp", "vllm", "lm_studio", "ollama_openai", "openrouter"}
 	profiles := []string{"none", "qwen3_5", "qwen3_6", "qwen3_8", "qwen3_8_thinking_only",
@@ -146,29 +149,20 @@ func TestRecipeAndAllowlistFiltering(t *testing.T) {
 	for _, ep := range openaiEndpoints {
 		for _, prof := range profiles {
 			rt, err := Build(catSettings(Settings{EndpointType: ep, ProfileID: prof, MaxOutput: 16384}))
-			if !slices.Contains([]string{"qwen3_5", "qwen3_6", "gemma4"}, prof) || ep != "lm_studio" {
-				if err != nil {
-					t.Errorf("%s/%s: %v", ep, prof, err)
-					continue
-				}
-			} else if err == nil {
-				// Toggle-only profile on the effort-only lm_studio endpoint:
-				// nothing usable, the combination must be rejected.
-				t.Errorf("%s/%s: combination accepted, want rejection", ep, prof)
-				continue
-			} else {
+			if err != nil {
+				t.Errorf("%s/%s: %v", ep, prof, err)
 				continue
 			}
-			for _, c := range rt.Choices() {
+			for _, c := range rt.Choices("") {
 				if c.ID == DefaultID {
 					continue
 				}
-				ch, ok := rt.Resolve(c.ID)
+				ch, ok := rt.ResolveFor("", c.ID)
 				if !ok {
 					t.Errorf("%s/%s: choice %s unresolvable", ep, prof, c.ID)
 					continue
 				}
-				frag, err := rt.Fragment(ch)
+				frag, err := rt.Fragment("", ch)
 				if err != nil {
 					t.Errorf("%s/%s: fragment %s: %v", ep, prof, c.ID, err)
 					continue
@@ -226,8 +220,8 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	short, _ := rt.Resolve("short")
-	frag, err := rt.Fragment(short)
+	short, _ := rt.ResolveFor("", "short")
+	frag, err := rt.Fragment("", short)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,8 +319,8 @@ profiles:
       label: 'Off'
       mode: 'off'
 `)})
-	off, _ := rt2.Resolve("off")
-	frag, err := rt2.Fragment(off)
+	off, _ := rt2.ResolveFor("", "off")
+	frag, err := rt2.Fragment("", off)
 	if err != nil || frag["stop_thinking"] != true {
 		t.Errorf("new endpoint fragment = %v (%v)", frag, err)
 	}
@@ -464,15 +458,15 @@ func TestStrictParsing(t *testing.T) {
 // string / a bool an int.
 func TestFragmentCopiesAndTypes(t *testing.T) {
 	rt := gufoQwen38(t)
-	high, _ := rt.Resolve("high")
-	a, err := rt.Fragment(high)
+	high, _ := rt.ResolveFor("", "high")
+	a, err := rt.Fragment("", high)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a["chat_template_kwargs"].(map[string]any)["enable_thinking"] = "mutated"
 	a["extra"] = true
 
-	b, err := rt.Fragment(high)
+	b, err := rt.Fragment("", high)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,5 +505,49 @@ func TestFingerprintAndSavedResolution(t *testing.T) {
 		EndpointType: "vllm", ProfileID: "qwen3_8"}))
 	if other.Fingerprint("Qwen3.8 Flash Next") == ctx {
 		t.Error("fingerprint ignores endpoint_type")
+	}
+}
+
+// The picker's per-model profiles: each entry's dropdown describes its
+// own model, an entry spelling no profile is "none" (entries state the
+// truth, they do not inherit), and a model outside the picker falls back
+// to the deployment-level profile.
+func TestPerModelProfiles(t *testing.T) {
+	rt := mustBuild(t, catSettings(Settings{
+		EndpointType: "gufo", ProfileID: "qwen3_8", MaxOutput: 16384,
+		ModelProfiles: map[string]string{
+			"qwen-model": "qwen3_8",
+			"oss-model":  "gpt_oss",
+			"quiet":      "",
+		},
+	}))
+	if got := idsOf(rt.Choices("qwen-model")); !slices.Contains(got, "high") {
+		t.Errorf("qwen-model choices = %v, want the qwen3_8 list", got)
+	}
+	oss := idsOf(rt.Choices("oss-model"))
+	if !slices.Contains(oss, "high") || slices.Contains(oss, "off") {
+		t.Errorf("oss-model choices = %v, want gpt_oss options without off", oss)
+	}
+	if got := idsOf(rt.Choices("quiet")); len(got) != 1 || got[0] != DefaultID {
+		t.Errorf("quiet choices = %v, want just Default", got)
+	}
+	// A model not in the picker resolves to the deployment default.
+	if got := idsOf(rt.Choices("gone-since")); !slices.Contains(got, "high") {
+		t.Errorf("out-of-picker choices = %v, want the default profile list", got)
+	}
+	// The fingerprint carries the profile in force: the same saved
+	// choice id under two profiles is never cross-applied.
+	if rt.Fingerprint("qwen-model") == rt.Fingerprint("oss-model") {
+		t.Error("fingerprint ignores the per-model profile")
+	}
+	if _, ok := rt.ResolveFor("quiet", "high"); ok {
+		t.Error("high resolves for a none-profile model")
+	}
+	if _, ok := rt.ResolveFor("oss-model", "high"); !ok {
+		t.Error("high does not resolve for the gpt_oss model")
+	}
+	// One profile's exclusions warn once, not once per model sharing it.
+	if n := len(rt.Warnings()); n != 0 {
+		t.Errorf("warnings = %v, want none for this combination", rt.Warnings())
 	}
 }

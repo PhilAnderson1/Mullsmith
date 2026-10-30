@@ -689,7 +689,15 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 		for _, m := range models {
 			ids = append(ids, m.ID)
 		}
-		found := llm.HasModel(ids, cfg.LLM.Model)
+		// Every picker model must be served, not just the default: a
+		// conversation can select any of them.
+		var missing []string
+		for _, want := range cfg.LLM.ModelNames() {
+			if !llm.HasModel(ids, want) {
+				missing = append(missing, want)
+			}
+		}
+		found := len(missing) == 0
 		if !found {
 			ok = false
 		}
@@ -698,24 +706,25 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 			status = "FAIL"
 		}
 		fmt.Printf("[%s] llm.endpoint           %d model(s) served: %v\n", status, len(ids), ids)
-		if !found {
-			fmt.Printf("[FAIL] llm.model              %q not offered by endpoint\n", cfg.LLM.Model)
+		for _, want := range missing {
+			fmt.Printf("[FAIL] llm.models             %q not offered by endpoint\n", want)
 		}
 		// Context window (§2.2): a pinned number is the operator's word;
-		// -1 means we read the endpoint's, and report honestly when the
-		// endpoint says nothing.
-		window, known := llm.ContextLengthFor(models, cfg.LLM.Model)
+		// -1 means we read the endpoint's — for the DEFAULT model, the one
+		// the meter divides by — and report honestly when the endpoint
+		// says nothing.
+		window, known := llm.ContextLengthFor(models, cfg.LLM.DefaultModelID())
 		switch {
 		case cfg.LLM.MaxContextTokens > 0 && known && window != cfg.LLM.MaxContextTokens:
 			fmt.Printf("[warn] llm.max_context_tokens config pins %d, endpoint reports %d for %q\n",
-				cfg.LLM.MaxContextTokens, window, cfg.LLM.Model)
+				cfg.LLM.MaxContextTokens, window, cfg.LLM.DefaultModelID())
 		case cfg.LLM.MaxContextTokens > 0:
 			fmt.Printf("[ok]   llm.max_context_tokens pinned at %d (endpoint: %s)\n",
 				cfg.LLM.MaxContextTokens, windowOrNone(window, known))
 		case known:
-			fmt.Printf("[ok]   llm.max_context_tokens auto (-1): using %d reported by %q\n", window, cfg.LLM.Model)
+			fmt.Printf("[ok]   llm.max_context_tokens auto (-1): using %d reported by %q\n", window, cfg.LLM.DefaultModelID())
 		default:
-			fmt.Printf("[warn] llm.max_context_tokens auto (-1): endpoint reports no window for %q — the\n", cfg.LLM.Model)
+			fmt.Printf("[warn] llm.max_context_tokens auto (-1): endpoint reports no window for %q — the\n", cfg.LLM.DefaultModelID())
 			fmt.Printf("                           fullness meter shows token counts only and overlong\n")
 			fmt.Printf("                           conversations fail at the endpoint; set a number to fix.\n")
 		}

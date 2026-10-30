@@ -30,7 +30,7 @@ func genFor(t *testing.T, ts *httptest.Server) *Generator {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL + "/v1"
-	cfg.LLM.Model = "test-model"
+	cfg.LLM.Models = []config.LLMModel{{ID: "test-model", Default: true}}
 	cfg.LLM.MaxTokensResponse = 128
 	return &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
 }

@@ -77,6 +77,8 @@ endpoints:
     protocol: openai_chat
     path: /chat/completions
     requests:
+      'off':
+        reasoning_effort: none
       effort:
         reasoning_effort: $effort
   lm_studio_native:

@@ -35,7 +35,7 @@ func TestTitleBudgetSurvivesAlwaysThinkingEndpoint(t *testing.T) {
 	defer ts.Close()
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL
-	cfg.LLM.Model = "qwen/qwen3.8-27b"
+	cfg.LLM.Models = []config.LLMModel{{ID: "qwen/qwen3.8-27b", Default: true}}
 	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
 	title, err := g.Title(context.Background(), "", "how do I bake sourdough")
 	if err != nil {

@@ -158,9 +158,15 @@ scratchpad:
 llm:
   endpoint: "http://127.0.0.1:8080/v1"        # OpenAI-compatible base URL
   api_key: ""                                 # optional; sent as Bearer
-  model: "Qwen3.8 Flash Next"
-  models:                                # picker list in UI; `model` is always part of it
-    - Qwen3.8 Flash Next
+  models:                              # the one model list: each entry is a
+    - id: "Qwen3.8 Flash Next"         # picker item carrying its own behaviour
+      default: true                    # exactly one may claim it; none claimed
+                                       # ⇒ the first entry (a single model needs
+                                       # no marking). Conversations with no
+                                       # explicit choice run on the default.
+      thinking_profile: "qwen3_8"      # catalogue id: this model's choices;
+                                       # omitted or "none" hides the dropdown
+                                       # for this model (no inheritance)
   max_context_tokens: -1                 # -1 = read the window from the endpoint's /v1/models
                                          # listing (context_length); a number pins it. When auto
                                          # detects nothing the meter degrades to token counts and
@@ -172,17 +178,18 @@ llm:
                                          # the conversation (needs a vision-capable
                                          # endpoint; uploads are never sent on their own)
   vision_max_image_bytes: 4MiB           # per-picture cap for view_image
-  # Thinking control (thinking-control-specification.md, §6.3). All four
+  # Thinking control (thinking-control-specification.md, §6.3). All three
   # optional: omitted together, no selector appears and requests keep the
-  # plain transport. The two files ARE the catalogues — nothing is baked
-  # into the binary, so edits, additions and deletions all take effect on
-  # restart. `endpoint_type` requires `endpoints_file`; a named
-  # `thinking_profile` requires `profiles_file` ("none" is built in).
-  # Relative paths resolve against this config file's directory.
+  # plain transport. The choice LIVES on the model entries above;
+  # `endpoint_type` stays here because it is a property of the URL. The
+  # two files ARE the catalogues — nothing is baked into the binary, so
+  # edits, additions and deletions all take effect on restart.
+  # `endpoint_type` requires `endpoints_file`; a named `thinking_profile`
+  # requires `profiles_file` ("none" is built in). Relative paths resolve
+  # against this config file's directory.
   endpoints_file: ""                     # e.g. ./endpoints.yaml (request-field recipes)
   profiles_file: ""                      # e.g. ./thinking-profiles.yaml (choice lists)
   endpoint_type: ""                      # catalogue id: the request convention for `endpoint`
-  thinking_profile: ""                   # catalogue id: the choices for `model`; "none" hides the picker
 
 tools:
   web_search:
@@ -463,8 +470,10 @@ the chip behind as a historical record whose download 404s (by design).
 
 `GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
 `registration` mode, `remember_login`/`show_reasoning` flags, `email_features`
-(§9.17), `thinking` (`{choices: [{id, label}]}` — the effective list for this deployment's
-endpoint/model, or `null` when the selector is off; only ids and labels cross the wire, §6.3),
+(§9.17), `thinking` (`{choices_by_model: {<model id>: [{id, label}]}}` — one list per picker
+model, since a choice list describes a model; `null` when the selector is off. The SPA reads
+the row for the conversation's active model — its own pick, else `default_model`; only ids
+and labels cross the wire, §6.3),
 `max_context_tokens` (the context window in force for the meter: the pinned config
 number, or the endpoint-discovered one while auto; `null` while auto-detection has nothing),
 message
@@ -550,7 +559,7 @@ Event taxonomy (SSE `event:` field): `start`, `token`, `reasoning`, `title`,
 ### 6.3 Thinking-level control
 
 `internal/thinking` owns the feature: two catalogues (endpoints = how one request convention
-expresses a choice as JSON fields; profiles = the ordered choices for the configured model),
+expresses a choice as JSON fields; profiles = the ordered choices a model entry can name),
 read from `llm.endpoints_file`/`llm.profiles_file`, which are their **sole source** — nothing is
 baked into the binary beyond the no-choices profile `none`, so adding, editing or deleting an
 entry is a YAML edit plus a restart, never a recompile. A selection whose catalogue file is
@@ -559,7 +568,9 @@ shows or hides the selector outright (enabled it still requires an `endpoint_typ
 switch keeps the legacy rule (a selector exists exactly when one of type/profile is spelled out). `config.Load`
 builds the runtime after `Validate` (which stays pure); an unreadable configured file, an
 unknown `endpoint_type`/`thinking_profile`, or a native (non-`openai_chat`) protocol selection
-refuses startup. Endpoint range misses hide the offending choice with a startup warning; a
+refuses startup. Every profile any picker entry names is validated eagerly, so a per-model
+selection is a startup error too, never a mid-flight surprise. Endpoint range misses hide the
+offending choice with a startup warning; a
 budget preset that could leave no room inside `max_tokens_response` is a configuration error.
 
 - **Choice → request.** A choice is one ID from the profile. At request time the backend
@@ -573,16 +584,20 @@ budget preset that could leave no room inside `max_tokens_response` is a configu
   in the URL survives). Titling (`Complete`) keeps its own hardcoded thinking-off: the
   selector owns only the chat body.
 - **State.** `conversations.thinking` ('' = Default) plus `thinking_ctx` = sha256 over
-  endpoint URL · the conversation's effective model · endpoint type · profile ID (never the
+  endpoint URL · the conversation's effective model · endpoint type · the profile IN FORCE
+  FOR THAT MODEL (never the
   API key). Reads resolve the saved pair against the current context: any mismatch projects
-  `default` visibly rather than applying a choice belonging to another model. An invalid
+  `default` visibly rather than applying a choice belonging to another model. Switching
+  between two picker models on the SAME profile keeps a saved choice; moving to a model
+  whose profile cannot express it drops to `default`. An invalid
   choice on PATCH or send is `400 invalid_thinking_choice` — validated before persistence and
   before the endpoint is contacted, never silently translated.
 - **Snapshot.** The fragment is rendered once at generation start and reused for every tool
   round of that reply: moving the selector mid-flight affects the next request only.
 - **UI.** A `Thinking` item inside the composer's **"+" add-menu** (§10.2), populated from
-  `meta.thinking`, hidden entirely when there is nothing to choose. Changing it PATCHes the
-  conversation (reverting the select if the server refuses).
+  the `meta.thinking` row for the conversation's active model, hidden entirely when there is
+  nothing to choose; a model switch rebuilds it for the model now in force. Changing it
+  PATCHes the conversation (reverting the select if the server refuses).
 
 ---
 
@@ -1303,7 +1318,9 @@ Cross-cutting touch/responsive behavior:
 | View | Contents |
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
-| **Chat (main)** | Left sidebar: conversation list (search, "New chat"; rename and delete hide behind a **"…"** on the row — revealed on hover, always visible where hover doesn't exist — and the same menu opens on right-click or mobile long press via `contextmenu`) with a muted **"Delete older than…"** command dropdown under it (1 day / 1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), a **"+" add-menu button** (a vertical popover holding the muted **Thinking** dropdown — Default first, then the deployment's choices from `meta.thinking`; hidden when there is nothing to choose, §6.3 — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
+| **Chat (main)** | Left sidebar: conversation list (search, "New chat"; rename and delete hide behind a **"…"** on the row — revealed on hover, always visible where hover doesn't exist — and the same menu opens on right-click or mobile long press via `contextmenu`) with a muted **"Delete older than…"** command dropdown under it (1 day / 1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), a **"+" add-menu button** (a vertical popover holding the muted **Thinking** dropdown — Default first, then the choices
+listed for the conversation's active model in `meta.thinking`; hidden when there is nothing
+to choose, §6.3 — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
 note, pinned to the right of a footnote row under the answer (completion tokens
 ÷ model-round time; absent on rows without timing, e.g. history from before the
 feature). The **regenerate** button shares that row at the far left, so the two

@@ -59,8 +59,7 @@ func chatCfg(t *testing.T, endpoint string) *config.Config {
 	t.Helper()
 	cfg := authCfg(t)
 	cfg.LLM.Endpoint = endpoint
-	cfg.LLM.Model = "m1"
-	cfg.LLM.Models = []string{"m1"}
+	cfg.LLM.Models = []config.LLMModel{{ID: "m1", Default: true}}
 	cfg.LLM.MaxContextTokens = 4096
 	cfg.LLM.MaxTokensResponse = 256
 	return cfg
