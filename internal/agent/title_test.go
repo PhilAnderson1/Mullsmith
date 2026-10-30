@@ -37,12 +37,64 @@ func TestTitleBudgetSurvivesAlwaysThinkingEndpoint(t *testing.T) {
 	cfg.LLM.Endpoint = ts.URL
 	cfg.LLM.Models = []config.LLMModel{{ID: "qwen/qwen3.8-27b", Default: true}}
 	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
-	title, err := g.Title(context.Background(), "", "how do I bake sourdough")
+	title, err := g.Title(context.Background(), "", "how do I bake sourdough", nil)
 	if err != nil {
 		t.Fatalf("Title: %v", err)
 	}
 	if title != "Baking sourdough bread" {
 		t.Errorf("title = %q, want the endpoint's title", title)
+	}
+}
+
+// The side-quest fragment rides the title request in place of the
+// fallback hint: one thinking control on the wire, the catalogue's.
+func TestTitleCarriesQuietFragment(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"Sourdough basics"}}]}`)
+	}))
+	defer ts.Close()
+	cfg := &config.Config{}
+	cfg.LLM.Endpoint = ts.URL
+	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
+	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	title, err := g.Title(context.Background(), "m", "how do I bake sourdough",
+		map[string]any{"reasoning_effort": "none"})
+	if err != nil {
+		t.Fatalf("Title: %v", err)
+	}
+	if title != "Sourdough basics" {
+		t.Errorf("title = %q", title)
+	}
+	if got["reasoning_effort"] != "none" {
+		t.Errorf("fragment did not ride: %v", got)
+	}
+	if _, present := got["chat_template_kwargs"]; present {
+		t.Error("the fallback hint must step aside for the catalogue fragment")
+	}
+}
+
+// Without a fragment the fallback convention stands on its own.
+func TestTitleFallbackHintWithoutFragment(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"Sourdough basics"}}]}`)
+	}))
+	defer ts.Close()
+	cfg := &config.Config{}
+	cfg.LLM.Endpoint = ts.URL
+	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
+	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	if _, err := g.Title(context.Background(), "m", "how do I bake sourdough", nil); err != nil {
+		t.Fatalf("Title: %v", err)
+	}
+	kw, ok := got["chat_template_kwargs"].(map[string]any)
+	if !ok || kw["enable_thinking"] != false {
+		t.Errorf("fallback hint missing: %v", got)
 	}
 }
 

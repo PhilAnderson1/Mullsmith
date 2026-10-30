@@ -13,6 +13,26 @@ import (
 // already complete for its operation (§3). The result is a fresh copy on
 // every call, so a request never inherits a previous turn's fields and
 // the chat layer is free to merge it destructively into its payload.
+//
+// QuietFragment renders the gentlest request fragment the catalogues can
+// express for a model — the side-quest choice (title quest, §12): the
+// endpoint-expressible "off" option, else the profile's lightest rung.
+// No selector, no options, or a selector turned off: nil — the caller's
+// own fallback stands. A render error cannot happen for a Quietest
+// option (they are built from the same validated state); nil it too, so
+// side quests stay silent rather than fail loud.
+func (r *Runtime) QuietFragment(model string) map[string]any {
+	ch, ok := r.Quietest(model)
+	if !ok {
+		return nil
+	}
+	frag, err := r.Fragment(model, ch)
+	if err != nil {
+		return nil
+	}
+	return frag
+}
+
 func (r *Runtime) Fragment(model string, c Choice) (map[string]any, error) {
 	if r == nil {
 		return nil, fmt.Errorf("thinking control is not configured; choice %q cannot be sent", c.ID)

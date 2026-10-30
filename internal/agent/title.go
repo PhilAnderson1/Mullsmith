@@ -20,19 +20,21 @@ const titleMaxRunes = 60
 
 // Title turns the first user message of a conversation into a short topic
 // title. It is a best-effort side quest: any upstream failure is returned
-// and the caller keeps the placeholder title.
-func (g *Generator) Title(ctx context.Context, model, firstUser string) (string, error) {
+// and the caller keeps the placeholder title. thinking is the catalogue's
+// quietest fragment for the model (off, else the lowest rung, §12) — nil
+// when no selector covers it, leaving llm.Complete's fallback hint.
+func (g *Generator) Title(ctx context.Context, model, firstUser string, thinking map[string]any) (string, error) {
 	msgs := []llm.ChatMessage{
 		{Role: "system", Content: TitleSystemPrompt},
 		{Role: "user", Content: clipRunes(firstUser, 600)},
 	}
-	// Reasoning is disabled for this call (llm.Complete), so a modest token
-	// budget suffices — on endpoints that honour it. Some ignore the kwarg
-	// outright (measured on LM Studio + Qwen3.8: ~90 reasoning tokens for
-	// this very prompt before any content), so the budget must also cover
-	// a thinking preamble; 512 is generous headroom without risking a
-	// rambling model owning the whole timeout.
-	raw, err := g.LLM.Complete(ctx, model, msgs, 512)
+	// The quietest option asks the endpoint to skip reasoning; some
+	// ignore every thinking control outright (measured on LM Studio +
+	// Qwen3.8: ~90 reasoning tokens for this very prompt before any
+	// content), so the budget must also cover a thinking preamble; 512
+	// is generous headroom without risking a rambling model owning the
+	// whole timeout.
+	raw, err := g.LLM.Complete(ctx, model, msgs, 512, thinking)
 	if err != nil {
 		return "", err
 	}

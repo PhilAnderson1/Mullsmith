@@ -873,7 +873,13 @@ func (s *Server) nameConversation(conv *store.Conversation, firstUser string, co
 	// reason out loud before the title (see Title's budget note).
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	title, err := s.generator.Title(ctx, conv.Model, firstUser)
+	// The title quest runs as quietly as the catalogues allow: this
+	// model's off option, else its lightest rung (§12). The
+	// conversation's own thinking choice never applies here — a title
+	// is not a reply. Nil when no selector covers the model, leaving
+	// llm.Complete's fallback hint.
+	quiet := s.cfg.Thinking.QuietFragment(s.thinkingModel(conv.Model))
+	title, err := s.generator.Title(ctx, conv.Model, firstUser, quiet)
 	if err != nil {
 		s.logger.Info("auto-title skipped", "conversation", conv.ID, "error", err)
 		return

@@ -529,9 +529,12 @@ everything else behind auth.
    alongside the reply: on a serialised endpoint it then claims the model while the
    browser shows its thinking spinner, instead of queueing behind the whole reply —
    queue time is charged to the quest's own budget, so an after-the-reply ordering
-   would let any long reply cancel its own title indefinitely. The request asks the
-   endpoint to skip reasoning but carries a token budget that also covers a thinking
-   preamble, because some endpoints ignore the skip (LM Studio + Qwen3.8 measured:
+   would let any long reply cancel its own title indefinitely. The request runs as
+   quietly as the catalogues allow — the model's `off` choice where the endpoint can
+   express one, else its lightest rung (§6.3); with no selector it falls back to the
+   de facto `chat_template_kwargs` thinking-off hint. Either way it also carries a
+   token budget covering a thinking preamble, because some endpoints ignore every
+   control (LM Studio + Qwen3.8 measured:
    ~90 reasoning tokens before any content — a title-sized budget returns empty
    content forever).
    Written only if the row is still unnamed (a guarded
@@ -587,8 +590,10 @@ budget preset that could leave no room inside `max_tokens_response` is a configu
   inherits another's fields. Clients supply only the ID — never effort strings or JSON.
 - **Route.** With an endpoint definition selected, its `path` replaces the client's
   `/chat/completions` suffix, joined to `llm.endpoint` exactly once (a reverse-proxy prefix
-  in the URL survives). Titling (`Complete`) keeps its own hardcoded thinking-off: the
-  selector owns only the chat body.
+  in the URL survives). Titling (`Complete`) never carries the conversation's choice —
+  it renders the model's quietest option (`QuietFragment`: off, else the lightest rung)
+  and falls back to its own hardcoded thinking-off hint only when no selector covers
+  the model; the selector owns only the chat body.
 - **State.** `conversations.thinking` ('' = Default) plus `thinking_ctx` = sha256 over
   endpoint URL · the conversation's effective model · endpoint type · the profile IN FORCE
   FOR THAT MODEL (never the

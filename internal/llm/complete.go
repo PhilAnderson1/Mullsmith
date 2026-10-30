@@ -19,17 +19,23 @@ type completionResponse struct {
 	} `json:"choices"`
 }
 
-// Complete runs one small non-streaming chat completion (side quests such as
-// conversation titling). Thinking is disabled via chat_template_kwargs so
-// reasoning models answer promptly; endpoints that ignore the kwarg still
-// work, just slower. maxTokens bounds the reply; ctx bounds the wait.
+// Complete runs one small non-streaming chat completion (side quests such
+// as conversation titling). maxTokens bounds the reply; ctx bounds the
+// wait. thinking is the catalogue-rendered fragment for this model's
+// quietest option (off, else the lightest rung — §12): when present it
+// IS the thinking control, sent in place of the fallback hint below.
+// With no selector configured, the fallback stays: chat_template_kwargs
+// enable_thinking is the de facto llama.cpp-family convention (the very
+// field the gufo/llama_cpp catalogues use for their off recipe), and
+// servers that do not know it ignore it harmlessly. Endpoints that
+// ignore both still work, just slower.
 //
-// This hardcoded disable is deliberate and NOT the thinking selector: a
-// title quest is not a conversation turn, never carries a choice, and the
-// selector owns only the chat request body (thinking-control-specification.md
-// §6 — one owner per control).
+// This fallback is deliberate and NOT the chat selector: a title quest
+// is not a conversation turn, never carries the user's choice, and the
+// selector owns only the chat request body
+// (thinking-control-specification.md §6 — one owner per control).
 func (c *Client) Complete(ctx context.Context, model string, msgs []ChatMessage,
-	maxTokens int,
+	maxTokens int, thinking map[string]any,
 ) (string, error) {
 	if model == "" {
 		model = c.model
@@ -41,6 +47,14 @@ func (c *Client) Complete(ctx context.Context, model string, msgs []ChatMessage,
 		"chat_template_kwargs": map[string]any{
 			"enable_thinking": false,
 		},
+	}
+	if len(thinking) > 0 {
+		// The catalogue's word outranks the fallback: one thinking
+		// control on the wire, never two.
+		delete(payload, "chat_template_kwargs")
+		for k, v := range thinking {
+			payload[k] = v
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

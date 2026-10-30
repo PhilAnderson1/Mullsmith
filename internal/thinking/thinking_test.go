@@ -384,6 +384,39 @@ func TestSelectorVisibilityDerived(t *testing.T) {
 	}
 }
 
+// The side quest's pick: off where the endpoint can express it, else the
+// profile's lightest rung; nil when there is nothing to choose. Catalogue
+// fragments render exactly as they do for a chat request.
+func TestQuietFragment(t *testing.T) {
+	// qwen3_8 has off; gufo expresses it as the template kwarg.
+	rt := mustBuild(t, catSettings(Settings{EndpointType: "gufo", ProfileID: "qwen3_8"}))
+	frag := rt.QuietFragment("m")
+	kw, ok := frag["chat_template_kwargs"].(map[string]any)
+	if len(frag) != 1 || !ok || kw["enable_thinking"] != false {
+		t.Errorf("gufo off = %v, want the enable_thinking kwarg", frag)
+	}
+	// Same profile on lm_studio: its off recipe is reasoning_effort none.
+	rt = mustBuild(t, catSettings(Settings{EndpointType: "lm_studio", ProfileID: "qwen3_8"}))
+	if got := rt.QuietFragment("m"); got["reasoning_effort"] != "none" || len(got) != 1 {
+		t.Errorf("lm_studio off = %v, want reasoning_effort none", got)
+	}
+	// A thinking-only profile has no off: the first (lightest) choice.
+	rt = mustBuild(t, catSettings(Settings{EndpointType: "gufo", ProfileID: "qwen3_8_thinking_only"}))
+	quiet := rt.QuietFragment("m")
+	kw, ok = quiet["chat_template_kwargs"].(map[string]any)
+	if !ok || kw["enable_thinking"] != true || quiet["reasoning_effort"] != "low" {
+		t.Errorf("thinking-only lightest = %v, want the effort-low fragment", quiet)
+	}
+	// Nothing to choose anywhere: nil, the caller's fallback stands.
+	if rt := mustBuild(t, Settings{EndpointType: "gufo", EndpointsFile: repoEndpoints}); rt.QuietFragment("m") != nil {
+		t.Error("selector off must give no fragment")
+	}
+	var nilRT *Runtime
+	if nilRT.QuietFragment("m") != nil {
+		t.Error("nil runtime must give no fragment")
+	}
+}
+
 func mustBuild(t *testing.T, set Settings) *Runtime {
 	t.Helper()
 	rt, err := Build(set)

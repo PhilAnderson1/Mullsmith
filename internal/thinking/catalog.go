@@ -654,6 +654,28 @@ func (r *Runtime) ResolveFor(model, id string) (Choice, bool) {
 	return Choice{}, false
 }
 
+// Quietest names the gentlest usable option for a model: the "off" one
+// where the endpoint can express it, else the first of the profile's
+// choices — catalogues list them lightest-first, so that is the lowest
+// effort rung. This is the title quest's pick (§12): side quests run as
+// quietly as the catalogues allow, regardless of the conversation's
+// selection. False when the model has no options at all.
+func (r *Runtime) Quietest(model string) (Choice, bool) {
+	if !r.SelectorVisible() {
+		return Choice{}, false
+	}
+	st := r.stateFor(model)
+	for _, o := range st.choices {
+		if o.Mode == "off" {
+			return r.ResolveFor(model, o.ID)
+		}
+	}
+	if len(st.choices) > 0 {
+		return r.ResolveFor(model, st.choices[0].ID)
+	}
+	return Choice{}, false
+}
+
 // ResolveSaved validates a persisted (choice, fingerprint) pair against
 // the current context: the saved choice survives only when the
 // endpoint/model/profile fingerprint still matches AND the choice is
