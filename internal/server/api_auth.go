@@ -277,7 +277,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("user registered", "user", user.ID, "ip", ip)
-	writeJSON(w, http.StatusCreated, map[string]any{"id": user.ID, "email": user.Email, "name": user.Name})
+	writeJSON(w, http.StatusCreated, s.mePayload(user)) // one identity shape on every door (see login)
 }
 
 // --- POST /api/v1/auth/login -------------------------------------------------------
@@ -360,7 +360,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("login ok", "user", user.ID, "ip", ip)
-	writeJSON(w, http.StatusOK, map[string]any{"id": user.ID, "email": user.Email, "name": user.Name})
+	// The identity payload is the SAME shape on every door that says who
+	// you are (login, register, GET/PATCH /auth/me): the SPA seeds
+	// state.me from this response, and a leaner body here silently blanked
+	// the Settings prompt and pending-email notice until the next reload.
+	writeJSON(w, http.StatusOK, s.mePayload(user))
 }
 
 // invalidCredentials is the single generic 401 for every failure mode that

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -579,6 +580,51 @@ func TestLoginCaseInsensitiveEmail(t *testing.T) {
 	})
 	if resp.StatusCode != 200 {
 		t.Errorf("case-variant login: %d", resp.StatusCode)
+	}
+}
+
+// Every door that answers WHO YOU ARE carries the same identity payload
+// (mePayload): the SPA seeds state.me from the login/register body, so a
+// leaner body there silently blanked the Settings default prompt and the
+// pending-email notice until the next page reload.
+func TestLoginAndRegisterReturnIdentityPayload(t *testing.T) {
+	a := newAuthTest(t, authCfg(t))
+	a.invite("gk-code-1")
+	resp := a.register("shape@b.io", "uncommon-password-9", false)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register = %d, want 201", resp.StatusCode)
+	}
+	reg := decodeBody(t, resp)
+	if _, ok := reg["default_system_prompt"]; !ok {
+		t.Fatalf("register body %v lacks the identity shape", reg)
+	}
+
+	ctx := context.Background()
+	u, err := a.db.UserByEmail(ctx, "shape@b.io")
+	if err != nil || u == nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if err := a.db.UpdateProfile(ctx, u.ID, u.Name, u.Email, "be brief", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email": "shape@b.io", "password": "uncommon-password-9",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d, want 200", resp.StatusCode)
+	}
+	login := decodeBody(t, resp)
+	if login["default_system_prompt"] != "be brief" {
+		t.Errorf("login body lost the default prompt: %v", login)
+	}
+
+	resp = a.do(http.MethodGet, "/api/v1/auth/me", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET me = %d", resp.StatusCode)
+	}
+	if me := decodeBody(t, resp); !reflect.DeepEqual(login, me) {
+		t.Errorf("login and GET /auth/me disagree on the identity shape:\nlogin: %v\nme:    %v", login, me)
 	}
 }
 
