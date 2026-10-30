@@ -79,13 +79,14 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.Approval["code_run"] != "confirm" {
 		t.Errorf("code_run approval default = %q, want confirm", cfg.Tools.Agent.Approval["code_run"])
 	}
-	// The file's two off-switches outside limits default to off IN the
-	// house spelling (§2.2): the bare flag -1 on both.
-	if cfg.Server.WriteTimeout != offDuration {
-		t.Errorf("write_timeout default = %v, want the -1 off-sentinel", cfg.Server.WriteTimeout.D())
+	// write_timeout defaults ON (astra2 finding 1): 60s, passed to the
+	// http.Server unchanged; the bare -1 stays the explicit off-switch,
+	// now alongside hsts_max_age, the file's remaining off-by-default flag.
+	if cfg.Server.WriteTimeout != Duration(60*time.Second) {
+		t.Errorf("write_timeout default = %v, want 60s", cfg.Server.WriteTimeout.D())
 	}
-	if cfg.Server.WriteTimeout.HTTPDeadline() != 0 {
-		t.Errorf("write_timeout HTTPDeadline = %v, want 0 (Go's no-deadline)", cfg.Server.WriteTimeout.HTTPDeadline())
+	if cfg.Server.WriteTimeout.HTTPDeadline() != 60*time.Second {
+		t.Errorf("write_timeout HTTPDeadline = %v, want 60s", cfg.Server.WriteTimeout.HTTPDeadline())
 	}
 	if cfg.Server.HSTSMaxAge != -1 {
 		t.Errorf("hsts_max_age default = %d, want -1 off-sentinel", cfg.Server.HSTSMaxAge)

@@ -578,7 +578,34 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = io.Copy(w, io.MultiReader(bytes.NewReader(head[:n]), f))
+	// Rolling per-chunk write deadline (astra2 finding 1): the server-wide
+	// write cap budgets a WHOLE response — Go arms it once per request —
+	// which no honest multi-megabyte download can promise. What must be
+	// bounded is PROGRESS: a client that stops reading dies after one
+	// stalled chunk, a slow-but-live client never runs out of budget. Same
+	// doctrine as sse.go's per-frame deadline.
+	rc := http.NewResponseController(w)
+	_, _ = io.Copy(deadlineWriter{rc: rc, w: w}, io.MultiReader(bytes.NewReader(head[:n]), f))
+	_ = rc.SetWriteDeadline(time.Time{})
+}
+
+// downloadWriteTimeout bounds ONE chunk handoff of a download. 30 s without
+// handing over 32 KB means the client is gone. Var so tests can shrink it.
+var downloadWriteTimeout = 30 * time.Second
+
+// deadlineWriter arms a fresh write deadline before every Write, so the cap
+// is per chunk, rolling — never an absolute ceiling on transfer time.
+type deadlineWriter struct {
+	rc *http.ResponseController
+	w  io.Writer
+}
+
+func (d deadlineWriter) Write(p []byte) (int, error) {
+	if err := d.rc.SetWriteDeadline(time.Now().Add(downloadWriteTimeout)); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) { // unwrappable wrappers must not fail every download
+		return 0, err
+	}
+	return d.w.Write(p)
 }
 
 // mineDisposition builds Content-Disposition with an RFC 5987 UTF-8 name so

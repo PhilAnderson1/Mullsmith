@@ -146,7 +146,7 @@ type Server struct {
 	// file has exactly one spelling of "off": the bare flag -1, on
 	// durations no less than on counts.
 	ReadTimeout    Duration `yaml:"read_timeout"`
-	WriteTimeout   Duration `yaml:"write_timeout"` // -1 = no write cap (the default; streams)
+	WriteTimeout   Duration `yaml:"write_timeout"` // default 60s; -1 = no write cap (streams self-manage)
 	ShutdownGrace  Duration `yaml:"shutdown_grace"`
 	TrustedProxies []string `yaml:"trusted_proxies"`
 	HSTSMaxAge     int64    `yaml:"hsts_max_age"` // seconds; -1 = header off (the default)
@@ -596,12 +596,17 @@ func (c *Config) setDefaults() {
 	if c.Server.ReadTimeout == 0 {
 		c.Server.ReadTimeout = Duration(30 * time.Second)
 	}
-	// write_timeout's default is OFF — a global write deadline would cut
-	// SSE streams. Off carries the house sentinel (§2.2) so the typed
-	// value names "off" the same way the caps do; the http.Server read
-	// maps any negative to Go's 0 (no deadline).
+	// write_timeout defaults ON (astra2 finding 1): without a write cap a
+	// client that stops reading can block a response write in the kernel
+	// forever, pinning handler, goroutine and connection — the read and
+	// idle timeouts do not bound it. Go arms this once per request before
+	// the handler runs (net/http), so the surfaces with legitimately long
+	// writes manage their own deadlines: SSE lifts it per stream and arms
+	// per frame (sse.go), downloads roll a per-chunk deadline
+	// (api_files.go). -1 remains the operator off-switch (§2.2), mapped
+	// to Go's 0 (no deadline) at the http.Server.
 	if c.Server.WriteTimeout == 0 {
-		c.Server.WriteTimeout = offDuration
+		c.Server.WriteTimeout = Duration(60 * time.Second)
 	}
 	// HSTS absent means off, likewise spelled with the house -1 (§2.2).
 	if c.Server.HSTSMaxAge == 0 {
@@ -836,8 +841,8 @@ func (c *Config) Validate() error {
 			f.bad("%s: must be >= 0 (durations take no off-sentinel)", k.name)
 		}
 	}
-	// write_timeout: the streaming exception that carries a real
-	// off-switch, so it follows the house syntax too (§2.2) — the flag is
+	// write_timeout: the off-switch whose ON side is the default
+	// (astra2 finding 1) — it follows the house syntax (§2.2), the flag is
 	// the bare -1, never a duration spelling like -1s.
 	if wt := c.Server.WriteTimeout; wt < 0 && wt != offDuration {
 		f.bad("server.write_timeout: must be a positive duration like 30s, or -1 for no write cap")

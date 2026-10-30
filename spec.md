@@ -92,7 +92,9 @@ other negative** → startup error naming the syntax. (0 is deliberately not
 "off": knobs phrased as maxima would read 0 as "allow nothing" — the
 opposite of unlimited.) The two knobs outside `limits` with a real
 off-switch follow it: `server.write_timeout` and `server.hsts_max_age`,
-both spelled `-1`. Other durations take no sentinel (absent → default,
+the off state spelled `-1` on both (write_timeout is otherwise ON by
+default — a stalled-reader bound, §9.11; hsts_max_age is off until asked
+for, §9.8). Other durations take no sentinel (absent → default,
 negative → startup error — a negative deadline has already passed),
 positive durations still carry their unit (`30s`, `168h`), and required
 settings (`database.dir`, `llm.endpoint`, …) refuse empty. The shipped
@@ -111,7 +113,7 @@ server:
     cert_file: ""
     key_file: ""
   read_timeout: 30s
-  write_timeout: -1               # -1 = no write cap — responses stream (SSE)
+  write_timeout: 60s              # stalled-reader cap; -1 = no cap (SSE & downloads self-manage)
   shutdown_grace: 15s
   trusted_proxies: []             # CIDRs whose X-Forwarded-* headers we honor (§9.10)
   hsts_max_age: 31536000          # HSTS sent when serving TLS; -1 disables (§9.8)
@@ -1085,7 +1087,7 @@ open registration (startup warns).
 | Runaway script | a 1 s **storage watchdog** wraps every `code_run`: user bytes past `user_quota`, or the host past the 5 % free-space floor, cancels the run context — the runner kills the whole jail (process-group SIGKILL, §9.9). Partial output stays on disk; the over-quota user is blocked by the ordinary pre-checks until cleanup. Overrun per run ≈ one poll interval of writing, itself capped by the jail's memory budget (§9.9), versus unbounded before (audit finding 5). Sub-second runs cannot slip past: every run ends with a **final weigh-in** that reports an overrun truthfully, and staging sizes are pre-checked under the shared quota lock so the copies mullsmith makes can never overrun (audit2 finding 3) |
 | Static/other API | token bucket per authenticated **user** (`limits.requests_per_minute`, 429 + `Retry-After`); user-keyed because the session already proves identity and IP-keying is hostage to NAT/proxy topology. Chat-stream POSTs are exempt — they answer to the hourly chat bucket and the generation caps above |
 | Disabling limits | the caps under `limits:` (`concurrent_streams_per_user`, `concurrent_streams_total`, `requests_per_minute`, `chat_messages_per_hour`, `hash_concurrency`, `concurrent_uploads`) are three-state: **unset** → program default (2 / 8 / 120 / 120 / 1 / 8), **0** → disabled by explicit operator choice, **negative** → config error. Shipped config files spell the defaults out so the live policy is readable; login/register throttle buckets are hardcoded and unaffected. The former `rate_limit:` block is retired: configs carrying it fail validation with a "move it into limits:" message |
-| Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; `WriteTimeout` lifted only for SSE routes — the lift works via `ResponseController` reaching the connection through every middleware wrapper (`statusWriter` implements `Unwrap`; audit finding 10) |
+| Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; **`WriteTimeout` defaults to 60 s** — a client that stops reading otherwise blocks a response write in the kernel forever (handler, goroutine and connection pinned; read and idle timeouts bound reads only; astra2 finding 1). Go arms the cap once per request, so surfaces with legitimately long writes self-manage: SSE lifts it per stream and carries a rolling 10 s per-frame deadline; scratchpad downloads carry a rolling 30 s per-chunk deadline — bound PROGRESS, never total transfer time. The lift and the rolls reach the connection via `ResponseController` through every middleware wrapper (`statusWriter` implements `Unwrap`; audit finding 10); `-1` is the operator off-switch |
 | SSE hygiene | server-side heartbeat comments every 15 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU). Every frame write+flush carries a **rolling 10 s write deadline** (armed per frame, cleared after): a stalled reader (TCP zero window, no FIN) once blocked the write in a syscall forever — heartbeat included, holding its mutex — pinning a generation slot until restart; now the deadline error surfaces, flush errors propagate (`statusWriter.FlushError`), and the generation cancels (audit finding 10) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; small reader pool; TTL job deletes bounded per pass (≤ 1 000 rows/files) |
 | Disk exhaustion | per-user quota + global free-space floor (§9.7); upload commits, `fs_write` and `code_run` staging share one quota lock, so individually-passing writes cannot jointly overrun; staging pre-checks sizes before copying; per-run storage watchdog + final weigh-in detect quota/floor breaches (§9.11); artifact expiry and the work/ desk TTL ride one mtime sweep (§8) — with the disk as
