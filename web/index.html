@@ -224,6 +224,17 @@
           <button class="files-filter" type="button" data-kind="uploads">Uploads</button>
           <button class="files-filter" type="button" data-kind="artifacts">Artifacts</button>
           <button class="files-filter" type="button" data-kind="work">Work</button>
+          <!-- Bulk housekeeping, scoped to the ACTIVE filter above: pick an
+               age, confirm, done. A command, not a setting — the select
+               resets to its prompt after every choice (like the sidebar's). -->
+          <select id="files-purge-select" class="files-purge" aria-label="Delete older than">
+            <option value="" selected>Delete older than…</option>
+            <option value="1d">1 day</option>
+            <option value="1w">1 week</option>
+            <option value="1mo">1 month</option>
+            <option value="1y">1 year</option>
+            <option value="all">All</option>
+          </select>
         </div>
         <ul id="files-list" class="files-list"></ul>
         </div>

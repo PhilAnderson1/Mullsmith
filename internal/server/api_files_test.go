@@ -567,6 +567,117 @@ func TestDeleteTree(t *testing.T) {
 	}
 }
 
+// The Files page's "Delete older than…": same tokens as the conversation
+// prune (pruneAges), scoped to the ACTIVE view — kind selects one layout
+// directory, empty kind sweeps all three. Age is mtime-based, the layout
+// dirs themselves survive every purge, and anything outside the active
+// view is untouched.
+func TestFilePurgeByAge(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "pg@test.io", "gk-code-1")
+	uid := meID(a)
+	userRoot := filepath.Join(cfg.Scratchpad.Root, uid)
+
+	seedFile(t, cfg, uid, "work/old.txt", []byte("o"))
+	seedFile(t, cfg, uid, "work/proj/old2.txt", []byte("o2"))
+	seedFile(t, cfg, uid, "work/new.txt", []byte("n"))
+	seedFile(t, cfg, uid, "uploads/old.csv", []byte("o,"))
+	seedFile(t, cfg, uid, "uploads/new.csv", []byte("n,"))
+	seedFile(t, cfg, uid, "artifacts/old.md", []byte("#o"))
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	for _, rel := range []string{"work/old.txt", "work/proj/old2.txt", "uploads/old.csv", "artifacts/old.md"} {
+		p := filepath.Join(userRoot, filepath.FromSlash(rel))
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Validation happens before any byte is touched.
+	for q, why := range map[string]string{
+		"?older_than=2d":                     "token not in pruneAges",
+		"?older_than=1w&kind=upload":         "singular kind is not a layout dir",
+		"?older_than=1w&path=work%2Fold.txt": "path and older_than are alternatives",
+	} {
+		resp := a.do(http.MethodDelete, "/api/v1/files"+q, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s (%s): %d, want 400", q, why, resp.StatusCode)
+		}
+	}
+
+	// Work view, 1 week: both aged work files go — at depth too — while
+	// fresh files and the OTHER views stay untouched.
+	resp := a.do(http.MethodDelete, "/api/v1/files?older_than=1w&kind=work", nil)
+	body := decodedBody(t, resp)
+	if resp.StatusCode != http.StatusOK || body["files_deleted"] != float64(2) {
+		t.Fatalf("work purge = %d %v, want 200 / 2 files", resp.StatusCode, body)
+	}
+	for _, gone := range []string{"work/old.txt", "work/proj/old2.txt"} {
+		if _, err := os.Stat(filepath.Join(userRoot, filepath.FromSlash(gone))); !os.IsNotExist(err) {
+			t.Errorf("%s survived the work purge: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{"work/new.txt", "uploads/old.csv", "uploads/new.csv", "artifacts/old.md"} {
+		if _, err := os.Stat(filepath.Join(userRoot, filepath.FromSlash(kept))); err != nil {
+			t.Errorf("%s wrongly deleted by a work-scoped purge: %v", kept, err)
+		}
+	}
+
+	// Empty kind = all three views: the aged files elsewhere go too, the
+	// fresh ones survive (the 1-month cutoff is younger than 40 days but
+	// older than seconds).
+	resp = a.do(http.MethodDelete, "/api/v1/files?older_than=1mo", nil)
+	body = decodedBody(t, resp)
+	if resp.StatusCode != http.StatusOK || body["files_deleted"] != float64(2) {
+		t.Fatalf("all-views purge = %d %v, want 200 / 2 files", resp.StatusCode, body)
+	}
+	for _, kept := range []string{"work/new.txt", "uploads/new.csv"} {
+		if _, err := os.Stat(filepath.Join(userRoot, filepath.FromSlash(kept))); err != nil {
+			t.Errorf("%s wrongly deleted before its time: %v", kept, err)
+		}
+	}
+
+	// "all" spares no file, but the layout dirs themselves are still not
+	// deletable, and the already-empty work/proj goes with it (DirMaxAge
+	// is floored to one nanosecond so the empty-dir rule stays live even
+	// for "all"; a dir emptied during THIS purge has its mtime bumped and
+	// ages for a later one).
+	resp = a.do(http.MethodDelete, "/api/v1/files?older_than=all", nil)
+	body = decodedBody(t, resp)
+	if resp.StatusCode != http.StatusOK || body["files_deleted"] != float64(2) {
+		t.Fatalf("all purge = %d %v, want 200 / 2 files", resp.StatusCode, body)
+	}
+	for _, dir := range []string{"uploads", "artifacts", "work"} {
+		if fi, err := os.Stat(filepath.Join(userRoot, dir)); err != nil || !fi.IsDir() {
+			t.Errorf("layout dir %s must survive every purge: %v", dir, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(userRoot, "work", "proj")); !os.IsNotExist(err) {
+		t.Errorf("empty work/proj survived the all purge: %v", err)
+	}
+	// An exhausted tree answers 0, not an error — and a user whose tree
+	// vanished entirely is the same clean answer.
+	if resp = a.do(http.MethodDelete, "/api/v1/files?older_than=1d", nil); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Errorf("empty-tree purge: %d, want 200", resp.StatusCode)
+	} else {
+		body = decodedBody(t, resp)
+		if body["files_deleted"] != float64(0) {
+			t.Errorf("empty-tree purge deleted %v", body["files_deleted"])
+		}
+	}
+	if err := os.RemoveAll(userRoot); err != nil {
+		t.Fatal(err)
+	}
+	if resp = a.do(http.MethodDelete, "/api/v1/files?older_than=all&kind=work", nil); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Errorf("missing-root purge: %d, want 200", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+}
+
 func TestFileAPIRequiresAuth(t *testing.T) {
 	cfg := scratchCfg(t)
 	a := newAuthTest(t, cfg) // logged out

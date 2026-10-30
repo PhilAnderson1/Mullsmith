@@ -130,4 +130,11 @@ export const api = {
   // The one file identity is the scratchpad-relative path — for the three
   // layout directories alike. No ids, no cursors: the disk is the truth.
   deleteFile: (path) => request("DELETE", "/api/v1/files?path=" + encodeURIComponent(path)),
+  // Bulk housekeeping: aged content of one kind ("" = all three layout
+  // dirs). Tokens are the conversation-prune ones: 1d|1w|1mo|1y|all.
+  purgeFiles: (kind, olderThan) => {
+    const p = new URLSearchParams({ older_than: olderThan });
+    if (kind) p.set("kind", kind);
+    return request("DELETE", "/api/v1/files?" + p.toString());
+  },
 };

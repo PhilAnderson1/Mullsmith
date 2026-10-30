@@ -1441,6 +1441,23 @@ async function onAttachPick(ev) {
 
 // --- files view --------------------------------------------------------------
 
+// Shared by both "Delete older than…" command dropdowns (sidebar chats and
+// the Files view): token → confirmation label, months/years being the
+// server's deliberate calendar approximations (spec §5.3).
+const pruneLabels = { "1d": "1 day", "1w": "1 week", "1mo": "1 month", "1y": "1 year", all: "ALL" };
+
+// When a native confirm() closes, WebKit hands focus back to whatever held
+// it before — the select — and a focused select opens its popup on iOS.
+// Take it back off: now, in case focus already came back, and via the
+// once-listener whenever WebKit actually performs the restore (it expires
+// after a sec so a later keyboard Tab still works).
+function kickSelectRefocus(el) {
+  const kick = () => el.blur();
+  kick();
+  el.addEventListener("focus", kick, { once: true });
+  setTimeout(() => el.removeEventListener("focus", kick), 1000);
+}
+
 function openFilesView() {
   if (state.filesOpen) return;
   if (state.settingsOpen) closeSettingsView(); // one overlay panel at a time
@@ -2137,7 +2154,6 @@ async function boot() {
   // then the select falls back to its prompt (it holds no setting). The
   // server answers with the deleted ids, so we know precisely whether the
   // open thread was among them.
-  const pruneLabels = { "1d": "1 day", "1w": "1 week", "1mo": "1 month", "1y": "1 year", all: "ALL" };
   $("#conv-prune-select").addEventListener("change", async (ev) => {
     const choice = ev.target.value;
     ev.target.value = "";
@@ -2145,15 +2161,7 @@ async function boot() {
     const what =
       choice === "all" ? "ALL conversations" : `conversations older than ${pruneLabels[choice]}`;
     const ok = await confirmDialog(`Delete ${what}? This cannot be undone.`);
-    // When the native dialog closes, WebKit hands focus back to whatever
-    // held it before — this select — and a focused select on iOS opens its
-    // popup. Take it back off: now, in case focus already came back, and
-    // via the once-listener whenever WebKit actually performs the restore
-    // (it expires after a sec so a later keyboard Tab still works).
-    const kick = () => ev.target.blur();
-    kick();
-    ev.target.addEventListener("focus", kick, { once: true });
-    setTimeout(() => ev.target.removeEventListener("focus", kick), 1000);
+    kickSelectRefocus(ev.target);
     if (!ok) return;
     await abandonInflight(); // the open thread may be one of the doomed
     try {
@@ -2240,6 +2248,34 @@ async function boot() {
       loadFiles(true).catch((e) => handleErr(e, "files"));
     });
   }
+  // Bulk housekeeping, same command-dropdown shape as the sidebar's — but
+  // always scoped to the ACTIVE filter: the purge covers the list the user
+  // is looking at, never a directory they are not viewing.
+  $("#files-purge-select").addEventListener("change", async (ev) => {
+    const choice = ev.target.value;
+    ev.target.value = "";
+    if (!choice) return;
+    const active = document.querySelector(".files-filter.active");
+    const view = active ? active.textContent : "All";
+    const what =
+      choice === "all"
+        ? `ALL files and folders in ${view}`
+        : `files in ${view} older than ${pruneLabels[choice]}`;
+    const ok = await confirmDialog(`Delete ${what}? This cannot be undone.`);
+    kickSelectRefocus(ev.target);
+    if (!ok) return;
+    try {
+      const res = await api.purgeFiles(state.filesKind, choice);
+      await loadFiles(true);
+      const n = res.files_deleted || 0;
+      let msg = n === 0 ? "Nothing to delete" : `${n} file${n === 1 ? "" : "s"} deleted`;
+      if (res.dirs_deleted) msg += ` + ${res.dirs_deleted} empty folder${res.dirs_deleted === 1 ? "" : "s"}`;
+      if (res.capped) msg += " — some entries remain, run it again";
+      toast(msg, false);
+    } catch (err) {
+      handleErr(err, "delete older files");
+    }
+  });
   $("#composer-input").addEventListener("input", autosizeComposer);
   $("#composer-input").addEventListener("keydown", (ev) => {
     // Enter sends, Shift+Enter inserts a newline; IME composition excluded.

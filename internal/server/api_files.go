@@ -591,7 +591,15 @@ func mineDisposition(kind, name string) string {
 // (§9.7: fd-pinned, symlinks unlinked never followed). NO table cleanup
 // happens because no tables are involved: old download cards and chat
 // chips for deleted bytes 404, which is this app's designed "gone" state.
+//
+// With ?older_than= it becomes the Files page's bulk "Delete older than…"
+// command instead (handleFilePurge); ?path= and ?older_than= are
+// alternatives, never combined.
 func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("older_than") != "" {
+		s.handleFilePurge(w, r)
+		return
+	}
 	user := UserFrom(r.Context())
 	rel, ok := fileRelFrom(w, r)
 	if !ok {
@@ -635,4 +643,89 @@ func (s *Server) deleteTree(w http.ResponseWriter, r *http.Request, userID, rel 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- DELETE /api/v1/files?older_than=&kind= ----------------------------------
+
+// A single purge request is bounded the way the hourly sweep is, so one
+// click cannot pin the server to a walk of arbitrary size. A capped purge
+// deletes everything it inspected and says so; the user re-runs it —
+// unlike the sweep, the caller here is present and retrying is cheap.
+const (
+	purgeMaxFiles   = 50_000  // unlinks per purge request
+	purgeMaxEntries = 200_000 // entry inspections per purge request
+)
+
+// handleFilePurge is the Files page's bulk housekeeping: it deletes aged
+// content from the CURRENT view — one layout directory via ?kind=, or all
+// three when kind is empty — using the same age tokens as the sidebar's
+// conversation prune (pruneAges: 1d/1w/1mo/1y/all, mtime-based). The work
+// is the fd-pinned sweep itself (scratch.SweepTree, §9.7): regular files
+// past the cutoff are unlinked at any depth, aged empty directories are
+// rmdir'd, symlinks and special files go as themselves and are never
+// followed, unreadable corners are skipped whole. The layout directories
+// themselves survive, as always. A directory emptied by this purge has
+// its mtime bumped by the removals, so it ages for a later one — the
+// documented sweep doctrine, not a bug to paper over. A user root or
+// layout directory that does not exist yet simply has nothing to delete.
+func (s *Server) handleFilePurge(w http.ResponseWriter, r *http.Request) {
+	user := UserFrom(r.Context())
+	if r.URL.Query().Get("path") != "" {
+		writeAPIError(w, r, http.StatusBadRequest, "bad_request",
+			"path and older_than are alternatives")
+		return
+	}
+	age, ok := pruneAges[r.URL.Query().Get("older_than")]
+	if !ok {
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_older_than",
+			"older_than must be one of 1d, 1w, 1mo, 1y, all")
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind != "" && !isFileDir(kind) {
+		writeAPIError(w, r, http.StatusBadRequest, "bad_kind", "kind must be uploads, artifacts or work")
+		return
+	}
+	dirs := fileDirs
+	if kind != "" {
+		dirs = []string{kind}
+	}
+	// SweepSpec.DirMaxAge ≤ 0 means "leave directories alone"; the purge
+	// never means that — "all" deletes every empty directory too. One
+	// nanosecond keeps the empty-dir rule live without ageing anything in:
+	// a directory emptied during THIS purge has its mtime bumped to now,
+	// so it still ages for a later pass like any other.
+	dirAge := age
+	if dirAge <= 0 {
+		dirAge = time.Nanosecond
+	}
+	now := time.Now()
+	var files, dirsDeleted int
+	capped := false
+	for _, d := range dirs {
+		res, err := scratch.SweepTree(s.cfg.Scratchpad.Root, user.ID, d, scratch.SweepSpec{
+			Now:        now,
+			FileMaxAge: age,
+			DirMaxAge:  dirAge,
+			MaxFiles:   purgeMaxFiles,
+			MaxEntries: purgeMaxEntries,
+			Warn:       s.sweepWarn(s.cfg.Scratchpad.Root, user.ID),
+		})
+		if errors.Is(err, scratch.ErrNotFound) {
+			continue // no such directory yet — nothing to delete, not an error
+		}
+		if err != nil {
+			s.logger.Error("file purge", "error", err, "kind", d, "rid", RequestIDFrom(r.Context()))
+			writeAPIError(w, r, http.StatusInternalServerError, "internal", "purge failed")
+			return
+		}
+		files += res.Files
+		dirsDeleted += res.Dirs
+		capped = capped || res.Capped || res.EntriesCapped
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"files_deleted": files,
+		"dirs_deleted":  dirsDeleted,
+		"capped":        capped,
+	})
 }

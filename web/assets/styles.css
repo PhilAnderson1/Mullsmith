@@ -987,6 +987,20 @@ body.files-open .pending-files { display: none; }
   border-color: var(--accent);
   color: #fff;
 }
+/* The bulk-delete command sits at the far end of the filter row. Its
+   colours are opaque tokens like .conv-prune select: the native popup
+   paints its list from the control's own colours. */
+.files-purge {
+  margin-left: auto;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+.files-purge option { color: var(--fg); background: var(--bg-raised); }
 
 /* ---------- settings view ---------- */
 

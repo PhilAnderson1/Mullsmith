@@ -298,3 +298,78 @@ func TestJSAccountDeletionSurface(t *testing.T) {
 		}
 	}
 }
+
+// The Files view's "Delete older than…" dropdown must stay a COMMAND
+// (resets to its prompt, always confirms) and stay SCOPED: it purges the
+// active filter only — kind travels as state.filesKind, so a Work-tab
+// purge can never silently grow into sweeping uploads too.
+func TestJSFilesPurgeScopesToActiveView(t *testing.T) {
+	appSrc, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(appSrc)
+	apiSrc, err := web.FS.ReadFile("assets/app/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := web.FS.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := string(html)
+	css, err := web.FS.ReadFile("assets/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Markup: the select lives inside the filter row, after the four
+	// filter buttons, carrying the same tokens as the conversation prune.
+	i := strings.Index(hs, `class="files-filters"`)
+	if i < 0 {
+		t.Fatal("index.html lost .files-filters")
+	}
+	row := hs[i : i+strings.Index(hs[i:], `id="files-list"`)]
+	sel := strings.Index(row, `id="files-purge-select"`)
+	if sel < 0 {
+		t.Fatal("the filter row lost #files-purge-select")
+	}
+	if last := strings.LastIndex(row[:sel], "files-filter"); last < 0 {
+		t.Error("#files-purge-select must sit next to the filter buttons")
+	}
+	for _, tok := range []string{`value="1d"`, `value="1w"`, `value="1mo"`, `value="1y"`, `value="all"`} {
+		if !strings.Contains(row, tok) {
+			t.Errorf("purge select lost option %s", tok)
+		}
+	}
+	// Right-aligned, per the owner's layout ask.
+	if !strings.Contains(string(css), ".files-purge") ||
+		!strings.Contains(string(css), "margin-left: auto") {
+		t.Error("styles.css must right-align .files-purge (margin-left: auto)")
+	}
+
+	// Handler: command dropdown shape, scoped to the active kind.
+	j := strings.Index(src, `$("#files-purge-select")`)
+	if j < 0 {
+		t.Fatal("app.js never wires #files-purge-select")
+	}
+	handler := src[j:]
+	if k := strings.Index(handler, "\n  });"); k > 0 {
+		handler = handler[:k]
+	}
+	for _, want := range []string{
+		`ev.target.value = ""`,                    // a command, not a setting
+		"confirmDialog(",                          // never delete silently
+		"api.purgeFiles(state.filesKind, choice)", // confined to the active view
+		"loadFiles(true)",                         // the list shows disk truth after
+	} {
+		if !strings.Contains(handler, want) {
+			t.Errorf("the files purge handler must contain %q", want)
+		}
+	}
+
+	if !strings.Contains(string(apiSrc), "purgeFiles:") ||
+		!strings.Contains(string(apiSrc), "older_than") {
+		t.Error("api.js lost purgeFiles → DELETE /api/v1/files?older_than=")
+	}
+}
