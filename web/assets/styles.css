@@ -992,6 +992,10 @@ body.files-open .pending-files { display: none; }
    paints its list from the control's own colours. */
 .files-purge {
   margin-left: auto;
+  /* Undo the global 100% select width: this one sizes to its
+     contents and sits at the end of the row — never stretched. */
+  width: auto;
+  flex: none;
   font: inherit;
   color: var(--fg);
   background: var(--bg-raised);

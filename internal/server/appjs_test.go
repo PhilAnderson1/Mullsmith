@@ -342,10 +342,20 @@ func TestJSFilesPurgeScopesToActiveView(t *testing.T) {
 			t.Errorf("purge select lost option %s", tok)
 		}
 	}
-	// Right-aligned, per the owner's layout ask.
-	if !strings.Contains(string(css), ".files-purge") ||
-		!strings.Contains(string(css), "margin-left: auto") {
-		t.Error("styles.css must right-align .files-purge (margin-left: auto)")
+	// Right-aligned and content-sized (the global select rule is 100% —
+	// without the override the dropdown stretches across the whole row).
+	if i := strings.Index(string(css), ".files-purge {"); i < 0 {
+		t.Fatal("styles.css lost the .files-purge rule")
+	} else {
+		block := string(css)[i:]
+		if e := strings.Index(block, "}"); e > 0 {
+			block = block[:e]
+		}
+		for _, want := range []string{"margin-left: auto", "width: auto", "flex: none"} {
+			if !strings.Contains(block, want) {
+				t.Errorf("styles.css .files-purge must declare %q", want)
+			}
+		}
 	}
 
 	// Handler: command dropdown shape, scoped to the active kind.
