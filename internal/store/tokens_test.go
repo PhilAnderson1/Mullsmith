@@ -271,11 +271,12 @@ func TestResetTokenLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Unknown token / wrong kind / expired / reused → found=false, never an error.
-	if _, _, found, err := db.ConsumeToken(ctx, TokenResetPassword, "bogus", now); found || err != nil {
+	// Unknown token / wrong kind / expired → found=false, never an error,
+	// never a password touched.
+	if _, found, err := db.CompletePasswordReset(ctx, "bogus", "overwritten", now); found || err != nil {
 		t.Errorf("bogus token: found=%v err=%v", found, err)
 	}
-	if _, _, found, _ := db.ConsumeToken(ctx, TokenConfirmEmail, raw, now); found {
+	if found, err := db.ConfirmEmail(ctx, raw, now); found || err != nil {
 		t.Error("reset token must not pass as confirm token")
 	}
 	// Reissue invalidates the previous link (one live link per purpose).
@@ -283,36 +284,51 @@ func TestResetTokenLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, found, _ := db.ConsumeToken(ctx, TokenResetPassword, raw, now); found {
+	if _, found, _ := db.CompletePasswordReset(ctx, raw, "overwritten", now); found {
 		t.Error("reissue must invalidate the older token")
 	}
-	userID, email, found, err := db.ConsumeToken(ctx, TokenResetPassword, raw2, now)
-	if err != nil || !found || userID != u.ID || email != "reset@me.io" {
-		t.Fatalf("consume: %q %q found=%v err=%v", userID, email, found, err)
+	userID, found, err := db.CompletePasswordReset(ctx, raw2, "newhash", now)
+	if err != nil || !found || userID != u.ID {
+		t.Fatalf("complete: %q found=%v err=%v", userID, found, err)
 	}
-	if _, _, found, _ := db.ConsumeToken(ctx, TokenResetPassword, raw2, now); found {
+	if got, _ := db.UserByID(ctx, u.ID); got.PasswordHash != "newhash" {
+		t.Errorf("hash not applied: %+v", got)
+	}
+	if _, found, _ := db.CompletePasswordReset(ctx, raw2, "thirdhash", now); found {
 		t.Error("one-shot violated")
 	}
+	if got, _ := db.UserByID(ctx, u.ID); got.PasswordHash != "newhash" {
+		t.Error("spent token applied a second hash")
+	}
+	// Completing the reset revoked ALL of the user's sessions, atomically
+	// with the new hash.
+	if n := countRows(t, db, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, u.ID); n != 0 {
+		t.Errorf("%d sessions survived a completed reset", n)
+	}
 
-	// CompletePasswordReset: new hash + ALL sessions gone, atomically —
-	// and status preserved: a reset must never resurrect a suspension
-	// (spec §9.17).
+	// A reset must never resurrect a suspension (spec §9.17): the status
+	// is preserved through completion, hash applied, link spent.
 	dis := mkUser("dis@abl.io")
 	dis.Status = "disabled"
 	if err := db.CreateUser(ctx, dis); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CompletePasswordReset(ctx, dis.ID, "newhash", now); err != nil {
+	rawDis, err := db.CreateToken(ctx, TokenResetPassword, dis.ID, "dis@abl.io", now.Add(30*time.Minute))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, found, err := db.CompletePasswordReset(ctx, rawDis, "newhash", now); err != nil || !found {
+		t.Fatalf("reset on a suspended account: found=%v err=%v", found, err)
 	}
 	if got, _ := db.UserByID(ctx, dis.ID); got.PasswordHash != "newhash" || got.Status != "disabled" {
 		t.Errorf("reset not applied, or worse, reactivated: %+v", got)
 	}
-	if n, _ := db.DeleteSessionsForUser(ctx, u.ID, nil); n != 1 {
-		t.Errorf("session for reset user: expected 1 revoked, got %d", n)
+	// Ghost token: dead-link answer, not an error.
+	if _, found, _ := db.CompletePasswordReset(ctx, "01GHOSTGHOSTGHOSTGHOSTGHOS", "h", now); found {
+		t.Error("ghost token completed")
 	}
-	if err := db.CompletePasswordReset(ctx, "01GHOSTGHOSTGHOSTGHOSTGHOS", "h", now); !errors.Is(err, ErrUserNotFound) {
-		t.Errorf("ghost reset: got %v, want ErrUserNotFound", err)
+	if got, _ := db.UserByID(ctx, dis.ID); got.PasswordHash != "newhash" {
+		t.Errorf("ghost reset changed something: %+v", got)
 	}
 }
 
@@ -467,18 +483,18 @@ func TestDisableEnableUser(t *testing.T) {
 	if n := countRows(t, db, `SELECT COUNT(*) FROM auth_tokens WHERE user_id = ?`, u.ID); n != 0 {
 		t.Errorf("%d auth tokens survived the disable", n)
 	}
-	if _, _, found, err := db.ConsumeToken(ctx, TokenResetPassword, rawReset, now); found || err != nil {
-		t.Errorf("a reset link issued before the suspension is still consumable: found=%v err=%v", found, err)
+	if _, found, err := db.CompletePasswordReset(ctx, rawReset, "overwritten", now); found || err != nil {
+		t.Errorf("a reset link issued before the suspension is still live: found=%v err=%v", found, err)
 	}
 	if found, err := db.ConfirmEmail(ctx, rawConfirm, now); found || err != nil {
 		t.Errorf("a confirm link issued before the suspension is still alive: found=%v err=%v", found, err)
 	}
 	// Even the CLI reset path cannot write the status.
-	if err := db.CompletePasswordReset(ctx, u.ID, "newhash", now); err != nil {
+	if err := db.SetPassword(ctx, u.ID, "newhash", now); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := db.UserByID(ctx, u.ID); got.Status != StatusDisabled {
-		t.Error("CompletePasswordReset resurrected a suspended account")
+		t.Error("SetPassword resurrected a suspended account")
 	}
 	if applied, err := db.DisableUser(ctx, u.ID); err != nil || applied {
 		t.Errorf("re-disable: applied=%v err=%v, want false, no error", applied, err)
@@ -545,5 +561,102 @@ func TestConfirmEmailNeverResurrects(t *testing.T) {
 	}
 	if got.Status != StatusDisabled {
 		t.Errorf("a confirm link lifted a suspension: status = %q", got.Status)
+	}
+}
+
+// A leaked reset link must not outlive the owner's attempts to secure the
+// account: changing the password, or moving the account off the mailbox the
+// link was addressed to, revokes it (astra2 review).
+func TestResetLinkDiesOnCredentialAndAddressChanges(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// live reports whether a reset link still completes (and, if so,
+	// scribbles a recognisable hash — the failures are loud).
+	live := func(raw string) bool {
+		t.Helper()
+		_, found, err := db.CompletePasswordReset(ctx, raw, "overwritten", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+
+	// (a) A password change (Settings or admin CLI — same store door)
+	// revokes outstanding reset links: it is the owner's eviction attempt,
+	// and a link that overwrites the fresh credential silently undoes it.
+	u := mkUser("a@move.io")
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := db.CreateToken(ctx, TokenResetPassword, u.ID, "a@move.io", now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetPassword(ctx, u.ID, "fresh-hash", now); err != nil {
+		t.Fatal(err)
+	}
+	if live(raw) {
+		t.Error("reset link survived a password change")
+	}
+	if got, _ := db.UserByID(ctx, u.ID); got.PasswordHash != "fresh-hash" {
+		t.Errorf("dead link overwrote the owner's fresh password: %+v", got)
+	}
+
+	// (b) Completing an address move kills the link bound to the old
+	// mailbox (features-on door: ConfirmEmail).
+	v := mkUser("old@move.io")
+	if err := db.CreateUser(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	rawOld, err := db.CreateToken(ctx, TokenResetPassword, v.ID, "old@move.io", now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetUnconfirmedEmail(ctx, v.ID, "new@move.io", now); err != nil {
+		t.Fatal(err)
+	}
+	rawConfirm, err := db.CreateToken(ctx, TokenConfirmEmail, v.ID, "new@move.io", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found, err := db.ConfirmEmail(ctx, rawConfirm, now); err != nil || !found {
+		t.Fatalf("confirm: found=%v err=%v", found, err)
+	}
+	if live(rawOld) {
+		t.Error("reset link to the abandoned mailbox still completes")
+	}
+	if got, _ := db.UserByID(ctx, v.ID); got.PasswordHash == "overwritten" || got.Email != "new@move.io" {
+		t.Errorf("password or address wrong after the move: %+v", got)
+	}
+
+	// (c) The features-off direct write is the other address door and
+	// applies the same cut (UpdateProfile); an unrelated profile save
+	// (same address) must not disturb a live link.
+	w := mkUser("plain@move.io")
+	if err := db.CreateUser(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	rawPlain, err := db.CreateToken(ctx, TokenResetPassword, w.ID, "plain@move.io", now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateProfile(ctx, w.ID, "Plain", "plain@move.io", "be brief", now); err != nil {
+		t.Fatal(err)
+	}
+	if !live(rawPlain) {
+		t.Fatal("a profile save that did not move the address killed the link")
+	}
+	// (the call above just consumed it via live(); mint fresh to test the move)
+	rawPlain, err = db.CreateToken(ctx, TokenResetPassword, w.ID, "plain@move.io", now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateProfile(ctx, w.ID, "Plain", "moved@move.io", "be brief", now); err != nil {
+		t.Fatal(err)
+	}
+	if live(rawPlain) {
+		t.Error("reset link survived the features-off address move")
 	}
 }

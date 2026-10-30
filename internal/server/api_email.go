@@ -173,18 +173,6 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		invalidToken(w, r)
 		return
 	}
-	userID, _, found, err := s.store.ConsumeToken(r.Context(), store.TokenResetPassword,
-		body.Token, time.Now())
-	if err != nil {
-		s.logger.Error("reset token consume failed", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-	if !found {
-		// Absent, expired, used — one message, no flavours.
-		invalidToken(w, r)
-		return
-	}
 	var hash string
 	if !s.hashRun(w, r, func() error {
 		var err error
@@ -193,14 +181,20 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	// One transaction: new hash + status='enabled' + revoke ALL sessions.
-	if err := s.store.CompletePasswordReset(r.Context(), userID, hash, time.Now()); err != nil {
-		if errors.Is(err, store.ErrUserNotFound) {
-			invalidToken(w, r) // account deleted between mail and click
-			return
-		}
-		s.logger.Error("password reset completion failed", "error", err, "user", userID)
+	// One transaction: consume + address binding + new hash + revoke ALL
+	// sessions. Hashing before consumption means a dead link never burns
+	// argon2 work into an applied change, and an argon2 failure never
+	// burns the one shot.
+	userID, found, err := s.store.CompletePasswordReset(r.Context(), body.Token, hash, time.Now())
+	if err != nil {
+		s.logger.Error("password reset completion failed", "error", err, "rid", RequestIDFrom(r.Context()))
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	if !found {
+		// Absent, expired, used, address moved since the mail, or account
+		// deleted — one message, no flavours.
+		invalidToken(w, r)
 		return
 	}
 	// Deliberately no session here: completing a reset proves mailbox

@@ -117,9 +117,20 @@ func (d *DB) UserIDs(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// SetPassword updates the hash and bumps updated_at.
+// SetPassword updates the hash, revokes every outstanding reset link and
+// bumps updated_at, in one transaction. Changing the password is the owner's
+// attempt to evict an uninvited visitor — a mailbox-derived link that can
+// overwrite the fresh credential would silently undo that attempt (astra2
+// review: reset links survived password and email changes). Same cut
+// DisableUser makes wholesale, scoped to this credential; covers both the
+// Settings change and the admin CLI reset.
 func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time) error {
-	res, err := d.sqlDB.ExecContext(ctx,
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
 		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
 		hash, now.Unix(), userID)
 	if err != nil {
@@ -128,7 +139,12 @@ func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrUserNotFound
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`,
+		TokenResetPassword, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateProfile changes the account's display details in one statement.
@@ -136,18 +152,30 @@ func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time
 // the form shows is what is stored. A taken email maps to ErrUserExists.
 // It deliberately does NOT touch unconfirmed_email: clearing a pending
 // address change is the caller's explicit decision (the features-off
-// Settings email write does it via SetUnconfirmedEmail, §5).
+// Settings email write does it via SetUnconfirmedEmail, §5). When the
+// confirmed address itself moves (the features-off door), reset links bound
+// to the abandoned mailbox die with it — the same rule ConfirmEmail applies
+// on the features-on door (astra2 review).
 func (d *DB) UpdateProfile(ctx context.Context, userID, name, email, defaultPrompt string, now time.Time) error {
-	_, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE users SET name = ?, email = ?, default_system_prompt = ?, updated_at = ? WHERE id = ?`,
-		name, nilIfEmpty(email), defaultPrompt, now.Unix(), userID)
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET name = ?, email = ?, default_system_prompt = ?, updated_at = ? WHERE id = ?`,
+		name, nilIfEmpty(email), defaultPrompt, now.Unix(), userID); err != nil {
 		if isUnique(err, "users.email") {
 			return ErrUserExists
 		}
 		return err
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL AND email IS NOT ?`,
+		TokenResetPassword, userID, nilIfEmpty(email)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Account-lifecycle values for users.status (spec §9.17).

@@ -54,40 +54,6 @@ func (d *DB) CreateToken(ctx context.Context, kind, userID, email string, expire
 	return raw, tx.Commit()
 }
 
-// ConsumeToken validates and single-uses a token, returning the owning user
-// and the address the mail went to. Unknown, expired and already-used all
-// collapse to found=false — handlers show one generic dead-link message and
-// never reveal which happened.
-func (d *DB) ConsumeToken(ctx context.Context, kind, raw string, now time.Time) (userID, email string, found bool, err error) {
-	tx, err := d.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", "", false, err
-	}
-	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx,
-		`SELECT user_id, email FROM auth_tokens
-		 WHERE kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > ?`,
-		kind, auth.HashToken(raw), now.Unix()).Scan(&userID, &email)
-	if errors.Is(err, ErrNoRows) {
-		return "", "", false, nil
-	}
-	if err != nil {
-		return "", "", false, err
-	}
-	// Re-check used_at in the UPDATE: the single-writer pool serialises
-	// transactions today, but "one shot" must not rely on that staying true.
-	res, err := tx.ExecContext(ctx,
-		`UPDATE auth_tokens SET used_at = ? WHERE kind = ? AND token_hash = ? AND used_at IS NULL`,
-		now.Unix(), kind, auth.HashToken(raw))
-	if err != nil {
-		return "", "", false, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return "", "", false, nil // raced to used between SELECT and UPDATE
-	}
-	return userID, email, true, tx.Commit()
-}
-
 // DeleteUnusedTokens drops a user's unconsumed tokens of one kind (the
 // cancel-pending-address path; expiry sweeps handle the rest).
 func (d *DB) DeleteUnusedTokens(ctx context.Context, kind, userID string) error {
@@ -110,6 +76,10 @@ func (d *DB) DeleteUnusedTokens(ctx context.Context, kind, userID string) error 
 // expired, used, or address no longer pending (changed again / cancelled).
 // ErrEmailTakenNow means the address was claimed meanwhile — pending is
 // cleared, nothing else about the account changes.
+//
+// A successful switch also revokes outstanding reset links bound to the
+// abandoned mailbox (astra2 review): they proved control of an address the
+// account no longer has.
 func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found bool, err error) {
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -174,37 +144,76 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 	if err != nil {
 		return false, err
 	}
+	// The address has moved: reset links bound to the abandoned mailbox
+	// proved control of a mailbox that is no longer the account's — they
+	// die here rather than surviving as a recovery path around the move
+	// (astra2 review; the features-off door is UpdateProfile's matching
+	// cut).
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL AND email <> ?`,
+		TokenResetPassword, userID, tokenEmail); err != nil {
+		return false, err
+	}
 	return true, tx.Commit()
 }
 
-// CompletePasswordReset applies a reset atomically: new hash and
-// revocation of ALL sessions. Half-applying these two is exactly what a
-// stolen session surviving a "successful" reset would look like. The
-// status is deliberately NOT touched (spec §9.17): pending sign-ups
-// cannot reach a reset at all (forgot-password mails only enabled
-// addresses — their escape is resend-confirm), so a status write here
-// could only ever do the wrong thing — resurrecting a suspended account
-// on a link minted before the suspension. The admin CLI reset shares this
-// path and keeps a suspension exactly where it was.
-func (d *DB) CompletePasswordReset(ctx context.Context, userID, hash string, now time.Time) error {
+// CompletePasswordReset consumes a reset link and applies the new hash in
+// ONE transaction: consume, apply, revoke ALL sessions — half-applying is
+// exactly what a stolen session surviving a "successful" reset would look
+// like. The link is bound to the mailbox it was mailed to: it completes only
+// while that address is still the account's confirmed one, so a link to a
+// mailbox the owner has since abandoned cannot overwrite the fresh
+// credential (astra2 review). found=false collapses every dead-link
+// flavour — absent, expired, used, address moved, account deleted.
+// The status is deliberately NOT touched (spec §9.17): forgot-password
+// mails only enabled addresses, so a status write here could only ever do
+// the wrong thing — resurrecting a suspended account on a link minted
+// before the suspension.
+func (d *DB) CompletePasswordReset(ctx context.Context, raw, hash string, now time.Time) (userID string, found bool, err error) {
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx,
-		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
-		hash, now.Unix(), userID)
+	var bound string
+	err = tx.QueryRowContext(ctx,
+		`SELECT t.user_id, t.email FROM auth_tokens t JOIN users u ON u.id = t.user_id
+		 WHERE t.kind = ? AND t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?
+		   AND u.email = t.email`,
+		TokenResetPassword, auth.HashToken(raw), now.Unix()).Scan(&userID, &bound)
+	if errors.Is(err, ErrNoRows) {
+		return "", false, nil
+	}
 	if err != nil {
-		return err
+		return "", false, err
+	}
+	// Burn in the same transaction (used_at re-checked in the UPDATE:
+	// "one shot" must not rely on the single-writer pool, same pattern
+	// ConfirmEmail uses).
+	res, err := tx.ExecContext(ctx,
+		`UPDATE auth_tokens SET used_at = ? WHERE kind = ? AND token_hash = ? AND used_at IS NULL`,
+		now.Unix(), TokenResetPassword, auth.HashToken(raw))
+	if err != nil {
+		return "", false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return "", false, nil // raced to used between SELECT and UPDATE
+	}
+	// The address guard is re-applied at write time rather than trusting
+	// the read above.
+	res, err = tx.ExecContext(ctx,
+		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND email = ?`,
+		hash, now.Unix(), userID, bound)
+	if err != nil {
+		return "", false, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrUserNotFound
+		return "", false, nil // address moved or account gone
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
-		return err
+		return "", false, err
 	}
-	return tx.Commit()
+	return userID, true, tx.Commit()
 }
 
 // DeleteExpiredTokens purges expired one-shot tokens; returns rows removed.

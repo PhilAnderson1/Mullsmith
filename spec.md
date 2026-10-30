@@ -412,9 +412,9 @@ with no internals leaked (§9.12).
 | POST | `/api/v1/auth/logout` | Destroys session. |
 | GET  | `/api/v1/auth/me` | `{id, email, unconfirmed_email, name, created_at, default_system_prompt, quota: {used_bytes, total_bytes}}` |
 | PATCH | `/api/v1/auth/me` | Settings page: any subset of `{name, email, default_system_prompt}`; email rules mirror registration; taken email → 409. With `email.enabled` a changed address is never written directly: it becomes `unconfirmed_email` + a bound confirm mail (old mailbox gets a notice); the confirmed address keeps working until the click (§9.17). |
-| POST | `/api/v1/auth/password` | `{current, new}` change password; revokes other sessions. |
-| POST | `/api/v1/auth/forgot-password` | `{email}` — public, `email.enabled` only (404 otherwise). Mails a one-shot reset link (30 min) to a confirmed, active account. Answers one byte-identical generic 200 for every outcome (§9.17). Rate limited per IP and per address. |
-| POST | `/api/v1/auth/reset-password` | `{token, password}` — public. Policy checked before the token burns; sets the new hash, activates, revokes every session, consumes the token in one transaction. Dead links (any flavour) → one generic 400 `invalid_token`. |
+| POST | `/api/v1/auth/password` | `{current, new}` change password; revokes other sessions and every outstanding reset link — a leaked link must not overwrite the fresh credential (§9.17). |
+| POST | `/api/v1/auth/forgot-password` | `{email}` — public, `email.enabled` only (404 otherwise). Mails a one-shot reset link (30 min) to a confirmed, enabled account. Answers one byte-identical generic 200 for every outcome (§9.17). Rate limited per IP and per address. |
+| POST | `/api/v1/auth/reset-password` | `{token, password}` — public. Policy checked before the token burns; one transaction consumes the link, applies the new hash ONLY while the link's bound address is still the account's confirmed one, and revokes every session; the status is never touched (§9.17). Dead links (any flavour — including a link to a mailbox the account has since moved off) → one generic 400 `invalid_token`. |
 | POST | `/api/v1/auth/confirm-email` | `{token}` — public. The one copy `unconfirmed_email` → `email`, flips a pending sign-up to `enabled`. Address re-pointed / token spent → 400; claimed by someone else in the meantime → 409 `email_taken`. |
 | POST | `/api/v1/auth/resend-confirm` | `{email}` — public. Re-mails a never-confirmed sign-up (old link dies, 24 h window is not extended). Same generic-200 answer as forgot-password. |
 | POST | `/api/v1/auth/me/cancel-email` | Authenticated. Clears a pending address change (`unconfirmed_email` → null, confirm tokens deleted). Returns the fresh `me` payload. |
@@ -1104,7 +1104,7 @@ the only file state there is nothing else that could orphan. App-level accountin
   `{error:{code,message,request_id}}` — no stack traces, SQL text, file paths, or upstream
   bodies passthrough (LLM failures map to `llm_unreachable`/`llm_error` + sanitized
   summary); full detail goes to server logs under the same `request_id`.
-- Admin CLI reset tokens: 192-bit entropy, single-use, hashed at rest, 15-minute expiry.
+- Admin CLI reset tokens: 192-bit entropy, single-use, hashed at rest, 30-minute expiry.
 - Sensitive ops recorded as security log events (§9.14), not just debug noise.
 
 ### 9.13 AI-specific threats: prompt injection & cross-tool exfiltration
@@ -1204,7 +1204,14 @@ initiates a connection carrying credentials. Doctrine:
   `auth_tokens`, one-shot consumption, bound to the address they were minted
   for (constant-time compared against the pending target), reissue of a kind
   invalidates the prior unconsumed token. TTLs: 30 min reset, 24 h confirm.
-  Completing a reset also revokes every session of the account.
+  Both kinds consume inside their own applying transaction — no link is
+  marked spent without its effect being decided in the same breath.
+  Completing a reset also revokes every session of the account. A reset
+  link never outlives the owner's attempts to secure the account: a
+  password change, or a completed address move off the mailbox the link
+  was addressed to, deletes outstanding reset links in the same transaction
+  as the change, and completion itself applies only while the bound address
+  is still the account's confirmed one (astra2 review).
 - **Pending sign-ups own nothing usable**: the address lives in `unconfirmed_email`
   with `email IS NULL` and `status = 'unconfirmed'`, invisible to login,
   forgot-password and every address-keyed lookup; the placeholder chat (§8)

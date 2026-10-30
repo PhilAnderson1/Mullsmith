@@ -310,6 +310,78 @@ func TestResetPasswordFlow(t *testing.T) {
 	}
 }
 
+// A leaked reset link must not outlive the owner's own securing actions:
+// confirming an address move kills the link bound to the abandoned mailbox,
+// and a Settings password change kills the account's outstanding link
+// (astra2 review).
+func TestResetLinkDiesWhenOwnerSecuresAccount(t *testing.T) {
+	a, fm := emailTestApp(t)
+	activeUser(t, a, fm, "leak@secure.io")
+	fm.drain()
+
+	resp := a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email": "leak@secure.io", "password": emailPW,
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d, want 200", resp.StatusCode)
+	}
+
+	// The leak: a forgot-password link for the current address.
+	resp = a.do(http.MethodPost, "/api/v1/auth/forgot-password", map[string]any{"email": "leak@secure.io"})
+	resp.Body.Close()
+	leaked := tokenFromJob(t, fm.next(t), "/#reset?t=")
+
+	// The owner flees the mailbox: PATCH email, then click the confirmation
+	// (two mails go out — confirm to the new address, notice to the old).
+	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": "safe@secure.io"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH email = %d, want 200", resp.StatusCode)
+	}
+	confirmTok := ""
+	for i := 0; i < 2; i++ {
+		j := fm.next(t)
+		if j.To == "safe@secure.io" {
+			confirmTok = tokenFromJob(t, j, "/#confirm?t=")
+		}
+	}
+	if confirmTok == "" {
+		t.Fatal("no confirmation mail for the new address")
+	}
+	resp = a.do(http.MethodPost, "/api/v1/auth/confirm-email", map[string]any{"token": confirmTok})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm = %d, want 200", resp.StatusCode)
+	}
+
+	// The leaked link was addressed to the abandoned mailbox: dead link.
+	resp = a.do(http.MethodPost, "/api/v1/auth/reset-password", map[string]any{
+		"token": leaked, "password": "attacker-password-1",
+	})
+	if resp.StatusCode != http.StatusBadRequest || apiErrCode(t, resp) != "invalid_token" {
+		t.Errorf("leaked link after the address move = %d, want 400 invalid_token", resp.StatusCode)
+	}
+
+	// And a Settings password change revokes a fresh link the same way.
+	resp = a.do(http.MethodPost, "/api/v1/auth/forgot-password", map[string]any{"email": "safe@secure.io"})
+	resp.Body.Close()
+	leaked2 := tokenFromJob(t, fm.next(t), "/#reset?t=")
+	resp = a.do(http.MethodPost, "/api/v1/auth/password", map[string]any{
+		"current": emailPW, "new": "owner-chosen-password-1",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("password change = %d, want 204", resp.StatusCode)
+	}
+	resp = a.do(http.MethodPost, "/api/v1/auth/reset-password", map[string]any{
+		"token": leaked2, "password": "attacker-password-2",
+	})
+	if resp.StatusCode != http.StatusBadRequest || apiErrCode(t, resp) != "invalid_token" {
+		t.Errorf("link after the password change = %d, want 400 invalid_token", resp.StatusCode)
+	}
+}
+
 // --- sign-up confirmation: the whole pending lifecycle ---------------------------
 
 func TestSignupConfirmPendingLifecycle(t *testing.T) {
