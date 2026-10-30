@@ -10,18 +10,14 @@ import (
 )
 
 // TitleSystemPrompt asks the model for a conversation name. The phrase
-// "name chat conversations" doubles as the marker tests use to tell title
-// requests apart from real chat requests. Brevity is a feature: measured
-// on LM Studio + Qwen3.8 at effort none, this wording titles an echoed
-// maths question correctly 3/3, while a longer preachier prompt ("like a
-// short file name — not a sentence…") made the model answer the question
-// instead. The "5 words or fewer" rule is a request, not a guarantee —
-// SanitizeTitle enforces the same cap in code.
-const TitleSystemPrompt = "You name chat conversations. Reply with ONLY a title of " +
-	"5 words or fewer that names the topic of the user's message. " +
-	"Do not start with the message's own words. " +
-	"No quotes, no trailing punctuation. " +
-	"Use the same language as the message. Example: Sourdough baking basics"
+// "titles for chat conversations" doubles as the marker tests use to
+// tell title requests apart from real chat requests. The user's message
+// is attached as the following user turn. The "5 words" rule is a
+// request, not a guarantee — SanitizeTitle enforces the same cap in code.
+const TitleSystemPrompt = "You produce 5 word titles for chat conversations. " +
+	"Generate a title with at maximum 5 words that describes the task involved " +
+	"in answering the following prompt. For complex tasks, just provide a " +
+	"simple abstract title for the task."
 
 // titleMaxRunes caps stored titles; generous but keeps sidebar rows sane.
 const titleMaxRunes = 60
