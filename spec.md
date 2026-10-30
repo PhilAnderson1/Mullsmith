@@ -478,8 +478,10 @@ the chip behind as a historical record whose download 404s (by design).
 model, since a choice list describes a model; `null` when no entry names a profile at all.
 The SPA reads
 the row for the conversation's active model — its own pick, else `default_model`; only ids
-and labels cross the wire, §6.3),
-message
+and labels cross the wire, §6.3. A pick the deployment's `models` no longer lists (endpoint
+swapped, entry removed) resolves to `default_model` everywhere the active model appears —
+API projection, picker, wire request, thinking, window — while the stored name survives a
+config that later restores it),
 char limit, tools
 map — `web_search`/`web_fetch`/`code_run` — and file caps: max size, max attachments,
 `blocked_extensions` — used by the login/register screens, composer and upload UI),

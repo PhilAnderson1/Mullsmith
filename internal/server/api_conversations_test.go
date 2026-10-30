@@ -86,9 +86,10 @@ func TestConversationLifecycle(t *testing.T) {
 	if c.ID == "" || c.Title != "Trip planning" {
 		t.Fatalf("create body = %+v", c)
 	}
-	// Omitted fields take defaults.
+	// Omitted fields take defaults; the projected model is the ACTIVE
+	// one — the server default for an unset conversation.
 	d := createConv(t, a, map[string]any{})
-	if d.Title != "New chat" || d.Model != "" {
+	if d.Title != "New chat" || d.Model != "m1" {
 		t.Errorf("defaults = %+v", d)
 	}
 

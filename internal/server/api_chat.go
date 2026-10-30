@@ -497,7 +497,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			roundTools = nil // force a final, tool-less answer
 		}
 		roundStart := time.Now() // model time only: tool runs land on tool cards
-		res = s.runModelRound(genCtx, conn, conv.Model, msgs, roundTools, thinkFrag)
+		res = s.runModelRound(genCtx, conn, s.thinkingModel(conv.Model), msgs, roundTools, thinkFrag)
 		roundMS := time.Since(roundStart).Milliseconds()
 
 		if res.Err != nil || res.Status == "aborted" {
@@ -879,7 +879,7 @@ func (s *Server) nameConversation(conv *store.Conversation, firstUser string, co
 	// is not a reply. Nil when no selector covers the model, leaving
 	// llm.Complete's fallback hint.
 	quiet := s.cfg.Thinking.QuietFragment(s.thinkingModel(conv.Model))
-	title, err := s.generator.Title(ctx, conv.Model, firstUser, quiet)
+	title, err := s.generator.Title(ctx, s.thinkingModel(conv.Model), firstUser, quiet)
 	if err != nil {
 		s.logger.Info("auto-title skipped", "conversation", conv.ID, "error", err)
 		return

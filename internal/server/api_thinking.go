@@ -1,6 +1,8 @@
 package server
 
 import (
+	"slices"
+
 	"mullsmith/internal/store"
 	"mullsmith/internal/thinking"
 )
@@ -15,8 +17,15 @@ import (
 // its own pick, or the server default — and thus part of the
 // applicability fingerprint. It takes the conversation's raw model
 // value so callers mid-patch can pass the value that is about to apply.
+// thinkingModel is the model a conversation actually RUNS on: its own
+// selection when that name is still in the deployment's model list,
+// else the default. A conversation pinned to a model the config no
+// longer offers (endpoint switched, entry removed) must not drag that
+// dead name onto the wire or into the picker — it silently rides the
+// default instead. The stored choice survives, so a config that later
+// re-adds the model adopts it back.
 func (s *Server) thinkingModel(convModel string) string {
-	if convModel != "" {
+	if convModel != "" && slices.Contains(s.cfg.LLM.ModelNames(), convModel) {
 		return convModel
 	}
 	return s.cfg.LLM.DefaultModelID()

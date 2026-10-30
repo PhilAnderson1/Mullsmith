@@ -25,9 +25,11 @@ const (
 // shows exactly what the next request will send.
 func (s *Server) conversationJSON(c *store.Conversation) map[string]any {
 	j := map[string]any{
-		"id":            c.ID,
-		"title":         c.Title,
-		"model":         c.Model,
+		"id":    c.ID,
+		"title": c.Title,
+		// The live model, not the raw column: a stored name the config
+		// no longer offers would strand the picker on a ghost (§10).
+		"model":         s.thinkingModel(c.Model),
 		"system_prompt": c.SystemPrompt,
 		"thinking":      s.thinkingChoice(c),
 		"created_at":    c.CreatedAt.UTC().Format(timeRFC3339),

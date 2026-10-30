@@ -1912,17 +1912,10 @@ function renderConversation() {
   const sel = $("#model-picker");
   sel.disabled = !state.currentId;
   if (c) {
-    // Show the model ACTUALLY in use: an unset conversation runs on the
-    // server default, so name that one.
+    // Show the model ACTUALLY in use. The server already resolves a
+    // model the config no longer offers to the default, so the name is
+    // always one of the picker's own options.
     const active = c.model || state.meta.default_model || "";
-    sel.querySelectorAll("option[data-fellout]").forEach((o) => o.remove());
-    if (active && ![...sel.options].some((o) => o.value === active)) {
-      // A model since removed from the allow-list still runs this
-      // conversation — show the truth rather than a blank selection.
-      const opt = new Option(active, active);
-      opt.dataset.fellout = "1";
-      sel.appendChild(opt);
-    }
     sel.value = active;
   }
 
@@ -2001,10 +1994,10 @@ async function onModelChange(ev) {
 
 // --- thinking-level selector -----------------------------------------------------
 
-// The list for the model the conversation actually runs on (its own
-// pick, else the server default). A model since removed from the picker
-// has no row: the server still applies the default profile's list, but
-// the SPA cannot name it, so the selector goes quiet (Default only).
+// The list for the model the conversation actually runs on. The server
+// projects the ACTIVE model — a stored pick the deployment no longer
+// offers has already resolved to the default — so the name here always
+// has a row; the empty fallback is belt-and-braces.
 function thinkingChoices() {
   const th = state.meta && state.meta.thinking;
   if (!th || !th.choices_by_model) return [];
