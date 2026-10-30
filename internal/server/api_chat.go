@@ -854,7 +854,9 @@ func (s *Server) attachImageView(userID, convID, rel string) (llm.ChatMessage, b
 // when possible. Purely best-effort: every failure only means the chat
 // keeps its placeholder title and gets retried on the next message.
 func (s *Server) nameConversation(conv *store.Conversation, firstUser string, conn *sseConn) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 30 s: an endpoint that thinks despite the disable needs room to
+	// reason out loud before the title (see Title's budget note).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	title, err := s.generator.Title(ctx, conv.Model, firstUser)
 	if err != nil {

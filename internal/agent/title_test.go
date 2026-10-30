@@ -1,9 +1,50 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"mullsmith/internal/config"
+	"mullsmith/internal/llm"
 )
+
+// LM Studio + Qwen3.8 ignores chat_template_kwargs.enable_thinking and
+// thinks anyway: at the old 160-token budget the reasoning ate every token
+// and content came back empty, so conversations kept "New chat" forever
+// (the auto-title quest treats any error as skip-and-retry). The fake
+// reproduces that boundary — a title only appears once the budget covers
+// the thinking preamble.
+func TestTitleBudgetSurvivesAlwaysThinkingEndpoint(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			MaxTokens int `json:"max_tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if body.MaxTokens <= 160 { // reasoning runs out the budget first
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","reasoning_content":"We need answer user's message..."}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"Baking sourdough bread","reasoning_content":"We need answer user's message..."}}]}`)
+	}))
+	defer ts.Close()
+	cfg := &config.Config{}
+	cfg.LLM.Endpoint = ts.URL
+	cfg.LLM.Model = "qwen/qwen3.8-27b"
+	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	title, err := g.Title(context.Background(), "", "how do I bake sourdough")
+	if err != nil {
+		t.Fatalf("Title: %v", err)
+	}
+	if title != "Baking sourdough bread" {
+		t.Errorf("title = %q, want the endpoint's title", title)
+	}
+}
 
 func TestSanitizeTitle(t *testing.T) {
 	cases := []struct {

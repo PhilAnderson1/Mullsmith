@@ -26,9 +26,13 @@ func (g *Generator) Title(ctx context.Context, model, firstUser string) (string,
 		{Role: "system", Content: TitleSystemPrompt},
 		{Role: "user", Content: clipRunes(firstUser, 600)},
 	}
-	// Reasoning is disabled for this call (llm.Complete), so a small token
-	// budget suffices; the extra headroom covers endpoints that ignore it.
-	raw, err := g.LLM.Complete(ctx, model, msgs, 160)
+	// Reasoning is disabled for this call (llm.Complete), so a modest token
+	// budget suffices — on endpoints that honour it. Some ignore the kwarg
+	// outright (measured on LM Studio + Qwen3.8: ~90 reasoning tokens for
+	// this very prompt before any content), so the budget must also cover
+	// a thinking preamble; 512 is generous headroom without risking a
+	// rambling model owning the whole timeout.
+	raw, err := g.LLM.Complete(ctx, model, msgs, 512)
 	if err != nil {
 		return "", err
 	}

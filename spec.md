@@ -511,7 +511,11 @@ everything else behind auth.
    renders the same readouts.
 7. **Auto-title** (alongside the first exchange of a conversation still named
    `New chat`): a small non-streaming side request to the model turns the first user
-   message into a ≤5-word topic. Written only if the row is still unnamed (a guarded
+   message into a ≤5-word topic. The request asks the endpoint to skip reasoning but
+   carries a token budget that also covers a thinking preamble, because some
+   endpoints ignore the skip (LM Studio + Qwen3.8 measured: ~90 reasoning tokens
+   before any content — a title-sized budget returns empty content forever).
+   Written only if the row is still unnamed (a guarded
    `UPDATE` — the user's own rename always wins), then emitted as a `title` event so
    the sidebar updates live. Strictly best-effort: any failure leaves the placeholder
    and retries on the next message; regenerate never retitles.
