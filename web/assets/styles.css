@@ -460,7 +460,8 @@ body.drawer-open #sidebar { transform: translateX(0); }
   padding: 0.1rem 0.55rem;
   background: var(--bg);
   border-radius: 0.6rem;
-  color: var(--fg-muted);
+  color: var(--fg);
+  font-weight: 500;
   font-size: 0.78em;
   line-height: 1.45;
   text-align: right;
