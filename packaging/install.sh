@@ -67,6 +67,12 @@ fi
 
 install -m 0755 "$binary" /usr/local/bin/mullsmith
 install -d -o root -g mullsmith -m 0750 /etc/mullsmith
+# The data directory holds the scratchpad (spec §8, §9.7). The daemon's own
+# meter is byte-based with bounded scans; a true hard cap on what one
+# deployment can consume lives below it: putting /var/lib/mullsmith on its
+# own bounded filesystem (or enabling filesystem project quotas) is the
+# operator's step and the only defence against entry-count (inode) pressure
+# and files deleted while still open. Optional — nothing here depends on it.
 install -d -o mullsmith -g mullsmith -m 0700 /var/lib/mullsmith
 install -d -o root -g root -m 0755 /usr/local/share/mullsmith
 install -o root -g root -m 0644 "$readme_source" /usr/local/share/mullsmith/README.md

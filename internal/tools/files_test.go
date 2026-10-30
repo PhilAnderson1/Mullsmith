@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,44 @@ func TestFsWriteReadListRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "q3.md") {
 		t.Errorf("list = %s", res.Content)
+	}
+}
+
+// Astra finding 5: a script can mint hundreds of thousands of zero-byte
+// files; fs_list must read a bounded listing and say so, never load the
+// flood into daemon memory.
+func TestFsListTruncatedAfterFlood(t *testing.T) {
+	root := toolRoot(t)
+	for i := 0; i < 201; i++ {
+		writeDirect(t, root, fmt.Sprintf("work/f%06d", i), "")
+	}
+	res, err := run(t, FsList{}, root, argsJSON(t, map[string]string{"path": "work"}))
+	if err != nil {
+		t.Fatalf("fs_list over 201 entries: %v", err)
+	}
+	var out struct {
+		Entries   []map[string]any `json:"entries"`
+		Truncated bool             `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(res.Content), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Entries) != 200 || !out.Truncated {
+		t.Errorf("flooded listing = %d entries (truncated=%v), want 200/true", len(out.Entries), out.Truncated)
+	}
+	if !strings.Contains(res.Summary, "(more entries exist)") {
+		t.Errorf("summary = %q, want a truncation note", res.Summary)
+	}
+	if truncated, ok := res.Data.(map[string]any)["truncated"].(bool); !ok || !truncated {
+		t.Errorf("Data[truncated] = %v, want true", res.Data)
+	}
+	// A normal directory lists unchanged: no truncated key set true.
+	res, err = run(t, FsList{}, root, argsJSON(t, map[string]string{"path": "artifacts"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Summary, "(more entries exist)") {
+		t.Errorf("small listing flagged truncated: %q", res.Summary)
 	}
 }
 

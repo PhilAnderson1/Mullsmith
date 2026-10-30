@@ -202,6 +202,129 @@ func TestMkdirAllAgainstFile(t *testing.T) {
 	}
 }
 
+// Astra finding 4: the user root itself is a no-follow open, so a tree
+// substituted for a symlink can never be the tree the tools operate on.
+func TestSymlinkedUserRootRejected(t *testing.T) {
+	root := newRoot(t)
+	userDir := filepath.Join(root, testULID)
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("x"), 0o600)
+
+	if err := os.Rename(userDir, userDir+".keep"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, userDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenFile(root, testULID, "uploads/victim.txt"); !errors.Is(err, ErrPathUnsafe) {
+		t.Errorf("OpenFile = %v, want ErrPathUnsafe", err)
+	}
+	if _, err := CreateFile(root, testULID, "work/planted.txt", 0o600); !errors.Is(err, ErrPathUnsafe) {
+		t.Errorf("CreateFile = %v, want ErrPathUnsafe", err)
+	}
+	if err := MkdirAll(root, testULID, "work/x"); !errors.Is(err, ErrPathUnsafe) {
+		t.Errorf("MkdirAll = %v, want ErrPathUnsafe", err)
+	}
+	if _, err := ReadDir(root, testULID, "."); !errors.Is(err, ErrPathUnsafe) {
+		t.Errorf("ReadDir = %v, want ErrPathUnsafe", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "victim.txt")); err != nil {
+		t.Error("external tree must be untouched")
+	}
+}
+
+// Astra finding 4: provisioning is fd-pinned — planted symlinks abort it
+// rather than being built through, and the normal path stays idempotent.
+func TestEnsureUserDirsRefusesSymlinks(t *testing.T) {
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "precious.bin"), []byte("x"), 0o600)
+
+	t.Run("user root planted as symlink", func(t *testing.T) {
+		root := t.TempDir()
+		os.Symlink(outside, filepath.Join(root, testULID))
+		if err := EnsureUserDirs(root, testULID); !errors.Is(err, ErrPathUnsafe) {
+			t.Errorf("got %v, want ErrPathUnsafe", err)
+		}
+		if ents, _ := os.ReadDir(outside); len(ents) != 1 {
+			t.Errorf("provisioning built through the planted symlink: %v", ents)
+		}
+	})
+	t.Run("layout subdir planted as symlink", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, testULID), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		os.Symlink(outside, filepath.Join(root, testULID, "uploads"))
+		if err := EnsureUserDirs(root, testULID); !errors.Is(err, ErrPathUnsafe) {
+			t.Errorf("got %v, want ErrPathUnsafe", err)
+		}
+		if ents, _ := os.ReadDir(outside); len(ents) != 1 {
+			t.Errorf("provisioning built through the planted symlink: %v", ents)
+		}
+	})
+	t.Run("creates real dirs and is idempotent", func(t *testing.T) {
+		root := t.TempDir()
+		if err := EnsureUserDirs(root, testULID); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureUserDirs(root, testULID); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		for _, sub := range []string{"uploads", "artifacts", "work"} {
+			fi, err := os.Lstat(filepath.Join(root, testULID, sub))
+			if err != nil || !fi.IsDir() {
+				t.Errorf("%s missing or not a dir (%v)", sub, err)
+			}
+		}
+	})
+}
+
+// Astra finding 1 regression: the old string-based MkdirAll checked a parent
+// directory, then created the next component by absolute path — so a script
+// racing inside the jail could rename the checked directory aside, plant a
+// symlink in its place, and make the host create directories OUTSIDE the
+// user tree. The fd-pinned walk must make that impossible: every mkdirat
+// happens against the pinned fd, which no swap can steer.
+func TestMkdirAllParentSwapRace(t *testing.T) {
+	root := newRoot(t)
+	userDir := filepath.Join(root, testULID)
+	outside := t.TempDir()
+
+	if err := MkdirAll(root, testULID, "work/a"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deterministic hostile interleaving: the moment the walk has pinned "a"
+	// — the last point the old code trusted the string — rename "a" away and
+	// put a symlink to an external directory in its place.
+	testHookMkdirPinned = func(seg string) {
+		if seg != "a" {
+			return
+		}
+		if err := os.Rename(filepath.Join(userDir, "work", "a"),
+			filepath.Join(userDir, "work", "a.orig")); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Symlink(outside, filepath.Join(userDir, "work", "a")); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { testHookMkdirPinned = nil })
+
+	// Success or failure here is immaterial — the security property is WHERE
+	// anything gets created. "new" is mkdirat'd against the pinned fd of the
+	// real directory, so it must land inside the tree (under a.orig).
+	_ = MkdirAll(root, testULID, "work/a/new")
+
+	if _, err := os.Lstat(filepath.Join(outside, "new")); err == nil {
+		t.Error("mkdir escaped through the swapped-in symlink")
+	}
+	if fi, err := os.Lstat(filepath.Join(userDir, "work", "a.orig", "new")); err != nil || !fi.IsDir() {
+		t.Errorf("new dir did not land inside the tree: %v", err)
+	}
+}
+
 func trunc(s string) string {
 	if len(s) > 40 {
 		return s[:40] + "…"

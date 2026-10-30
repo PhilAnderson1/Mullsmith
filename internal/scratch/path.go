@@ -15,6 +15,7 @@ package scratch
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -112,6 +113,28 @@ type openResult struct {
 	final  string   // final segment name ("" when the path IS the user root)
 }
 
+// openUserRoot pins the user root as an fd. O_NOFOLLOW applies to the root
+// itself as well as the walk below it (astra finding 4): a ULID directory
+// substituted for a symlink must not become a bridge into an external tree.
+// The configured root above it is the documented trust boundary — it is
+// resolved with ordinary symlink following, so a data root that is itself a
+// symlink remains a supported deployment shape.
+func openUserRoot(root, userID string) (*os.File, error) {
+	dir, err := UserRoot(root, userID)
+	if err != nil {
+		return nil, err
+	}
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		// Linux reports ENOTDIR (not ELOOP) when O_DIRECTORY meets a symlink.
+		if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("%w: user root is a symlink", ErrPathUnsafe)
+		}
+		return nil, mapOpenErr(err)
+	}
+	return os.NewFile(uintptr(fd), dir), nil
+}
+
 // openParent opens the user root, then every intermediate segment as a
 // directory with O_NOFOLLOW, and returns the containing-directory fd WITHOUT
 // opening the final element (callers open it with the flags they need).
@@ -120,15 +143,10 @@ func openParent(root, userID, rel string) (*openResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir, err := UserRoot(root, userID)
+	cur, err := openUserRoot(root, userID)
 	if err != nil {
 		return nil, err
 	}
-	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, mapOpenErr(err)
-	}
-	cur := os.NewFile(uintptr(fd), dir)
 	if len(segs) == 0 {
 		return &openResult{parent: cur, final: ""}, nil
 	}
@@ -263,9 +281,17 @@ func CreateFile(root, userID, rel string, perms os.FileMode) (*os.File, error) {
 	return f, nil
 }
 
-// MkdirAll creates the directory chain rel inside the user's scratchpad.
-// Existing elements must be real directories — a pre-existing symlink at any
-// level aborts the walk (§9.7).
+// MkdirAll creates the directory chain rel inside the user's scratchpad,
+// fd-pinned end to end (astra finding 1): the walk opens the user root,
+// creates each component with mkdirat against the pinned parent fd, and
+// descends into it with openat(O_DIRECTORY|O_NOFOLLOW) — it never re-resolves
+// a reconstructed absolute string. That closes the parent-symlink race the
+// old string-based walk had: a component swapped for a symlink BEFORE it is
+// created is refused by the no-follow descend, and one swapped AFTER it is
+// created cannot steer the walk either — the pinned fd still names the real
+// directory, so the next mkdirat lands inside the tree regardless. Existing
+// elements must be real directories; a symlink at any level aborts the
+// walk (§9.7).
 func MkdirAll(root, userID, rel string) error {
 	segs, err := ParseRel(rel)
 	if err != nil || len(segs) == 0 {
@@ -274,32 +300,59 @@ func MkdirAll(root, userID, rel string) error {
 		}
 		return err
 	}
-	dir, err := UserRoot(root, userID)
+	cur, err := openUserRoot(root, userID)
 	if err != nil {
 		return err
 	}
-	var b strings.Builder
-	b.WriteString(dir)
 	for _, s := range segs {
-		b.WriteString(string(filepath.Separator))
-		b.WriteString(s)
-		path := b.String()
-		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		nfd, err := mkdiratDescend(int(cur.Fd()), s)
+		if err != nil {
+			_ = cur.Close()
 			return err
 		}
-		fi, err := os.Lstat(path)
-		if err != nil {
-			return mapOpenErr(err)
-		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: symlink at %q", ErrPathUnsafe, s)
-		}
-		if !fi.IsDir() {
-			return ErrNotDir
+		next := os.NewFile(uintptr(nfd), s)
+		_ = cur.Close() // old fd is superseded; a close error leaks at most the fd
+		cur = next
+		if h := testHookMkdirPinned; h != nil {
+			h(s)
 		}
 	}
+	_ = cur.Close() // traversal fd; nothing was written through it
 	return nil
 }
+
+// mkdiratDescend creates name under parentFd (tolerating EEXIST) and returns
+// an fd for the directory it names. Symlinks and non-directories are refused
+// without ever resolving a path string.
+func mkdiratDescend(parentFd int, name string) (int, error) {
+	if err := unix.Mkdirat(parentFd, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+		return -1, mapOpenErr(err)
+	}
+	nfd, err := unix.Openat(parentFd, name,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		// Linux reports ENOTDIR (not ELOOP) when O_DIRECTORY meets a symlink
+		// under O_NOFOLLOW; either way the walk stops here. The no-follow
+		// fstatat only classifies the object for the error the caller sees.
+		if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+			var st unix.Stat_t
+			if serr := unix.Fstatat(parentFd, name, &st, unix.AT_SYMLINK_NOFOLLOW); serr == nil &&
+				st.Mode&unix.S_IFMT == unix.S_IFLNK {
+				return -1, fmt.Errorf("%w: symlink at %q", ErrPathUnsafe, name)
+			}
+			return -1, ErrNotDir
+		}
+		return -1, mapOpenErr(err)
+	}
+	return nfd, nil
+}
+
+// testHookMkdirPinned, when non-nil, runs after MkdirAll has pinned the fd
+// for one segment and before it creates the next — the exact moment the old
+// string-based walk stopped trusting the path. Production never sets it; the
+// parent-symlink race regression test (astra finding 1) uses it to interleave
+// a hostile rename+symlink deterministically.
+var testHookMkdirPinned func(segment string)
 
 // OpenDir opens a directory inside the user's scratchpad; "" is the user root.
 func OpenDir(root, userID, rel string) (*os.File, error) {
@@ -327,6 +380,36 @@ func ReadDir(root, userID, rel string) ([]fs.DirEntry, error) {
 	}
 	defer f.Close()
 	return f.ReadDir(-1)
+}
+
+// ReadDirLimit lists at most limit entries of a directory inside the user's
+// scratchpad, reporting whether more exist (astra finding 5). A hostile
+// script can create millions of entries cheaply (each counts ~zero bytes),
+// so no response path may load a whole listing into daemon memory: this
+// reads limit+1 names and stops.
+func ReadDirLimit(root, userID, rel string, limit int) (entries []fs.DirEntry, truncated bool, err error) {
+	if limit <= 0 {
+		return nil, false, errors.New("ReadDirLimit: limit must be positive")
+	}
+	f, err := OpenDir(root, userID, rel)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	entries, err = f.ReadDir(limit + 1) // directory order, as ReadDir(-1) has always returned
+	if errors.Is(err, io.EOF) {
+		// ReadDir(n) reports end-of-directory as an error when its slice
+		// came back empty: an empty directory is an empty listing, not a
+		// failure.
+		err = nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if len(entries) > limit {
+		return entries[:limit], true, nil
+	}
+	return entries, false, nil
 }
 
 // Stat inspects an element without following a final symlink.
@@ -381,6 +464,14 @@ func Remove(root, userID, rel string) error {
 // gone" would hide surviving bytes behind a success answer. Entries that
 // vanish between walk and delete (a script still running) are tolerated:
 // those bytes are genuinely gone.
+// removeTreeEntryBudget caps how many entries a RemoveTree plan may hold
+// (astra finding 5). The plan-first design needs the whole listing in RAM;
+// only a deliberately flooded folder reaches this count, and for it the
+// fail-closed answer is "refuse, delete nothing". The hourly TTL sweep,
+// which streams per directory, remains the backstop for actually clearing
+// the junk. A var so tests can run small.
+var removeTreeEntryBudget = 1_000_000
+
 func RemoveTree(root, userID, rel string) error {
 	fi, err := Stat(root, userID, rel)
 	if err != nil {
@@ -394,9 +485,14 @@ func RemoveTree(root, userID, rel string) error {
 		return err
 	}
 	var files, dirs []string
+	visited := 0
 	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err // unreadable anything ⇒ incomplete plan ⇒ abort
+		}
+		if visited++; visited > removeTreeEntryBudget {
+			return fmt.Errorf("remove %q: over %d entries, refusing to plan a delete this large",
+				rel, removeTreeEntryBudget)
 		}
 		sub, rerr := filepath.Rel(dir, p)
 		if rerr != nil || sub == "." {

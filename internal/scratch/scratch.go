@@ -9,12 +9,26 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/sys/unix"
+
 	"mullsmith/internal/id"
 )
 
 // errOverLimit ends a DirSizeExceeds walk the instant the sum crosses the
 // line — the watchdog must stay cheap even over a pathological directory.
 var errOverLimit = errors.New("scratch: over size limit")
+
+// errScanBudget ends a quota scan that examined more entries than it may
+// (astra finding 5): empty files count ~zero bytes, so a flood of entries
+// makes every scan expensive while the quota looks nearly untouched.
+var errScanBudget = errors.New("scratch: entry budget exceeded")
+
+// scanEntryBudget caps how many filesystem entries one quota scan visits.
+// Going over it is an ERROR, not a partial total — incomplete accounting
+// is unknown accounting, and the fail-closed callers already act on that
+// (run watchdog kills the run, fs_write refuses). Only a pathological tree
+// gets near this; a var so tests can run small.
+var scanEntryBudget = 50_000
 
 // scanAbort decides how a WalkDir callback error affects a quota scan
 // (audit2 finding 3, accounting bypass): an entry that vanished mid-walk
@@ -43,14 +57,24 @@ func scanAbort(err error) error {
 // (fail closed, audit2 finding 3): callers must refuse the operation they
 // were about to authorize. A missing user root is the one incomplete tree
 // that legitimately reports zero usage: a fresh user holds no bytes.
+// Walking more than scanEntryBudget entries is itself such an error
+// (astra finding 5), so a flooded directory cannot burn CPU forever.
 func DirSizeExceeds(root, userID string, limit int64) (bool, error) {
 	dir, err := UserRoot(root, userID)
 	if err != nil {
 		return false, err
 	}
 	var total int64
+	var visited int
 	var rootMissing bool
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		// Astra finding 5: empty files are ~free against the byte quota yet
+		// make every walk expensive, and the watchdog re-walks on each
+		// poll. Past the budget the answer is UNKNOWN (an error), never a
+		// partial total — the fail-closed callers then act on unknown.
+		if visited++; visited > scanEntryBudget {
+			return fmt.Errorf("%w: over %d entries under %s", errScanBudget, scanEntryBudget, dir)
+		}
 		if err != nil {
 			if p == dir && errors.Is(err, fs.ErrNotExist) {
 				rootMissing = true
@@ -94,16 +118,33 @@ func UserRoot(root, userID string) (string, error) {
 	return filepath.Join(root, userID), nil
 }
 
-// EnsureUserDirs creates uploads/, artifacts/ and work/ under the user root.
+// EnsureUserDirs creates the user root and uploads/, artifacts/ and work/
+// under it — fd-pinned (astra finding 4). The configured scratch root is
+// opened by name once, the documented trust boundary; from there every step
+// is a mkdirat against the pinned fd, re-opened no-follow to prove the
+// created-or-existing element is a real directory. Provisioning therefore
+// refuses to build beneath a planted symlink instead of shrugging it
+// through, and a symlinked path aborts with ErrPathUnsafe.
 func EnsureUserDirs(root, userID string) error {
-	dir, err := UserRoot(root, userID)
-	if err != nil {
+	if _, err := UserRoot(root, userID); err != nil {
 		return err
 	}
+	rootFd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open scratchpad root: %w", err)
+	}
+	defer unix.Close(rootFd)
+	userFd, err := mkdiratDescend(rootFd, userID)
+	if err != nil {
+		return fmt.Errorf("create scratchpad: %w", err)
+	}
+	defer unix.Close(userFd)
 	for _, sub := range subdirs {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
+		fd, err := mkdiratDescend(userFd, sub)
+		if err != nil {
 			return fmt.Errorf("create scratchpad %s: %w", sub, err)
 		}
+		_ = unix.Close(fd) // verification fd; nothing was read through it
 	}
 	return nil
 }
@@ -124,6 +165,11 @@ func EnsureUserDirs(root, userID string) error {
 // makes. When nothing outside root's grip exists, an error is returned so
 // the caller can warn instead of silently repeating the bug; the
 // directories themselves were still created.
+//
+// Every chown goes through a pinned descriptor and refuses symlinked layout
+// entries (astra finding 4); the ancestor walk that merely DISCOVERS the
+// service identity stays name-based, because its subject — the trust
+// boundary and above — is operator territory by definition.
 func AdoptOwnership(root, userID string) error {
 	if os.Geteuid() != 0 {
 		return nil
@@ -136,19 +182,61 @@ func AdoptOwnership(root, userID string) error {
 	if !ok {
 		return fmt.Errorf("cannot tell which user runs the daemon: every directory at or above %s is owned by root", root)
 	}
-	targets := []string{dir}
+
+	// Collect the tree through the same pinned walk provisioning does, then
+	// chown by descriptor (astra finding 4): with no name left to resolve,
+	// a planted symlink cannot steer ownership onto an external tree.
+	userF, err := openUserRoot(root, userID)
+	if err != nil {
+		return fmt.Errorf("adopt %s: %w", dir, err)
+	}
+	defer userF.Close()
+	holds := []*os.File{userF}
 	for _, sub := range subdirs {
-		targets = append(targets, filepath.Join(dir, sub))
+		fd, err := unix.Openat(int(userF.Fd()), sub,
+			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return fmt.Errorf("adopt %s/%s: %w", dir, sub, mapOpenErr(err))
+		}
+		holds = append(holds, os.NewFile(uintptr(fd), sub))
 	}
+	defer func() {
+		for _, f := range holds[1:] {
+			_ = f.Close()
+		}
+	}()
+
 	if ownedByRoot(root) {
-		targets = append([]string{root}, targets...)
+		if fi, err := os.Lstat(root); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to chown %s: it is a symlink; repair its ownership manually", root)
+		}
+		rootF, err := openScratchRootDir(root)
+		if err != nil {
+			return fmt.Errorf("adopt %s: %w", root, err)
+		}
+		defer rootF.Close()
+		if err := rootF.Chown(uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", root, err)
+		}
 	}
-	for _, p := range targets {
-		if err := os.Chown(p, uid, gid); err != nil {
-			return fmt.Errorf("chown %s: %w", p, err)
+	for _, f := range holds {
+		if err := f.Chown(uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", f.Name(), err)
 		}
 	}
 	return nil
+}
+
+// openScratchRootDir opens the configured scratch root itself for the
+// root-run ownership repair: no-follow on the final component (a symlinked
+// scratch root is refused by the caller above), ordinary resolution of the
+// parent path, consistent with the trust-boundary rule.
+func openScratchRootDir(root string) (*os.File, error) {
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, mapOpenErr(err)
+	}
+	return os.NewFile(uintptr(fd), root), nil
 }
 
 // RemoveUserDirs deletes a user's scratchpad entirely.
@@ -165,15 +253,20 @@ func RemoveUserDirs(root, userID string) error {
 // (fail closed, audit2 finding 3): an unreadable directory — a script's
 // chmod 000 trick — or unreadable metadata aborts the walk instead of
 // silently contributing nothing. A missing user root legitimately sums to
-// zero.
+// zero. Like DirSizeExceeds, exceeding scanEntryBudget entries fails the
+// scan as unknown (astra finding 5).
 func DirSize(root, userID string) (int64, error) {
 	dir, err := UserRoot(root, userID)
 	if err != nil {
 		return 0, err
 	}
 	var total int64
+	var visited int
 	var rootMissing bool
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if visited++; visited > scanEntryBudget {
+			return fmt.Errorf("%w: over %d entries under %s", errScanBudget, scanEntryBudget, dir)
+		}
 		if err != nil {
 			if p == dir && errors.Is(err, fs.ErrNotExist) {
 				rootMissing = true

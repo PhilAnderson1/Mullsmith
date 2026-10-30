@@ -83,7 +83,8 @@ func (FsList) Name() string { return "fs_list" }
 
 func (FsList) Description() string {
 	return "List files and directories in the user's scratchpad. Pass no path (or \".\") " +
-		"for the root. Returns JSON entries {name, dir, bytes}. Paths are relative to the " +
+		"for the root. Returns JSON entries {name, dir, bytes}, capped at 200; if the response " +
+		"says truncated, more entries exist. Paths are relative to the " +
 		"scratchpad root; uploads/ holds the user's uploads, you write under work/ or artifacts/."
 }
 
@@ -111,7 +112,10 @@ func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if rel == "" {
 		rel = "."
 	}
-	entries, err := scratch.ReadDir(root, inv.UserID, rel)
+	// Astra finding 5: never load a whole directory — a script can mint
+	// millions of entries that count ~zero bytes against quota.
+	const fsListLimit = 200
+	entries, truncated, err := scratch.ReadDirLimit(root, inv.UserID, rel, fsListLimit)
 	if err != nil {
 		return Result{}, fsErr("fs_list", err)
 	}
@@ -122,9 +126,6 @@ func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	}
 	outs := make([]entry, 0, len(entries))
 	for _, e := range entries {
-		if len(outs) >= 200 {
-			break
-		}
 		en := entry{Name: e.Name(), Dir: e.IsDir()}
 		if !en.Dir {
 			if fi, err := e.Info(); err == nil {
@@ -133,11 +134,17 @@ func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		}
 		outs = append(outs, en)
 	}
-	body, _ := json.Marshal(map[string]any{"note": untrustedFileNote, "path": rel, "entries": outs})
+	res := map[string]any{"note": untrustedFileNote, "path": rel, "entries": outs}
+	sum := fmt.Sprintf("Listed %d entr%s in %s", len(outs), plural(len(outs), "y", "ies"), quoteShort(rel))
+	if truncated {
+		res["truncated"] = true
+		sum += " (more entries exist)"
+	}
+	body, _ := json.Marshal(res)
 	return Result{
 		Content: string(body),
-		Summary: fmt.Sprintf("Listed %d entr%s in %s", len(outs), plural(len(outs), "y", "ies"), quoteShort(rel)),
-		Data:    map[string]any{"path": rel, "entries": outs},
+		Summary: sum,
+		Data:    map[string]any{"path": rel, "entries": outs, "truncated": truncated},
 	}, nil
 }
 

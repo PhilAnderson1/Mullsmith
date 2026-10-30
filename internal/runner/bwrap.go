@@ -33,6 +33,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Bwrap is the sole production Runner.
@@ -110,7 +112,9 @@ func NewBwrap(opts Options) (*Bwrap, error) {
 	return &Bwrap{opts: opts, gate: newGate(opts.GlobalCap), cgroupRoot: root}, nil
 }
 
-// bwrapArgs builds the jail specification. scratchDir/workDir are HOST
+// bwrapArgs builds the jail specification: bwrap's OPTION list plus the
+// payload command, WITHOUT argv[0] — the launcher prepends the program name
+// before execve (sandbox.go, astra finding 3). scratchDir/workDir are HOST
 // paths: the user's scratchpad root (mounted READ-ONLY at /scratchpad)
 // and its work dir. Writable directories are work/ and artifacts/, each
 // overlaid rw at its own position; uploads/ and the root stay read-only.
@@ -177,6 +181,8 @@ func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
 	// order. All three are hard binds (no -try): the tool layer ran
 	// scratch.EnsureUserDirs, so a missing directory means a broken
 	// layout — fail closed rather than hand the payload the root view.
+	// Run() has already pinned these same sources fd-wise before building
+	// the spec (verifyJailLayout, astra finding 4).
 	return append(args,
 		"--ro-bind", scratchDir, "/scratchpad",
 		"--bind", workDir, tmpInJail,
@@ -187,8 +193,44 @@ func bwrapArgs(scratchDir, workDir, target string, networkOpen bool) []string {
 	)
 }
 
-func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, error) {
-	release, err := b.gate.acquire(ctx, userID)
+// verifyJailLayout pins the jail's bind sources before they are handed to
+// bubblewrap (astra finding 4): the scratch dir is opened no-follow and the
+// work path is descended component by component, so a layout directory
+// substituted for a symlink fails closed here instead of becoming a bind of
+// some unintended host tree. Residual, by design: stock bubblewrap has no
+// bind-by-descriptor option, so it re-resolves the host STRINGS at mount
+// time. The validate→mount window that remains is only reachable by a
+// process that can already write the scratch root — never the jail itself,
+// whose view of that tree is read-only, nor the fs_* tools, which cannot
+// create symlinks.
+func verifyJailLayout(scratchDir, workRel string) error {
+	fd, err := unix.Open(scratchDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+			return errors.New("runner: scratch dir is a symlink or not a directory")
+		}
+		return errors.New("runner: scratch dir does not exist")
+	}
+	cur := os.NewFile(uintptr(fd), scratchDir)
+	for _, s := range strings.Split(filepath.ToSlash(workRel), "/") {
+		if s == "" || s == "." {
+			continue
+		}
+		nfd, err := unix.Openat(int(cur.Fd()), s,
+			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		_ = cur.Close()
+		if err != nil {
+			if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+				return fmt.Errorf("runner: work dir path component %q is a symlink or not a directory", s)
+			}
+			return fmt.Errorf("runner: work dir does not exist: %w", err)
+		}
+		cur = os.NewFile(uintptr(nfd), s)
+	}
+	return cur.Close()
+}
+
+func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, error) {	release, err := b.gate.acquire(ctx, userID)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -197,17 +239,15 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 	if req.Binary == "" || req.ScratchDir == "" || req.WorkDir == "" {
 		return Outcome{}, errors.New("runner: binary, scratch dir and work dir are required")
 	}
-	if fi, err := os.Stat(req.ScratchDir); err != nil || !fi.IsDir() {
-		return Outcome{}, errors.New("runner: scratch dir does not exist")
-	}
-	if fi, err := os.Stat(req.WorkDir); err != nil || !fi.IsDir() {
-		return Outcome{}, errors.New("runner: work dir does not exist")
-	}
-	if rel, err := filepath.Rel(req.ScratchDir, req.WorkDir); err != nil ||
-		rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, err := filepath.Rel(req.ScratchDir, req.WorkDir)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		// "." is refused deliberately: the jail's only writable overlay is
 		// WorkDir — letting it equal the root would re-expose everything.
 		return Outcome{}, errors.New("runner: work dir must be a strict subdirectory inside the scratch dir")
+	}
+	if err := verifyJailLayout(req.ScratchDir, rel); err != nil {
+		return Outcome{}, err
 	}
 	// Resolve the allowlisted binary to its real path and require it to
 	// live under /usr — that is the only tree the jail mounts. Handles

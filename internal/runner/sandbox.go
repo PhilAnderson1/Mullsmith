@@ -31,7 +31,7 @@ const (
 // zero values mean "leave alone".
 type sandboxSpec struct {
 	Binary string   `json:"binary"`
-	Args   []string `json:"args"`
+	Args   []string `json:"args"` // arguments EXCLUDING argv[0]; runSandbox prepends Binary
 	Env    []string `json:"env"`
 	Cwd    string   `json:"cwd"`
 	UID    int      `json:"uid"` // -1 keep current
@@ -134,9 +134,17 @@ func runSandbox() error {
 			}
 		}
 	}
+	// syscall.Exec's argv[0] is the program name, NOT an option: s.Args
+	// deliberately excludes it, so the binary must be prepended here.
+	// Handing bwrapArgs straight to execve made bwrap read its own first
+	// option ("--die-with-parent") as argv[0] and never parse it
+	// (astra finding 3).
+	argv := make([]string, 0, len(s.Args)+1)
+	argv = append(argv, s.Binary)
+	argv = append(argv, s.Args...)
 	// #nosec G204 -- this IS the sandbox hand-off: s.Binary/s.Args were
 	// validated by the parent (allowlist + fixed argv shape "bin -").
-	return syscall.Exec(s.Binary, s.Args, s.Env)
+	return syscall.Exec(s.Binary, argv, s.Env)
 }
 
 func noNewPrivileges() error {

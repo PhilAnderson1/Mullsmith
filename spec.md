@@ -895,6 +895,18 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   filesystem-level quotas (ext4 project quotas / XFS) are a true hard ceiling;
   deployment defers them by
   operator choice.
+- Enumeration itself is bounded too (astra finding 5): empty files cost ~zero metered
+  bytes yet make every walk expensive, so no host path loads an unbounded listing —
+  `fs_list` reads at most 200 entries (+1 to know more exist) and answers `truncated`;
+  a quota scan visits at most 50k entries and then returns **"usage could not be
+  verified"**, which the existing fail-closed doctrine already handles (watchdog kills
+  the run, writes are refused until the TTL sweep clears the flood); the sweep snapshots
+  at most 20k entries per directory per pass (its deletions were already capped per
+  pass); and `RemoveTree` refuses to plan a delete over 1M entries rather than holding
+  the plan in RAM — refusal deletes nothing, the hourly sweep is the backstop. Entry
+  counts, and files deleted while still open (which evade pathname accounting entirely),
+  stay beyond what the daemon can meter: bounding them is the same operator story —
+  project quotas or a separate bounded scratch filesystem.
 - `uploads/` is the model's forbidden WRITE namespace (`fs_write` and
   `files_share` — copying an upload into `artifacts/` would hand the TTL sweep a
   pointer at a user original, so shares refuse uploads outright; audit finding 8).

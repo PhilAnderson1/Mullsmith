@@ -2,16 +2,13 @@ package server
 
 import (
 	"context"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"mullsmith/internal/id"
+	"mullsmith/internal/scratch"
 )
 
 // Background scratchpad lifecycle (spec §8). The disk is the single source
@@ -31,11 +28,19 @@ import (
 //     work files) and artifacts/ files older than artifact_ttl; uploads/
 //     NEVER expires (user originals outlive every TTL);
 //  4. empty subdirectories of work/ / artifacts/ whose own mtime is past
-//     that directory's TTL, removed deepest-first — files vanish on their
-//     own mtime, so without this the desk and the deliverables box fill
-//     with empty folders. A folder holding one fresh file survives whole
-//     (its rmdir fails on ENOTEMPTY and is retried next pass); sweeping
-//     never reorganizes anything.
+//     that directory's TTL, removed depth-first after their contents —
+//     files vanish on their own mtime, so without this the desk and the
+//     deliverables box fill with empty folders. A folder holding one fresh
+//     file survives whole (its rmdir fails on ENOTEMPTY and is retried next
+//     pass); sweeping never reorganizes anything.
+//
+// Inside user trees every deletion goes through scratch.SweepTree, which is
+// fd-pinned end to end (astra finding 2): entries are inspected with
+// no-follow fstatat and unlinked with unlinkat against the pinned parent,
+// so a directory swapped for a symlink by a racing script can neither
+// redirect the walk nor make the host delete outside the user's tree. Only
+// the scratch-ROOT temps still use name-based removal, and the root's only
+// writer is the daemon itself (§9.7).
 //
 // Fail-closed stance (§9.7): anything unreadable is logged and left
 // untouched — sweeping less is always safe, sweeping more is not. Each
@@ -125,17 +130,24 @@ func (s *Server) sweepScratchpad(ctx context.Context) {
 			continue
 		}
 		if !liveSet[name] {
-			orphanFiles += s.sweepUnknownUser(filepath.Join(root, name), now)
+			orphanFiles += s.sweepUnknownUser(root, name, now)
 			continue
 		}
 		// name passed id.Valid, so the join cannot escape the root.
-		userDir := filepath.Join(root, name)
 		// uploads/ is deliberately absent: user originals never expire.
-		s.sweepTTL(userDir, "work", s.workTTL(), now)
-		s.sweepTTL(userDir, "artifacts", s.artifactTTL(), now)
+		s.sweepTTL(root, name, "work", s.workTTL(), now)
+		s.sweepTTL(root, name, "artifacts", s.artifactTTL(), now)
 	}
 	if temps > 0 || orphanFiles > 0 {
 		s.logger.Info("scratchpad sweep", "temps_removed", temps, "orphan_files_removed", orphanFiles)
+	}
+}
+
+// sweepWarn renders a SweepTree note with the absolute path the operator
+// saw before the fd-pinned rewrite.
+func (s *Server) sweepWarn(root, userID string) func(rel, note string) {
+	return func(rel, note string) {
+		s.logger.Warn("sweep: "+note, "path", filepath.Join(root, userID, filepath.FromSlash(rel)))
 	}
 }
 
@@ -143,99 +155,50 @@ func (s *Server) sweepScratchpad(ctx context.Context) {
 // a scratchpad directory with no user behind it. Empty directories are
 // left alone: they cost nothing, and a re-registered ULID never happens
 // anyway — they are simply too small to be worth a deletion rule.
-func (s *Server) sweepUnknownUser(userDir string, now time.Time) int {
-	removed := 0
-	_ = filepath.WalkDir(userDir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // unreadable entries never abort the walk
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			s.logger.Warn("symlink inside scratchpad tree (left alone)", "path", p)
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if s.removeIfOld(p, now, orphanMinAge) {
-			removed++
-		}
-		return nil
+func (s *Server) sweepUnknownUser(root, userID string, now time.Time) int {
+	res, err := scratch.SweepTree(root, userID, ".", scratch.SweepSpec{
+		Now:        now,
+		FileMaxAge: orphanMinAge,
+		Warn:       s.sweepWarn(root, userID),
 	})
-	return removed
+	if err != nil {
+		s.logger.Warn("sweep: user dir not swept", "path", filepath.Join(root, userID), "error", err)
+	}
+	return res.Files
 }
 
 // sweepTTL ages one layout directory of one user: regular files with an
 // mtime past ttl are unlinked (at any depth — each file ages on its own,
 // sweeping never reorganizes), then empty subdirectories whose own mtime
-// is past ttl are rmdir'd deepest-first. Removing a file bumps its parent
+// is past ttl are rmdir'd post-order. Removing a file bumps its parent
 // directory's mtime, so a directory emptied this pass becomes rmdir-able
 // once IT has aged — one TTL later, at the next pass that finds it still
 // empty. Symlinks and special files are left alone with a warning; an
-// unreadable directory is skipped, never partially swept.
-func (s *Server) sweepTTL(userDir, dir string, ttl time.Duration, now time.Time) {
-	base := filepath.Join(userDir, dir)
-	cutoff := now.Add(-ttl)
-	var dirs []string
-	deleted := 0
-	full := false
-	_ = filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			s.logger.Warn("sweep: unreadable entry left untouched", "path", p, "error", err)
-			return nil
-		}
-		if d.IsDir() {
-			if p != base {
-				dirs = append(dirs, p)
-			}
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			s.logger.Warn("symlink inside scratchpad tree (left alone)", "path", p)
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if deleted >= sweepPass {
-			full = true
-			return filepath.SkipAll
-		}
-		if s.removeIfOld(p, now, ttl) {
-			deleted++
-		}
-		return nil
+// unreadable directory is skipped, never partially swept. Every operation
+// is fd-pinned (scratch.SweepTree, astra finding 2).
+func (s *Server) sweepTTL(root, userID, dir string, ttl time.Duration, now time.Time) {
+	res, err := scratch.SweepTree(root, userID, dir, scratch.SweepSpec{
+		Now:        now,
+		FileMaxAge: ttl,
+		DirMaxAge:  ttl,
+		MaxFiles:   sweepPass,
+		Warn:       s.sweepWarn(root, userID),
 	})
-
-	// Empty directories, deepest first (deepest paths sort last by length
-	// when the separator is the only structural character — but do it by
-	// component count to be exact).
-	sort.Slice(dirs, func(i, j int) bool {
-		return strings.Count(dirs[i], string(filepath.Separator)) >
-			strings.Count(dirs[j], string(filepath.Separator))
-	})
-	for _, d := range dirs {
-		fi, err := os.Lstat(d) // never follow a symlink planted here
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-		if fi.ModTime().After(cutoff) {
-			continue // the folder itself has not aged out yet
-		}
-		if err := os.Remove(d); err != nil && !errors.Is(err, fs.ErrNotExist) &&
-			!errors.Is(err, syscall.ENOTEMPTY) {
-			s.logger.Warn("sweep: rmdir failed", "path", d, "error", err)
-		}
+	if err != nil {
+		s.logger.Warn("sweep: dir not swept", "path", filepath.Join(root, userID, dir), "error", err)
+		return
 	}
-	if deleted > 0 || full {
-		s.logger.Info("ttl sweep", "dir", dir, "removed", deleted, "capped", full)
+	if res.Files > 0 || res.Dirs > 0 || res.Capped {
+		s.logger.Info("ttl sweep", "dir", dir, "removed", res.Files, "dirs", res.Dirs, "capped", res.Capped)
 	}
 }
 
 // removeIfOld deletes p when its mtime is past maxAge; reports whether it
-// deleted.
+// deleted. Scope note (astra finding 2): this name-based helper is now used
+// ONLY for the ".upload-*"/".share-*" temps in the scratch root, whose
+// parent directory is written by the daemon alone. Anything inside a user
+// tree is swept by scratch.SweepTree, which never resolves attacker-raced
+// path strings.
 func (s *Server) removeIfOld(p string, now time.Time, maxAge time.Duration) bool {
 	fi, err := os.Lstat(p)
 	if err != nil {
