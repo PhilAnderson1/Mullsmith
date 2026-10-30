@@ -175,8 +175,12 @@
         </div>
       </div>
       <div id="pending-files" class="pending-files" hidden></div>
-      <p id="ctx-meter" class="ctx-meter" hidden></p>
-      <div class="composer">
+      <div class="composer-stack" id="composer-stack">
+        <!-- The context meter floats above the stack's top edge (messages
+             scroll underneath it) instead of owning a grey row — the bar
+             was dead space. -->
+        <p id="ctx-meter" class="ctx-meter" hidden></p>
+        <div class="composer">
         <!-- "+" opens a vertical add-menu (thinking level + attach files)
              instead of a paperclip and a row under the prompt box — one
              icon fewer, one row fewer. -->
@@ -205,6 +209,7 @@
         </button>
         <button id="btn-send" class="btn primary" disabled>Send</button>
       </div>
+      </div><!-- /composer-stack -->
 
       <!-- Files view (spec §10.2): swaps into the chat main area -->
       <section id="files-panel" class="files-panel" hidden aria-label="Files">
