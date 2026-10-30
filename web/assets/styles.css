@@ -248,6 +248,18 @@ body.drawer-open #sidebar { transform: translateX(0); }
 .sidebar-head { display: flex; gap: 0.4rem; }
 .sidebar-search { margin: 0.6rem 0; }
 
+/* "Load older" pill: a quiet hint under the list, not a full-width
+   button competing with the chats — smaller text, centred, pill border. */
+.btn.load-older {
+  align-self: center;
+  min-height: 0;
+  padding: 0.25rem 1rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.btn.load-older:hover { background: var(--bg-sunken); }
+
 /* "Delete older than…" command row, docked under the conversation list
    and above the settings foot. Muted on purpose: housekeeping should not
    compete with the chats (app.js: the select resets to its prompt after
