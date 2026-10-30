@@ -224,7 +224,7 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   /* Narrower than the 280px desktop column: on a phone the list only
      needs its text, and the wider the drawer the less page is left to
      tap shut; vw-capped so that strip always survives. */
-  width: min(250px, 70vw);
+  width: min(225px, 64vw);
   background: var(--bg-raised);
   border-right: 1px solid var(--border);
   transform: translateX(-105%);
