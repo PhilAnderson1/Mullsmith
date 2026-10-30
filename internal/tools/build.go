@@ -69,9 +69,11 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	reg.Register(FsWrite{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
 	reg.Register(FsDelete{})
 	reg.Register(FilesShare{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
-	// Seeing pictures is only a capability when the endpoint can take
-	// them (llm.vision): without the flag the tool is not offered at all.
-	if cfg.LLM.Vision {
+	// Seeing pictures is only a capability when some model can take
+	// them (llm.models[].vision): with no entry flagged the tool is not
+	// offered at all. Per conversation the offer is filtered further by
+	// the model actually running (spec §7.2).
+	if cfg.LLM.AnyVision() {
 		reg.Register(ViewImage{MaxImageBytes: int64(cfg.LLM.VisionMaxImageBytes)})
 	}
 	if cfg.Scratchpad.CodeExec.Enabled && code != nil {

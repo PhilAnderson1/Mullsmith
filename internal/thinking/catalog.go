@@ -113,12 +113,6 @@ type Settings struct {
 	MaxOutput     int // llm.max_tokens_response; 0 = uncapped
 	EndpointsFile string
 	ProfilesFile  string
-	// SelectorEnable is llm.thinking_selector_enable: nil falls back to
-	// the legacy shape (a selector exists when an endpoint type or a
-	// non-"none" profile is spelled out); true/false decides outright.
-	// A true switch still requires an explicit endpoint_type — and, like
-	// any enabled selection, the catalogue file(s) the IDs come from.
-	SelectorEnable *bool
 }
 
 // Runtime is one validated, resolved selection. A nil *Runtime means the
@@ -146,14 +140,16 @@ type Runtime struct {
 
 // Build parses the catalogue files named by the settings (the sole
 // source — nothing is embedded) and resolves the configured selection.
-// It returns (nil, nil) when the selector is off — explicitly via
-// SelectorEnable, or by the legacy shape of nothing thinking-related
-// configured, which must keep working untouched.
+// It returns (nil, nil) when nothing thinking-related is configured —
+// the legacy shape, which must keep working untouched. A spelled-out
+// endpoint type builds the runtime for its transport (route and
+// request recipes) even with no profile anywhere; the DROPDOWN is a
+// separate question, answered by SelectorVisible: it appears exactly
+// when some model's entry names a real profile.
 func Build(set Settings) (*Runtime, error) {
-	// The explicit switch decides outright; without it the selector
-	// exists exactly when the operator spelled out an endpoint type or a
-	// non-"none" profile (the pre-switch behaviour, kept intact).
-	explicit := set.SelectorEnable != nil
+	// The profiles are the selector's reason to exist; the endpoint type
+	// is the transport's. Either one builds the runtime, but a type with
+	// no profiles leaves nothing to choose, so the selector stays hidden.
 	anyProfile := set.ProfileID != "" && set.ProfileID != profileNone
 	for _, p := range set.ModelProfiles {
 		if p != "" && p != profileNone {
@@ -161,9 +157,6 @@ func Build(set Settings) (*Runtime, error) {
 		}
 	}
 	enabled := set.EndpointType != "" || anyProfile
-	if explicit {
-		enabled = *set.SelectorEnable
-	}
 	if !enabled {
 		// No selector. Configured catalogue files are still parsed and
 		// validated — an operator who spelled them out wants typos caught
@@ -180,9 +173,6 @@ func Build(set Settings) (*Runtime, error) {
 	// mandatory.
 	epType := set.EndpointType
 	if epType == "" {
-		if explicit {
-			return nil, errors.New("llm.thinking_selector_enable requires llm.endpoint_type")
-		}
 		if set.ProfileID != "" && set.ProfileID != profileNone {
 			return nil, fmt.Errorf("llm.thinking_profile %q requires llm.endpoint_type", set.ProfileID)
 		}

@@ -2013,9 +2013,13 @@ function thinkingChoices() {
   return th.choices_by_model[active] || [];
 }
 
-// Build the dropdown from /api/v1/meta. Only the built-in Default (or
-// nothing at all) means the deployment has no thinking decision to offer:
-// the item is hidden from the add-menu and requests carry no override.
+// Build the dropdown from /api/v1/meta. The row APPEARS whenever the
+// deployment has thinking somewhere (meta.thinking is non-null): a model
+// with nothing to choose then shows a DISABLED dropdown whose tooltip
+// points at the fix — hiding it would leave the feature undiscoverable
+// for users whose default model has no profile. Only when no entry
+// anywhere names a profile (meta.thinking null) does the row disappear:
+// the feature does not exist for this install (§6.3).
 function populateThinkingChoices() {
   const sel = $("#thinking-select");
   sel.replaceChildren();
@@ -2025,14 +2029,20 @@ function populateThinkingChoices() {
     opt.textContent = c.label;
     sel.appendChild(opt);
   }
-  show($("#thinking-row"), thinkingChoices().length > 1);
+  show($("#thinking-row"), Boolean(state.meta && state.meta.thinking));
 }
 
 // The server projects the EFFECTIVE choice (a stale one is already
 // Default), so the dropdown simply names what the next request sends.
+// Disabled means this model offers nothing to choose — no profile, or
+// none its endpoint understands; the tooltip says switch model.
 function syncThinkingSelect() {
   const sel = $("#thinking-select");
-  sel.disabled = !state.currentId || thinkingChoices().length < 2;
+  const choices = thinkingChoices();
+  sel.disabled = !state.currentId || choices.length < 2;
+  sel.title = (state.currentId && choices.length < 2)
+    ? "this model has no thinking to choose — switch to a thinking model"
+    : "Thinking level for this conversation";
   if (!state.currentId) return;
   const want = (state.currentConv && state.currentConv.thinking) || "default";
   sel.value = [...sel.options].some((o) => o.value === want) ? want : "default";

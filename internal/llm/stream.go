@@ -20,7 +20,8 @@ import (
 // ChatMessage is one message in a chat/completions request. The tool fields
 // carry the OpenAI tool protocol (spec §6.1 step 5): assistant rows replay
 // their ToolCalls, and role "tool" rows answer one call via ToolCallID.
-// Images carries inline pictures as data: URLs (llm.vision): when non-empty,
+// Images carries inline pictures as data: URLs (the model entry's
+// vision flag, §7.2): when non-empty,
 // MarshalJSON sends Content plus Images as OpenAI content parts. Only user
 // messages ever carry images — a message never mixes parts with the tool
 // protocol.
@@ -35,7 +36,8 @@ type ChatMessage struct {
 // MarshalJSON speaks both content shapes: the plain string content every
 // protocol row uses, and — when Images is set — the OpenAI multimodal parts
 // array [{type:"text"},{type:"image_url"}…]. Text-only endpoints are never
-// shown the array shape: ChatMessages only get Images when llm.vision is on.
+// shown the array shape: ChatMessages only get Images when the running
+// model's entry spells vision: true (§2.2).
 func (m ChatMessage) MarshalJSON() ([]byte, error) {
 	if len(m.Images) == 0 {
 		type plain ChatMessage

@@ -254,6 +254,12 @@ type LLMModel struct {
 	// endpoint's /models listing and falls back to unlimited — meter by
 	// count, no send gate — when the endpoint says nothing (spec §6.1).
 	ContextSize int `yaml:"context_size"`
+	// Vision says this model can be shown pictures: the view_image tool
+	// is offered on its conversations and the turns it creates carry
+	// OpenAI image_url content parts (§7.2). OFF unless the entry says
+	// otherwise: a text-only endpoint must never receive a content-part
+	// array it cannot parse.
+	Vision bool `yaml:"vision"`
 }
 
 type LLM struct {
@@ -268,33 +274,29 @@ type LLM struct {
 	RequestTimeout     Duration   `yaml:"request_timeout"`
 	MaxTokensResponse  int        `yaml:"max_tokens_response"`
 	ShowReasoning      bool       `yaml:"show_reasoning"`
-	// Vision lets the model see pictures at all: with it on, the
-	// view_image tool is offered (§7.2) and the turns it creates carry
-	// OpenAI image_url content parts. Uploads are never embedded on
-	// their own. OFF by default: a text-only endpoint must never receive
-	// a content-part array it cannot parse.
-	Vision              bool `yaml:"vision"`
-	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"` // per-picture cap for view_image (default 4 MiB)
+	// VisionMaxImageBytes is the per-picture cap for view_image across
+	// all vision models (default 4 MiB); which models may see at all is
+	// per entry (llm.models[].vision).
+	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"`
 
-	// Thinking control (thinking-control-specification.md §2). All four
-	// are optional: with the switch omitted or false, the existing
-	// transport is kept and no thinking selector appears. The choice
-	// LIST moved to the model entries (llm.models[].thinking_profile):
-	// the dropdown describes a model, and picker models may differ.
-	// endpoint_type stays here — it is a property of the URL, one request
-	// convention per deployment. The two files are the sole source of the
-	// catalogues — nothing is built in beyond "none" — so endpoint_type
-	// requires endpoints_file and a named profile requires profiles_file
-	// (relative paths resolve against this config file's directory).
-	// Omitting the switch entirely keeps the legacy rule: a selector
-	// exists exactly when an endpoint type is spelled out. There is no
+	// Thinking control (thinking-control-specification.md §2). All three
+	// are optional: with none spelled, the existing transport is kept
+	// and no thinking selector appears. The choice LIST lives on the
+	// model entries (llm.models[].thinking_profile): the dropdown
+	// describes a model, and picker models may differ. There is no
+	// selector switch: the dropdown appears exactly when at least one
+	// entry names a real profile (§6.3). endpoint_type stays here — it
+	// is a property of the URL, one request convention per deployment.
+	// The two files are the sole source of the catalogues — nothing is
+	// built in beyond "none" — so endpoint_type requires endpoints_file
+	// and a named profile requires profiles_file (relative paths resolve
+	// against this config file's directory). There is deliberately no
 	// default_thinking here on purpose: a conversation starts at the
 	// built-in Default and the user's choice is conversation state, not
 	// another global LLM setting.
-	ThinkingSelectorEnable *bool  `yaml:"thinking_selector_enable"`
-	EndpointsFile          string `yaml:"endpoints_file"`
-	ProfilesFile           string `yaml:"profiles_file"`
-	EndpointType           string `yaml:"endpoint_type"`
+	EndpointsFile string `yaml:"endpoints_file"`
+	ProfilesFile  string `yaml:"profiles_file"`
+	EndpointType  string `yaml:"endpoint_type"`
 }
 
 // DefaultModelID is the entry conversations with no explicit choice run
@@ -645,12 +647,11 @@ func Load(path string) (*Config, error) {
 		// The choice list is per model now: the default entry's profile
 		// is the deployment-level one (and the fallback for models that
 		// left the picker), and every entry's own name rides along.
-		ProfileID:      c.LLM.ThinkingProfileFor(c.LLM.DefaultModelID()),
-		ModelProfiles:  c.LLM.ModelProfiles(),
-		MaxOutput:      c.LLM.MaxTokensResponse,
-		EndpointsFile:  c.LLM.EndpointsFile,
-		ProfilesFile:   c.LLM.ProfilesFile,
-		SelectorEnable: c.LLM.ThinkingSelectorEnable,
+		ProfileID:     c.LLM.ThinkingProfileFor(c.LLM.DefaultModelID()),
+		ModelProfiles: c.LLM.ModelProfiles(),
+		MaxOutput:     c.LLM.MaxTokensResponse,
+		EndpointsFile: c.LLM.EndpointsFile,
+		ProfilesFile:  c.LLM.ProfilesFile,
 	})
 	if err != nil {
 		return nil, err
@@ -661,8 +662,10 @@ func Load(path string) (*Config, error) {
 
 // legacyModelKeys answers the pre-picker era of model config with the
 // exact new spelling instead of a raw YAML complaint from the strict
-// decoder: `model:` and a llm-level `thinking_profile:` are retired keys,
-// and string items under `models:` predate the entry maps.
+// decoder: `model:`, an llm-level `thinking_profile:`, `vision:` and
+// `max_context_tokens:` are retired keys (they live on the entries
+// now), `thinking_selector_enable:` is retired outright, and string
+// items under `models:` predate the entry maps.
 func legacyModelKeys(doc map[string]any) error {
 	llmSec, ok := doc["llm"].(map[string]any)
 	if !ok {
@@ -679,6 +682,14 @@ func legacyModelKeys(doc map[string]any) error {
 	if _, ok := llmSec["max_context_tokens"]; ok {
 		return errors.New(`llm.max_context_tokens has moved into llm.models — spell context_size on each entry ` +
 			`(omit it or write -1 to auto-detect from the endpoint): - {id: "<model>", context_size: 131072}`)
+	}
+	if _, ok := llmSec["vision"]; ok {
+		return errors.New(`llm.vision has moved into llm.models — spell vision: true on each entry ` +
+			`that can see pictures: - {id: "<model>", vision: true} (an entry without it stays text-only)`)
+	}
+	if _, ok := llmSec["thinking_selector_enable"]; ok {
+		return errors.New(`llm.thinking_selector_enable is retired — the dropdown appears by itself when at ` +
+			`least one llm.models entry spells a real thinking_profile (none, or no profile, stays hidden)`)
 	}
 	if items, ok := llmSec["models"].([]any); ok {
 		for _, it := range items {
@@ -702,31 +713,55 @@ func (l *LLM) ModelProfiles() map[string]string {
 	return out
 }
 
+// entry looks up a model's picker entry: the entry naming the model,
+// else the default entry, else the first — the fallback every per-model
+// property shares (models outside the picker behave like the default).
+func (l *LLM) entry(model string) *LLMModel {
+	for i := range l.Models {
+		if l.Models[i].ID == model {
+			return &l.Models[i]
+		}
+	}
+	for i := range l.Models {
+		if l.Models[i].Default {
+			return &l.Models[i]
+		}
+	}
+	if len(l.Models) > 0 {
+		return &l.Models[0]
+	}
+	return nil
+}
+
 // ContextSizeFor pins the window in force for a model: its entry's
 // positive number, or 0 meaning auto (discover, unlimited if unknown).
 // Models outside the picker read the default entry — the same fallback
 // as the thinking profile.
 func (l *LLM) ContextSizeFor(model string) int {
-	for _, m := range l.Models {
-		if m.ID == model {
-			if m.ContextSize > 0 {
-				return m.ContextSize
-			}
-			return 0
-		}
-	}
-	for _, m := range l.Models {
-		if m.Default {
-			if m.ContextSize > 0 {
-				return m.ContextSize
-			}
-			return 0
-		}
-	}
-	if len(l.Models) > 0 && l.Models[0].ContextSize > 0 {
-		return l.Models[0].ContextSize
+	m := l.entry(model)
+	if m != nil && m.ContextSize > 0 {
+		return m.ContextSize
 	}
 	return 0
+}
+
+// VisionFor reports whether the model may be shown pictures: its entry's
+// vision flag (models outside the picker read the default entry — the
+// same fallback as every other per-model property, spec §7.2).
+func (l *LLM) VisionFor(model string) bool {
+	m := l.entry(model)
+	return m != nil && m.Vision
+}
+
+// AnyVision reports whether at least one entry can see pictures — the
+// one condition under which view_image is registered at all.
+func (l *LLM) AnyVision() bool {
+	for _, m := range l.Models {
+		if m.Vision {
+			return true
+		}
+	}
+	return false
 }
 
 // AnyContextAuto reports whether at least one entry leaves its window to

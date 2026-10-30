@@ -869,6 +869,31 @@ func TestLoadModelsDefaultAndValidation(t *testing.T) {
 	}
 }
 
+// vision per entry: OFF unless the entry spells vision: true; models
+// outside the picker read the default entry, like every per-model
+// property; AnyVision is the registration gate for view_image.
+func TestLoadVisionPerModel(t *testing.T) {
+	cfg, err := Load(writeCfg(t, minimalBase+modelsYAML(
+		"    - id: \"seer\"\n      vision: true\n    - id: \"blind\"\n")))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.LLM.VisionFor("seer") || cfg.LLM.VisionFor("blind") {
+		t.Errorf("vision flags = %+v", cfg.LLM.Models)
+	}
+	if !cfg.LLM.AnyVision() {
+		t.Error("AnyVision must be true when one entry sees")
+	}
+	// Outside the picker → the default entry (here "seer" is default).
+	if !cfg.LLM.VisionFor("somewhere-else") {
+		t.Error("a model outside the picker must read the default entry")
+	}
+	cfg, err = Load(writeCfg(t, minimalBase+modelsYAML("    - id: \"blind\"\n")))
+	if err != nil || cfg.LLM.AnyVision() || cfg.LLM.VisionFor("blind") {
+		t.Errorf("no entry sees: err=%v AnyVision=%v", err, cfg.LLM.AnyVision())
+	}
+}
+
 // context_size per entry: a positive number pins; omitted or -1 (or any
 // negative) normalises to the auto sentinel; a spelled 0 is the house
 // cap-syntax error.
@@ -902,6 +927,8 @@ func TestLoadLegacyModelKeys(t *testing.T) {
 		{"llm.model", minimalBase + "  model: \"old-way\"\n", "has moved into llm.models"},
 		{"llm.thinking_profile", minimalYAML + "  thinking_profile: qwen3_8\n", "thinking_profile has moved into llm.models"},
 		{"llm.max_context_tokens", minimalYAML + "  max_context_tokens: 4096\n", "context_size on each entry"},
+		{"llm.vision", minimalYAML + "  vision: true\n", "vision: true on each entry"},
+		{"llm.thinking_selector_enable", minimalYAML + "  thinking_selector_enable: true\n", "thinking_selector_enable is retired"},
 		{"string models", minimalBase + "  models: [\"old-way\"]\n", "entries are maps"},
 	}
 	for _, tc := range cases {
@@ -1010,7 +1037,6 @@ llm:
   request_timeout: 5m
   max_tokens_response: 16384
   show_reasoning: false
-  vision: true
   vision_max_image_bytes: 1MiB
   endpoints_file: ./endpoints.yaml
   profiles_file: ./thinking-profiles.yaml
@@ -1020,6 +1046,7 @@ llm:
       default: true
       thinking_profile: qwen3_8
       context_size: 32768
+      vision: true
     - id: "quiet-model"
       thinking_profile: operator_p
 `
@@ -1034,7 +1061,8 @@ llm:
 	if cfg.LLM.DefaultModelID() != "Qwen3.8 Flash Next" || cfg.LLM.ContextSizeFor("Qwen3.8 Flash Next") != 32768 ||
 		cfg.LLM.ContextSizeFor("quiet-model") != 0 ||
 		cfg.LLM.DefaultTemperature != 0.7 || cfg.LLM.MaxTokensResponse != 16384 ||
-		!cfg.LLM.Vision || cfg.LLM.RequestTimeout.D() != 5*time.Minute {
+		!cfg.LLM.VisionFor("Qwen3.8 Flash Next") || cfg.LLM.VisionFor("quiet-model") ||
+		cfg.LLM.RequestTimeout.D() != 5*time.Minute {
 		t.Errorf("existing llm values changed meaning: %+v", cfg.LLM)
 	}
 	if cfg.LLM.EndpointType != "gufo" ||
@@ -1115,37 +1143,37 @@ func TestLoadThinkingFailures(t *testing.T) {
 	})
 }
 
-// The explicit switch: enabled alone boots the built-in defaults, and
-// disabled outranks a spelled-out selection.
-func TestLoadThinkingSelectorEnable(t *testing.T) {
-	t.Run("bare enable fails without an endpoint type", func(t *testing.T) {
-		if _, err := Load(writeCfg(t, minimalYAML+"  thinking_selector_enable: true\n")); err == nil {
-			t.Error("enable without endpoint_type accepted")
-		}
-	})
-	t.Run("enable with the full pair shows the selector", func(t *testing.T) {
+// No switch: the dropdown derives from the entries. A profile spelled on
+// an entry shows it; an endpoint type alone still builds the runtime
+// (its transport) with nothing to choose; a profile without an endpoint
+// type is the error it always was.
+func TestLoadThinkingSelectorDerived(t *testing.T) {
+	t.Run("a profiled entry shows the selector", func(t *testing.T) {
 		cfg, err := Load(writeCfg(t, minimalBase+catalogueTail(t)+
-			"  thinking_selector_enable: true\n  endpoint_type: gufo\n"+
+			"  endpoint_type: gufo\n"+
 			modelsYAML("    - id: \"test-model\"\n      thinking_profile: qwen3_8\n")))
 		if err != nil {
 			t.Fatalf("Load: %v", err)
-		}
-		if cfg.LLM.ThinkingSelectorEnable == nil || !*cfg.LLM.ThinkingSelectorEnable {
-			t.Error("switch did not parse")
 		}
 		if cfg.Thinking == nil || !cfg.Thinking.SelectorVisible() {
 			t.Error("selector must appear")
 		}
 	})
-	t.Run("disable overrides a spelled-out selection", func(t *testing.T) {
-		cfg, err := Load(writeCfg(t, minimalBase+
-			"  thinking_selector_enable: false\n  endpoint_type: gufo\n"+
-			modelsYAML("    - id: \"test-model\"\n      thinking_profile: qwen3_8\n")))
+	t.Run("endpoint type alone loads, nothing to choose", func(t *testing.T) {
+		cfg, err := Load(writeCfg(t, minimalBase+catalogueTail(t)+
+			"  endpoint_type: gufo\n"+
+			modelsYAML("    - id: \"test-model\"\n")))
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if cfg.Thinking != nil {
-			t.Error("explicit disable must keep the selector off")
+		if cfg.Thinking != nil && cfg.Thinking.SelectorVisible() {
+			t.Error("no profile anywhere: the selector must stay hidden")
+		}
+	})
+	t.Run("a profile without an endpoint type fails", func(t *testing.T) {
+		if _, err := Load(writeCfg(t, minimalBase+repoCatalogueLine(t, "endpoints.yaml")+
+			modelsYAML("    - id: \"test-model\"\n      thinking_profile: qwen3_8\n"))); err == nil {
+			t.Error("thinking_profile without endpoint_type accepted")
 		}
 	})
 }

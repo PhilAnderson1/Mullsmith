@@ -598,7 +598,7 @@ func TestHistoryToLLMPairing(t *testing.T) {
 	}
 	s := &Server{cfg: testCfg()} // history here carries no attachments; the
 	// userID only roots their manifests
-	out := s.historyToLLM(hist, true, "")
+	out := s.historyToLLM(hist, true, false, "")
 	// a1 survives; the unanswered a2 and the orphan tool row are dropped.
 	if len(out) != 4 {
 		t.Fatalf("out = %+v", out)
@@ -611,7 +611,7 @@ func TestHistoryToLLMPairing(t *testing.T) {
 	}
 	// Tools off: everything protocol-shaped disappears, but real assistant
 	// text survives; the empty call-only row drops out entirely.
-	plain := s.historyToLLM(hist, false, "")
+	plain := s.historyToLLM(hist, false, false, "")
 	for _, m := range plain {
 		if m.Role == "tool" || len(m.ToolCalls) > 0 {
 			t.Errorf("tools-off replay leaked protocol row: %+v", m)

@@ -11,11 +11,13 @@ import (
 	"mullsmith/internal/config"
 )
 
-// view_image (llm.vision): the model asks to see an uploads/ picture,
-// the loop injects a synthetic user turn carrying it, and the turn is
-// persisted — so later requests rebuild the same picture from history.
-// Without vision the tool is never registered, and the model's attempt
-// is a plain unknown-tool answer, exactly like any other missing tool.
+// view_image (the model entry's vision flag): the model asks to see an
+// uploads/ picture, the loop injects a synthetic user turn carrying it,
+// and the turn is persisted — so later requests rebuild the same picture
+// from history. With no vision entry anywhere the tool is never
+// registered and the model's attempt is a plain unknown-tool answer;
+// with a seeing sibling it is registered but not offered, and the call
+// draws the cannot-see-images error instead (both below).
 
 func imageDataPart(t *testing.T, msg map[string]any) map[string]any {
 	t.Helper()
@@ -58,7 +60,7 @@ func TestChatViewImageAttachesPictureTurn(t *testing.T) {
 			finishChunk("tool_calls")},
 		{answerChunk("A red bicycle."), finishChunk("stop")},
 		{answerChunk("Still a red bicycle."), finishChunk("stop")},
-	}, func(cfg *config.Config) { cfg.LLM.Vision = true })
+	}, func(cfg *config.Config) { cfg.LLM.Models[0].Vision = true })
 
 	raw := pngBytes(24)
 	upPath := uploadOK(t, a, "photo.png", raw)
@@ -142,6 +144,55 @@ func TestChatViewImageAttachesPictureTurn(t *testing.T) {
 	}
 	if seenFlagged != 1 || seenGenuine != 2 { // both typed messages of the test
 		t.Errorf("projected rows: flagged = %d, genuine = %d, want 1 and 2", seenFlagged, seenGenuine)
+	}
+}
+
+// Vision is a property of the MODEL: with a seeing sibling in the picker
+// the registry holds view_image, yet a conversation on a vision-less
+// entry is never offered it — and a hallucinated call is answered as an
+// error, not executed. Switching the conversation to the vision entry
+// offers the tool again (§7.2).
+func TestChatVisionIsPerModel(t *testing.T) {
+	a, script, _ := newRealToolServerTuned(t, [][]string{
+		{toolCallChunk(0, "call_v", "view_image", `{"path":"uploads/photo.png"}`),
+			finishChunk("tool_calls")},
+		{answerChunk("I cannot look at pictures."), finishChunk("stop")},
+		{answerChunk("Seeing is believing."), finishChunk("stop")},
+	}, func(cfg *config.Config) {
+		cfg.LLM.Models = []config.LLMModel{
+			{ID: "m1", Default: true},
+			{ID: "m2", Vision: true},
+		}
+	})
+	c := createConv(t, a, map[string]any{"title": "TwoModels"})
+	resp := sendChat(t, a, c.ID, "look at a photo")
+	defer resp.Body.Close()
+	if es := drainSSE(t, newSSEReader(t, resp)); es.done["status"] != "complete" {
+		t.Fatalf("done = %v", es.done)
+	}
+	if slices.Contains(toolNames(t, script.roundBody(0)), "view_image") {
+		t.Errorf("vision-less model was offered view_image")
+	}
+	tools := payloadRole(t, script.roundBody(1), "tool")
+	if len(tools) != 1 || !strings.Contains(tools[0]["content"].(string), "cannot see images") {
+		t.Fatalf("tool answer = %+v, want the cannot-see-images error", tools)
+	}
+	if users := payloadRole(t, script.roundBody(1), "user"); len(users) != 1 {
+		t.Errorf("user messages = %d, want only the original (no synthetic view turn)", len(users))
+	}
+
+	pr := a.do(http.MethodPatch, "/api/v1/conversations/"+c.ID, map[string]any{"model": "m2"})
+	if pr.StatusCode != http.StatusOK {
+		t.Fatalf("patch model: %d", pr.StatusCode)
+	}
+	pr.Body.Close()
+	resp2 := sendChat(t, a, c.ID, "and now?")
+	defer resp2.Body.Close()
+	if es := drainSSE(t, newSSEReader(t, resp2)); es.done["status"] != "complete" {
+		t.Fatalf("done2 = %v", es.done)
+	}
+	if !slices.Contains(toolNames(t, script.roundBody(2)), "view_image") {
+		t.Errorf("the vision model's request must offer view_image")
 	}
 }
 

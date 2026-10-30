@@ -350,41 +350,37 @@ profiles:
 	}
 }
 
-// The explicit switch (llm.thinking_selector_enable): it outranks the
-// legacy shape both ways, and enabling still demands the endpoint type
-// and the catalogue files its IDs come from.
-func TestSelectorEnableSwitch(t *testing.T) {
-	yes, no := true, false
-	// The switch alone is not a selection: the endpoint type must still
-	// be named (there is no built-in type default).
-	if _, err := Build(Settings{SelectorEnable: &yes}); err == nil ||
-		!strings.Contains(err.Error(), "endpoint_type") {
-		t.Errorf("bare enable must fail without an endpoint_type: %v", err)
-	}
+// There is no switch: visibility derives. An endpoint type alone builds
+// the runtime (its transport) but leaves the dropdown hidden; a real
+// profile on any model shows it; "none" everywhere hides it; and a
+// spelled-out endpoint type still demands its catalogue file.
+func TestSelectorVisibilityDerived(t *testing.T) {
 	// Type named, catalogue file missing: the file error precedes any
 	// lookup — nothing is embedded to fall back on.
-	if _, err := Build(Settings{SelectorEnable: &yes, EndpointType: "gufo",
-		ProfilesFile: repoProfiles}); err == nil ||
+	if _, err := Build(Settings{EndpointType: "gufo", ProfilesFile: repoProfiles}); err == nil ||
 		!strings.Contains(err.Error(), "endpoints_file") {
-		t.Errorf("enable without endpoints_file must fail: %v", err)
+		t.Errorf("endpoint type without endpoints_file must fail: %v", err)
 	}
 	// Type spelled out, profile left empty → built-in "none": runtime
-	// exists but the list stays hidden (no profiles_file needed).
-	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo",
+	// exists (transport) but the list stays hidden (no profiles_file
+	// needed).
+	if rt := mustBuild(t, Settings{EndpointType: "gufo",
 		EndpointsFile: repoEndpoints}); rt.SelectorVisible() {
-		t.Error(`enabled selection without a profile must behave like "none"`)
+		t.Error(`runtime without a profile must keep the selector hidden`)
 	}
-	if rt := mustBuild(t, catSettings(Settings{SelectorEnable: &yes,
-		EndpointType: "gufo", ProfileID: "qwen3_8"})); !rt.SelectorVisible() {
-		t.Error("enable with the full pair must show the selector")
+	if rt := mustBuild(t, catSettings(Settings{EndpointType: "gufo",
+		ProfileID: "qwen3_8"})); !rt.SelectorVisible() {
+		t.Error("a real profile must show the selector")
 	}
-	if rt, err := Build(catSettings(Settings{EndpointType: "gufo", ProfileID: "qwen3_8",
-		SelectorEnable: &no})); rt != nil || err != nil {
-		t.Errorf("explicit disable must override a spelled-out selection: %v (%v)", rt, err)
+	// A picker model with a profile shows the selector even when the
+	// default entry is "none".
+	if rt := mustBuild(t, catSettings(Settings{EndpointType: "gufo", ProfileID: "none",
+		ModelProfiles: map[string]string{"loud": "qwen3_8", "quiet": ""}})); !rt.SelectorVisible() {
+		t.Error("a profile on any picker entry must show the selector")
 	}
-	if rt := mustBuild(t, catSettings(Settings{SelectorEnable: &yes,
-		EndpointType: "gufo", ProfileID: "none"})); rt.SelectorVisible() {
-		t.Error(`thinking_profile "none" must hide the list even when enabled`)
+	if rt := mustBuild(t, catSettings(Settings{EndpointType: "gufo",
+		ProfileID: "none"})); rt.SelectorVisible() {
+		t.Error(`thinking_profile "none" must hide the list`)
 	}
 }
 

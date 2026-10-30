@@ -24,8 +24,8 @@ func newRealToolServer(t *testing.T, replies [][]string) (*authTest, *toolLLM, *
 }
 
 // newRealToolServerTuned is newRealToolServer with a hook to amend cfg
-// BEFORE server.New — knobs read at construction (llm.vision deciding
-// tool registration) must be set before the registry is built.
+// BEFORE server.New — knobs read at construction (an entry's vision
+// deciding tool registration) must be set before the registry is built.
 func newRealToolServerTuned(t *testing.T, replies [][]string,
 	tune func(*config.Config),
 ) (*authTest, *toolLLM, *config.Config) {

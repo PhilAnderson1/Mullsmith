@@ -5,8 +5,10 @@ package tools
 // validates the file and names it via Result.AttachPath; the chat loop
 // then appends a synthetic user turn carrying the embedded image, exactly
 // the pipeline an upload rides. That turn is persisted, so every later
-// replay keeps the picture in view. Registration requires llm.vision:
-// a text-only endpoint could not parse what the turn contains.
+// replay keeps the picture in view. Registration needs at least one
+// llm.models entry spelling vision: true, and the tool is offered per
+// request only to vision models: a text-only endpoint could not parse
+// what the turn contains.
 
 import (
 	"context"

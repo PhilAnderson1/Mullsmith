@@ -398,7 +398,21 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// The tool list and picture pipeline follow the conversation's
+	// model: view_image is offered only when its entry spells
+	// vision: true (§7.2), and a hallucinated call to a tool that was
+	// never offered is answered as an error, not executed.
+	visionOn := s.cfg.LLM.VisionFor(s.thinkingModel(conv.Model))
 	toolSpecs := s.tools.Specs()
+	if !visionOn {
+		filtered := toolSpecs[:0:0]
+		for _, sp := range toolSpecs {
+			if sp.Function.Name != "view_image" {
+				filtered = append(filtered, sp)
+			}
+		}
+		toolSpecs = filtered
+	}
 	sysPrompt := conv.SystemPrompt
 	if len(toolSpecs) > 0 {
 		sysPrompt += agent.ToolGuidance
@@ -406,7 +420,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			sysPrompt += agent.CodeRunGuidance
 		}
 	}
-	msgs := agent.BuildContext(sysPrompt, s.historyToLLM(hist, s.tools.Enabled(), user.ID))
+	msgs := agent.BuildContext(sysPrompt, s.historyToLLM(hist, len(toolSpecs) > 0, visionOn, user.ID))
 
 	am := &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
 	if err := s.store.AddMessage(genCtx, user.ID, am); err != nil {
@@ -504,7 +518,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 
 		msgs = append(msgs, llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls})
 		for _, call := range res.ToolCalls {
-			result, attach := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call)
+			result, attach := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call, visionOn)
 			msgs = append(msgs, llm.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 			if attach != "" {
 				if im, ok := s.attachImageView(user.ID, conv.ID, attach); ok {
@@ -643,7 +657,7 @@ func (s *Server) execTimeout(tool string) time.Duration {
 // image path the result asks the loop to attach (view_image; "" otherwise).
 // call.ID is guaranteed non-empty by runModelRound.
 func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
-	userID, convID, assistantMsgID string, call llm.ChatToolCall,
+	userID, convID, assistantMsgID string, call llm.ChatToolCall, visionOn bool,
 ) (string, string) {
 	callID := call.ID
 	name := call.Function.Name
@@ -659,6 +673,13 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	if !known {
 		emitEnd("error", "unknown tool", nil)
 		return `{"error":"unknown tool ` + jsonQuote(name) + `"}`, ""
+	}
+	// Belt to the spec filter: a model whose entry left vision off was
+	// never offered view_image, so a call for it can only be a
+	// hallucination — answered as such, never executed (§7.2).
+	if name == "view_image" && !visionOn {
+		emitEnd("error", "model cannot see images", nil)
+		return `{"error":"this model cannot see images"}`, ""
 	}
 
 	status := "running"
@@ -886,8 +907,11 @@ func (s *Server) finishMessage(_ context.Context, msgID, content, status string,
 // poisoning every later request with an orphan protocol row. When tools are
 // disabled the replay strips all protocol furniture — the endpoint is never
 // told about tools in that mode. userID owns the conversation; it is the
-// sandbox root owner for the attachment manifests.
-func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID string) []llm.ChatMessage {
+// sandbox root owner for the attachment manifests. visionOn is the running
+// model's entry flag (§7.2): with it off the manifest names no view_image
+// and no synthetic turn embeds bytes — history replayed to a text-only
+// model is text-only, whatever model wrote the rows.
+func (s *Server) historyToLLM(hist []store.Message, toolsEnabled, visionOn bool, userID string) []llm.ChatMessage {
 	answered := map[string]bool{}
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -933,10 +957,10 @@ func (s *Server) historyToLLM(hist []store.Message, toolsEnabled bool, userID st
 				// Uploads ride as manifest lines; only synthetic rows
 				// (view_image turns, §7.2) carry their bytes, decided by
 				// the DB flag, not by sniffing the note text.
-				embed := s.cfg.LLM.Vision && m.Synthetic
+				embed := visionOn && m.Synthetic
 				var manifest string
 				manifest, imgs = attachmentManifest(s.cfg.Scratchpad.Root, userID,
-					m.Attachments, manifestOpts{visionOn: s.cfg.LLM.Vision, embed: embed,
+					m.Attachments, manifestOpts{visionOn: visionOn, embed: embed,
 						maxBytes: s.visionMaxBytes()})
 				content += manifest
 			}

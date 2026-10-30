@@ -729,6 +729,19 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 				fmt.Printf("                           and overlong conversations fail at the endpoint.\n")
 			}
 		}
+		// Vision (§7.2) is per entry too: name the seers, or say plainly
+		// that view_image will never appear.
+		var seers []string
+		for _, m := range cfg.LLM.Models {
+			if m.Vision {
+				seers = append(seers, m.ID)
+			}
+		}
+		if len(seers) > 0 {
+			fmt.Printf("[ok]   llm.models             view_image offered to: %v\n", seers)
+		} else {
+			fmt.Printf("[ok]   llm.models             no entry spells vision — view_image is never offered\n")
+		}
 	}
 	if cfg.Scratchpad.CodeExec.Enabled {
 		if err := runner.ProbeBwrap(); err != nil {

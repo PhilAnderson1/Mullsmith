@@ -174,13 +174,14 @@ llm:
                                        # unlimited — meter shows plain token
                                        # counts, overfull conversations fail
                                        # at the endpoint (§6.1)
+      # vision: true                   # this model may be shown pictures with
+                                       # view_image (§7.2); an entry without it
+                                       # stays text-only: plain manifest, no
+                                       # view_image ever offered to it
   default_temperature: 0.7
   request_timeout: 5m
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
-  vision: false                          # let view_image (§7.2) attach pictures to
-                                         # the conversation (needs a vision-capable
-                                         # endpoint; uploads are never sent on their own)
-  vision_max_image_bytes: 4MiB           # per-picture cap for view_image
+  vision_max_image_bytes: 4MiB           # per-picture cap for view_image (all vision models)
   # Thinking control (thinking-control-specification.md, §6.3). All three
   # optional: omitted together, no selector appears and requests keep the
   # plain transport. The choice LIVES on the model entries above;
@@ -212,7 +213,7 @@ tools:
       fs_read: auto
       fs_write: auto
       files_share: auto           # model presents a scratchpad file for download
-      view_image: auto            # model looks at one of the user's uploads (needs llm.vision, §7.2)
+      view_image: auto            # model looks at one of the user's uploads (needs the entry's vision: true, §7.2)
       code_run: confirm           # requires user approval (see §9.9 / §9.13)
 
 auth:
@@ -474,7 +475,8 @@ the chip behind as a historical record whose download 404s (by design).
 `GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
 `registration` mode, `remember_login`/`show_reasoning` flags, `email_features`
 (§9.17), `thinking` (`{choices_by_model: {<model id>: [{id, label}]}}` — one list per picker
-model, since a choice list describes a model; `null` when the selector is off. The SPA reads
+model, since a choice list describes a model; `null` when no entry names a profile at all.
+The SPA reads
 the row for the conversation's active model — its own pick, else `default_model`; only ids
 and labels cross the wire, §6.3),
 message
@@ -492,9 +494,10 @@ everything else behind auth.
 1. Persist user message (+ attachments as `attachments` rows). When the turn is replayed
    to the model, attachments appear in a server-generated manifest (`name/path/media/bytes`)
    the `fs_*` tools can open. Uploads never travel as pictures — bytes cross the wire
-   only when the model asks for them: with `llm.vision` on the manifest also points at
+   only when the model asks for them: with the conversation's model entry carrying
+   `vision: true` (§2.2) the manifest also points at
    the `view_image` tool (§7.2), whose turns are the only messages that embed an
-   `image_url` content part. With the flag off the wire content stays a plain string
+   `image_url` content part. With the entry flag off the wire content stays a plain string
    and the manifest names no tool — a text-only endpoint never sees a parts array.
 2. **Context assembly:** system prompt (global + conversation) → the WHOLE conversation
    history, oldest first, appended untouched. There is deliberately no trimming: the prompt
@@ -565,9 +568,10 @@ expresses a choice as JSON fields; profiles = the ordered choices a model entry 
 read from `llm.endpoints_file`/`llm.profiles_file`, which are their **sole source** — nothing is
 baked into the binary beyond the no-choices profile `none`, so adding, editing or deleting an
 entry is a YAML edit plus a restart, never a recompile. A selection whose catalogue file is
-missing is a configuration error. `llm.thinking_selector_enable`
-shows or hides the selector outright (enabled it still requires an `endpoint_type`), and omitting the
-switch keeps the legacy rule (a selector exists exactly when one of type/profile is spelled out). `config.Load`
+missing is a configuration error. The selector has no switch of its own: it appears exactly
+when at least one `llm.models` entry names a real `thinking_profile` (a model with `none`,
+or no profile, has nothing to choose); an `endpoint_type` on its own still builds the
+runtime for its transport while the dropdown stays hidden. `config.Load`
 builds the runtime after `Validate` (which stays pure); an unreadable configured file, an
 unknown `endpoint_type`/`thinking_profile`, or a native (non-`openai_chat`) protocol selection
 refuses startup. Every profile any picker entry names is validated eagerly, so a per-model
@@ -597,8 +601,12 @@ budget preset that could leave no room inside `max_tokens_response` is a configu
 - **Snapshot.** The fragment is rendered once at generation start and reused for every tool
   round of that reply: moving the selector mid-flight affects the next request only.
 - **UI.** A `Thinking` item inside the composer's **"+" add-menu** (§10.2), populated from
-  the `meta.thinking` row for the conversation's active model, hidden entirely when there is
-  nothing to choose; a model switch rebuilds it for the model now in force. Changing it
+  the `meta.thinking` row for the conversation's active model. It shows whenever the
+  deployment has thinking anywhere (`meta.thinking` non-null): a model with nothing to
+  choose sees a DISABLED dropdown whose tooltip points at switching model — hiding it
+  would leave the feature undiscoverable. Only when no entry anywhere names a profile
+  (selector off, `meta.thinking` null) is the row hidden outright. A model switch rebuilds
+  it for the model now in force. Changing it
   PATCHes the conversation (reverting the select if the server refuses).
 
 ---
@@ -625,7 +633,7 @@ output is data, never instructions; approval gates bound the blast radius).
 | `fs_delete` | `path` | Delete inside scratchpad (no `..`, no symlinks out). |
 | `code_run` | `runtime, script, files?` | Execute in user's `work/` dir via allowlisted runtime (§9.9). Returns exit code + stdout/stderr (truncated). Files the script writes stay in the scratchpad. |
 | `files_share` | `path, note?` | **Copies** a scratchpad file into `artifacts/` → appears as a download card in chat (this is how "the model gives you a file" works). Snapshot semantics: the card points at the copy, re-sharing an edited draft lands as `name (1).ext` and the first card keeps its bytes. Sharing a file already in `artifacts/` delivers it in place. `uploads/` cannot be shared — `artifacts/` ages out on the TTL sweep and user originals must not (audit finding 8); uploads are already downloadable from the Files page. |
-| `view_image` | `path` | Registered only with `llm.vision` on: lets the model **see** a picture already on the server — anywhere in the user's sandbox (`uploads/`, `work/`, `artifacts/`; tool answers are text, so nothing can carry an image back). This is the ONLY path picture bytes take to the endpoint (§6.1 step 1: uploads ride as manifest pointers). The tool validates (sniffed png/jpeg/webp, ≤ `vision_max_image_bytes`) and the chat loop then appends a synthetic **user** turn carrying the inline image — persisted with `synthetic = 1` (the API projects `"synthetic": true`; the UI renders no bubble for such rows, they exist for the model) and re-embedded by flag on every later replay: once the model has asked to see a picture it keeps seeing it. Views of `work/`/`artifacts/` pictures age with the TTL sweep, like the files themselves: the chip dies, replay degrades to the manifest line. Auto-approved by default: seeing the user's own bytes is no more exposure than the retired automatic embedding ever was. |
+| `view_image` | `path` | Registered when any entry spells `vision: true`, and offered per request only to models whose own entry does (§2.2 — a hallucinated call from a vision-less model is answered as an error, never executed): lets the model **see** a picture already on the server — anywhere in the user's sandbox (`uploads/`, `work/`, `artifacts/`; tool answers are text, so nothing can carry an image back). This is the ONLY path picture bytes take to the endpoint (§6.1 step 1: uploads ride as manifest pointers). The tool validates (sniffed png/jpeg/webp, ≤ `vision_max_image_bytes`) and the chat loop then appends a synthetic **user** turn carrying the inline image — persisted with `synthetic = 1` (the API projects `"synthetic": true`; the UI renders no bubble for such rows, they exist for the model) and re-embedded by flag on every later replay, and only under a model that can see it: replay to a vision-less model is manifest text, whatever model asked — switch back and the picture returns. Views of `work/`/`artifacts/` pictures age with the TTL sweep, like the files themselves: the chip dies, replay degrades to the manifest line. Auto-approved by default: seeing the user's own bytes is no more exposure than the retired automatic embedding ever was. |
 
 ### 7.3 Agentic file workflow (typical session)
 
@@ -1321,8 +1329,9 @@ Cross-cutting touch/responsive behavior:
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
 | **Chat (main)** | Left sidebar: conversation list (search, "New chat"; rename and delete hide behind a **"…"** on the row — revealed on hover, always visible where hover doesn't exist — and the same menu opens on right-click or mobile long press via `contextmenu`) with a muted **"Delete older than…"** command dropdown under it (1 day / 1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), a **"+" add-menu button** (a vertical popover holding the muted **Thinking** dropdown — Default first, then the choices
-listed for the conversation's active model in `meta.thinking`; hidden when there is nothing
-to choose, §6.3 — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
+listed for the conversation's active model in `meta.thinking`; disabled with a switch-model
+tooltip when the current model has nothing to choose, hidden only when the deployment has
+no thinking anywhere (§6.3) — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
 note, pinned to the right of a footnote row under the answer (completion tokens
 ÷ model-round time; absent on rows without timing, e.g. history from before the
 feature). The **regenerate** button shares that row at the far left, so the two

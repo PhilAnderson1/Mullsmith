@@ -9,7 +9,7 @@ import (
 	"mullsmith/internal/config"
 )
 
-// Uploads carry pointers, never pictures (§7.2): whatever llm.vision
+// Uploads carry pointers, never pictures (§7.2): whatever the model entry's vision flag
 // says, an attachment rides to the endpoint as a manifest line naming
 // the file; the bytes cross the wire only when the model asks for them
 // with view_image (api_viewimage_test.go). These tests pin the
@@ -36,7 +36,7 @@ func TestChatUploadStaysManifestOnlyWithVisionOn(t *testing.T) {
 	a, script, cfg := newRealToolServer(t, [][]string{
 		{answerChunk("I will open it with a tool."), finishChunk("stop")},
 	})
-	cfg.LLM.Vision = true
+	cfg.LLM.Models[0].Vision = true
 
 	upPath := uploadOK(t, a, "photo.png", pngBytes(24))
 	c := createConv(t, a, map[string]any{"title": "Pointer"})
@@ -72,7 +72,7 @@ func TestChatUploadStaysManifestOnlyOnReplay(t *testing.T) {
 		{answerChunk("Noted."), finishChunk("stop")},
 		{answerChunk("Still just the pointer."), finishChunk("stop")},
 	})
-	cfg.LLM.Vision = true
+	cfg.LLM.Models[0].Vision = true
 
 	upPath := uploadOK(t, a, "photo.png", pngBytes(24))
 	c := createConv(t, a, map[string]any{"title": "Replay"})
@@ -109,7 +109,7 @@ func TestChatVisionOffKeepsPlainStringContent(t *testing.T) {
 	a, script, _ := newRealToolServer(t, [][]string{
 		{answerChunk("I see no picture."), finishChunk("stop")},
 	})
-	// cfg.LLM.Vision stays at its default false: text-only endpoint.
+	// The entry keeps its default vision: false — text-only endpoint.
 
 	upPath := uploadOK(t, a, "photo.png", pngBytes(24))
 	c := createConv(t, a, map[string]any{"title": "NoVision"})
@@ -146,7 +146,7 @@ func TestChatViewTurnReplayDegradesWhenBytesGone(t *testing.T) {
 			finishChunk("tool_calls")},
 		{answerChunk("Lovely."), finishChunk("stop")},
 		{answerChunk("Gone, but the pointer stays."), finishChunk("stop")},
-	}, func(cfg *config.Config) { cfg.LLM.Vision = true })
+	}, func(cfg *config.Config) { cfg.LLM.Models[0].Vision = true })
 
 	upPath := uploadOK(t, a, "photo.png", pngBytes(24))
 	if upPath != "uploads/photo.png" {
