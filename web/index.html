@@ -143,8 +143,10 @@
       <div class="sidebar-search">
         <input id="conv-search" type="search" placeholder="Search chats" aria-label="Search conversations">
       </div>
-      <ul id="conv-list" class="conv-list"></ul>
-      <button id="btn-more" class="btn ghost load-older" hidden>Load older</button>
+      <div class="conv-window">
+        <ul id="conv-list" class="conv-list"></ul>
+        <button id="btn-more" class="btn ghost load-older" hidden>Load older</button>
+      </div>
       <!-- Bulk housekeeping: pick an age, confirm, done — the select is a
            command, so it resets to the prompt after every choice. -->
       <div class="conv-prune">
