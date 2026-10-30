@@ -10,13 +10,20 @@ import (
 
 // TitleSystemPrompt asks the model for a conversation name. The phrase
 // "name chat conversations" doubles as the marker tests use to tell title
-// requests apart from real chat requests.
-const TitleSystemPrompt = "You name chat conversations. Reply with ONLY a short title " +
-	"of at most 5 words that captures the topic of the user's message. " +
-	"No quotes, no trailing punctuation. Use the same language as the message."
+// requests apart from real chat requests. The "5 words or fewer" rule is
+// a request, not a guarantee — quiet endpoints ignore it often enough
+// that SanitizeTitle enforces the same cap in code.
+const TitleSystemPrompt = "You name chat conversations. Reply with ONLY a title of " +
+	"5 words or fewer that captures the topic of the user's message. " +
+	"No quotes, no trailing punctuation, never repeat the message. " +
+	"Use the same language as the message. Example: Sourdough baking basics"
 
 // titleMaxRunes caps stored titles; generous but keeps sidebar rows sane.
 const titleMaxRunes = 60
+
+// titleMaxWords is the word ceiling the prompt asks for, enforced here so
+// a literal-minded model cannot hand back an echoed question.
+const titleMaxWords = 5
 
 // Title turns the first user message of a conversation into a short topic
 // title. It is a best-effort side quest: any upstream failure is returned
@@ -47,7 +54,9 @@ func (g *Generator) Title(ctx context.Context, model, firstUser string, thinking
 
 // SanitizeTitle reduces a model reply to a single clean title line: first
 // non-empty line, markdown/quote decorations stripped, whitespace collapsed,
-// capped at titleMaxRunes. Returns "" when nothing usable remains.
+// capped at titleMaxWords whole words and titleMaxRunes runes (whole words
+// first so a trim can never cut a word in half). Returns "" when nothing
+// usable remains.
 func SanitizeTitle(raw string) string {
 	for _, line := range strings.Split(raw, "\n") {
 		t := strings.TrimSpace(line)
@@ -56,11 +65,17 @@ func SanitizeTitle(raw string) string {
 		t = strings.TrimPrefix(t, ">")
 		t = strings.TrimLeft(t, "-• \t")
 		t = strings.Trim(t, "\"'“”‘’「」『』.:;,!")
-		t = strings.Join(strings.Fields(t), " ")
+		words := strings.Fields(t)
+		if len(words) > titleMaxWords {
+			words = words[:titleMaxWords]
+		}
+		t = strings.Join(words, " ")
 		if t == "" {
 			continue
 		}
-		return strings.TrimSpace(clipRunes(t, titleMaxRunes))
+		t = clipRunes(t, titleMaxRunes)
+		// The caps can leave a dangling separator; tidy the tail.
+		return strings.TrimRight(t, " \"'“”‘’「」『』.:;,!?—–-")
 	}
 	return ""
 }

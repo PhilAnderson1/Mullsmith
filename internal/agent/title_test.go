@@ -114,7 +114,8 @@ func TestSanitizeTitle(t *testing.T) {
 		{"collapses-spaces", "too    many\tspaces  here", "too many spaces here"},
 		{"empty", "   ", ""},
 		{"punctuation-only", "...:...", ""},
-		{"long", strings.Repeat("word ", 40), strings.TrimSpace(strings.Repeat("word ", 12))},
+		{"long", strings.Repeat("word ", 40), "word word word word word"},
+		{"echoed-question", "To find the number of four-digit positive integers that contain", "To find the number of"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

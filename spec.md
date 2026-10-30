@@ -525,7 +525,8 @@ everything else behind auth.
    renders the same readouts.
 7. **Auto-title** (first message of a conversation still named
    `New chat`): a small non-streaming side request to the model turns the first user
-   message into a ≤5-word topic. It runs **before the first model round**, not
+   message into a ≤5-word topic (the cap is enforced in code, not just asked
+   of the model). It runs **before the first model round**, not
    alongside the reply: on a serialised endpoint it then claims the model while the
    browser shows its thinking spinner, instead of queueing behind the whole reply —
    queue time is charged to the quest's own budget, so an after-the-reply ordering
