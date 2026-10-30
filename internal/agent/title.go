@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"mullsmith/internal/llm"
@@ -10,12 +11,16 @@ import (
 
 // TitleSystemPrompt asks the model for a conversation name. The phrase
 // "name chat conversations" doubles as the marker tests use to tell title
-// requests apart from real chat requests. The "5 words or fewer" rule is
-// a request, not a guarantee — quiet endpoints ignore it often enough
-// that SanitizeTitle enforces the same cap in code.
+// requests apart from real chat requests. Brevity is a feature: measured
+// on LM Studio + Qwen3.8 at effort none, this wording titles an echoed
+// maths question correctly 3/3, while a longer preachier prompt ("like a
+// short file name — not a sentence…") made the model answer the question
+// instead. The "5 words or fewer" rule is a request, not a guarantee —
+// SanitizeTitle enforces the same cap in code.
 const TitleSystemPrompt = "You name chat conversations. Reply with ONLY a title of " +
-	"5 words or fewer that captures the topic of the user's message. " +
-	"No quotes, no trailing punctuation, never repeat the message. " +
+	"5 words or fewer that names the topic of the user's message. " +
+	"Do not start with the message's own words. " +
+	"No quotes, no trailing punctuation. " +
 	"Use the same language as the message. Example: Sourdough baking basics"
 
 // titleMaxRunes caps stored titles; generous but keeps sidebar rows sane.
@@ -49,7 +54,46 @@ func (g *Generator) Title(ctx context.Context, model, firstUser string, thinking
 	if title == "" {
 		return "", llm.ErrUpstream // model said nothing usable
 	}
+	// An echo of the question's opening is not a name. When the reply
+	// was longer than the cap *and* starts with the user's own first
+	// words, the model answered instead of titling: the truncated cut
+	// ("To find the number of") reads worse than no title at all, so
+	// keep the placeholder and let the next message retry.
+	if truncatesEcho(raw, title, firstUser) {
+		return "", llm.ErrUpstream
+	}
 	return title, nil
+}
+
+// truncatesEcho reports whether title is the trimmed head of a rambling
+// reply that merely restated the start of the user's message. Case and
+// punctuation are ignored; the reply must have had more than the cap's
+// worth of words, so a deliberate short title in the user's phrasing
+// stays acceptable.
+func truncatesEcho(raw, title, firstUser string) bool {
+	rw := echoWords(strings.SplitN(raw, "\n", 2)[0])
+	if len(rw) <= titleMaxWords {
+		return false
+	}
+	tw := echoWords(title)
+	uw := echoWords(firstUser)
+	if len(tw) == 0 || len(tw) > titleMaxWords || len(uw) < len(tw) {
+		return false
+	}
+	for i, w := range tw {
+		if rw[i] != w || uw[i] != w {
+			return false
+		}
+	}
+	return true
+}
+
+// echoWords lowercases a string into word tokens of letters and digits,
+// so "To find," and "to find" compare equal.
+func echoWords(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 // SanitizeTitle reduces a model reply to a single clean title line: first

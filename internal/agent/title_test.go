@@ -98,6 +98,36 @@ func TestTitleFallbackHintWithoutFragment(t *testing.T) {
 	}
 }
 
+// An echoed question that got word-capped is worse than no title: the
+// quest skips (placeholder stands, next message retries). A short reply
+// in the user's own phrasing is deliberate and survives.
+func TestTitleRejectsTruncatedEcho(t *testing.T) {
+	echo := "To find the number of four-digit positive integers that contain exactly two even digits, we count cases."
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, echo)
+	}))
+	defer ts.Close()
+	cfg := &config.Config{}
+	cfg.LLM.Endpoint = ts.URL
+	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
+	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	if _, err := g.Title(context.Background(), "m", echo, nil); err == nil {
+		t.Error("echoed question must not become a title")
+	}
+	// Same words, but the model kept it within the cap: its own choice.
+	tsShort := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"To find the number of"}}]}`)
+	}))
+	defer tsShort.Close()
+	cfg.LLM.Endpoint = tsShort.URL
+	g = &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	if _, err := g.Title(context.Background(), "m", echo, nil); err != nil {
+		t.Errorf("short in-words title should stand: %v", err)
+	}
+}
+
 func TestSanitizeTitle(t *testing.T) {
 	cases := []struct {
 		name, raw, want string
