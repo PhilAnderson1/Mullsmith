@@ -429,22 +429,9 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Auto-title quest (spec §12): name the conversation from this first
-	// message while the reply streams. Runs on its own context so a browser
-	// disconnect cannot strand the rename; the store write is guarded so a
-	// user's manual rename always wins.
-	titleDone := make(chan struct{})
-	if autoTitle != "" && (conv.Title == "" || conv.Title == store.DefaultTitle) {
-		go func() {
-			defer close(titleDone)
-			s.nameConversation(conv, autoTitle, conn)
-		}()
-	} else {
-		close(titleDone)
-	}
-
 	// Heartbeat every 15 s: keeps proxies warm and surfaces dead clients via
-	// a write error, which cancels generation.
+	// a write error, which cancels generation. Started before the title
+	// quest below so the stream is never silent while the quest runs.
 	hbStop := make(chan struct{})
 	defer close(hbStop)
 	go func() {
@@ -462,6 +449,20 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}()
+
+	// Auto-title quest (spec §12): name the conversation from this first
+	// message BEFORE the agentic loop starts. Sequencing it first is what
+	// makes it work on serialised endpoints: it claims the single model
+	// slot while the browser is showing its thinking spinner, instead of
+	// queueing behind the whole reply — where queue time would burn its
+	// budget and any long reply would cancel its own title forever. On
+	// parallel endpoints the ordering costs nothing visible (its own
+	// round-trip lands before the first token). It runs on its own
+	// context so a browser disconnect cannot strand the rename, and the
+	// store write is guarded so a user's manual rename always wins.
+	if autoTitle != "" && (conv.Title == "" || conv.Title == store.DefaultTitle) {
+		s.nameConversation(conv, autoTitle, conn)
+	}
 
 	// --- the agentic loop (spec §6.1 steps 3–5) --------------------------------
 	// The thinking choice is snapshotted here, once: every round below —
@@ -536,13 +537,6 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			"message":    "the model endpoint failed; try again",
 			"request_id": RequestIDFrom(r.Context()),
 		})
-	}
-	// Give an in-flight title quest a short grace period so its event
-	// arrives before EOF (the client stops reading at EOF). Beyond that the
-	// rename still lands in the database; the browser sees it on next load.
-	select {
-	case <-titleDone:
-	case <-time.After(3 * time.Second):
 	}
 	_ = conn.Event("done", map[string]any{
 		"message_id":   am.ID,

@@ -157,22 +157,22 @@ func TestAutoTitleNeverOverridesUserRename(t *testing.T) {
 
 	resp := sendChat(t, a, c.ID, "hello")
 	defer resp.Body.Close()
-	if resp2 := a.do(http.MethodPatch, "/api/v1/conversations/"+c.ID,
-		map[string]any{"title": "My Precise Name"}); resp2.StatusCode != 200 {
-		t.Fatalf("rename: %d %s", resp2.StatusCode, dumpBody(resp2))
-	}
-	// The handler's 3 s grace expires before the held quest answers, so
-	// done arrives with no title event; then the quest lands on the store.
-	titles := collectUntilDone(t, resp)
-	release()
-
+	// The quest claims the endpoint BEFORE the reply starts (spec §12):
+	// wait until it is genuinely in flight, then rename underneath it.
 	deadline := time.Now().Add(2 * time.Second)
 	for hits.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if hits.Load() == 0 {
-		t.Fatal("expected the in-flight title quest to reach the fake upstream")
+		t.Fatal("expected the title quest to reach the fake upstream before the reply")
 	}
+	if resp2 := a.do(http.MethodPatch, "/api/v1/conversations/"+c.ID,
+		map[string]any{"title": "My Precise Name"}); resp2.StatusCode != 200 {
+		t.Fatalf("rename: %d %s", resp2.StatusCode, dumpBody(resp2))
+	}
+	release() // the held quest answers onto the renamed row: the guarded write skips it
+
+	titles := collectUntilDone(t, resp)
 	if len(titles) != 0 {
 		t.Errorf("title event leaked over a rename: %v", titles)
 	}

@@ -509,12 +509,17 @@ everything else behind auth.
    when the endpoint stays silent — and the model-round `duration_ms`, tool runs
    excluded) and close SSE. The persisted row carries the same figures so the reload
    renders the same readouts.
-7. **Auto-title** (alongside the first exchange of a conversation still named
+7. **Auto-title** (first message of a conversation still named
    `New chat`): a small non-streaming side request to the model turns the first user
-   message into a ≤5-word topic. The request asks the endpoint to skip reasoning but
-   carries a token budget that also covers a thinking preamble, because some
-   endpoints ignore the skip (LM Studio + Qwen3.8 measured: ~90 reasoning tokens
-   before any content — a title-sized budget returns empty content forever).
+   message into a ≤5-word topic. It runs **before the first model round**, not
+   alongside the reply: on a serialised endpoint it then claims the model while the
+   browser shows its thinking spinner, instead of queueing behind the whole reply —
+   queue time is charged to the quest's own budget, so an after-the-reply ordering
+   would let any long reply cancel its own title indefinitely. The request asks the
+   endpoint to skip reasoning but carries a token budget that also covers a thinking
+   preamble, because some endpoints ignore the skip (LM Studio + Qwen3.8 measured:
+   ~90 reasoning tokens before any content — a title-sized budget returns empty
+   content forever).
    Written only if the row is still unnamed (a guarded
    `UPDATE` — the user's own rename always wins), then emitted as a `title` event so
    the sidebar updates live. Strictly best-effort: any failure leaves the placeholder
