@@ -1021,7 +1021,11 @@ body.files-open .composer-stack { display: none; }
 }
 .quota-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.25s; }
 #quota-text { flex: none; font-size: 0.85rem; }
-.files-filters { display: flex; gap: 0.4rem; }
+/* Wraps when the four filter pills and the purge select cannot share a
+   line (phones): the select drops below the pills, still right-aligned
+   by its own margin-left: auto. No media query needed — it kicks in
+   exactly when the content stops fitting. */
+.files-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .files-filter {
   border: 1px solid var(--border);
   background: transparent;
