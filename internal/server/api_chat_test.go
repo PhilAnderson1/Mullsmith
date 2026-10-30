@@ -21,7 +21,18 @@ import (
 
 func newFakeLLM(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()
-	ts := httptest.NewServer(h)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			// The context-window probe a new chat / open triggers (the
+			// config leaves windows to auto): answer with an empty
+			// listing without invoking the counted handler, so tests
+			// that count requests count only chat calls.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		h(w, r)
+	}))
 	t.Cleanup(ts.Close)
 	return ts
 }
@@ -60,7 +71,6 @@ func chatCfg(t *testing.T, endpoint string) *config.Config {
 	cfg := authCfg(t)
 	cfg.LLM.Endpoint = endpoint
 	cfg.LLM.Models = []config.LLMModel{{ID: "m1", Default: true}}
-	cfg.LLM.MaxContextTokens = 4096
 	cfg.LLM.MaxTokensResponse = 256
 	return cfg
 }

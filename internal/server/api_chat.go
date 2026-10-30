@@ -54,7 +54,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	// cross it is refused before anything is persisted or paid for — the
 	// conversation is append-only until the end. Unknown window: the gate
 	// is open and the endpoint's own error stands.
-	if s.conversationFull(conv.ID, content) {
+	if s.conversationFull(conv.ID, s.thinkingModel(conv.Model), content) {
 		writeAPIError(w, r, http.StatusConflict, "context_full",
 			"this conversation has reached its context window — start a new chat")
 		return
@@ -268,7 +268,7 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 	// so a 409 leaves the existing reply untouched. Regeneration never
 	// retitles: the conversation already has its name. The overflow gate
 	// applies here too — retrying a reply is still a send.
-	if s.conversationFull(conv.ID, "") {
+	if s.conversationFull(conv.ID, s.thinkingModel(conv.Model), "") {
 		writeAPIError(w, r, http.StatusConflict, "context_full",
 			"this conversation has reached its context window — start a new chat")
 		return

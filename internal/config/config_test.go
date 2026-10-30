@@ -543,7 +543,7 @@ llm: {endpoint: "http://x/v1"}
 			`
 database: {dir: ./db}
 scratchpad: {root: ./sp}
-llm: {endpoint: "http://x/v1", models: [{id: m}], max_context_tokens: 4096, max_tokens_response: 8000}
+llm: {endpoint: "http://x/v1", models: [{id: m, context_size: 4096}], max_tokens_response: 8000}
 `,
 			"max_tokens_response",
 		},
@@ -869,6 +869,31 @@ func TestLoadModelsDefaultAndValidation(t *testing.T) {
 	}
 }
 
+// context_size per entry: a positive number pins; omitted or -1 (or any
+// negative) normalises to the auto sentinel; a spelled 0 is the house
+// cap-syntax error.
+func TestLoadContextSizePerModel(t *testing.T) {
+	cfg, err := Load(writeCfg(t, minimalBase+modelsYAML(
+		"    - id: \"pinned\"\n      context_size: 131072\n    - id: \"auto\"\n    - id: \"minus-one\"\n      context_size: -1\n")))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLM.ContextSizeFor("pinned") != 131072 ||
+		cfg.LLM.Models[1].ContextSize != -1 || cfg.LLM.Models[2].ContextSize != -1 {
+		t.Errorf("context sizes = %+v", cfg.LLM.Models)
+	}
+	if !cfg.LLM.AnyContextAuto() {
+		t.Error("auto entries must keep discovery alive")
+	}
+	cfg, err = Load(writeCfg(t, minimalBase+modelsYAML("    - id: \"pinned\"\n      context_size: 131072\n")))
+	if err != nil || cfg.LLM.AnyContextAuto() {
+		t.Errorf("all-pinned config: err=%v anyAuto=%v", err, cfg.LLM.AnyContextAuto())
+	}
+	if _, err := Load(writeCfg(t, minimalBase+modelsYAML("    - id: m\n      context_size: 0\n"))); err == nil {
+		t.Error("spelled context_size: 0 accepted")
+	}
+}
+
 // The pre-picker spellings answer with the new shape, not a raw YAML
 // complaint: `model:`, an llm-level `thinking_profile:`, and string
 // items in `models:` are all migration messages.
@@ -876,6 +901,7 @@ func TestLoadLegacyModelKeys(t *testing.T) {
 	cases := []struct{ name, yaml, want string }{
 		{"llm.model", minimalBase + "  model: \"old-way\"\n", "has moved into llm.models"},
 		{"llm.thinking_profile", minimalYAML + "  thinking_profile: qwen3_8\n", "thinking_profile has moved into llm.models"},
+		{"llm.max_context_tokens", minimalYAML + "  max_context_tokens: 4096\n", "context_size on each entry"},
 		{"string models", minimalBase + "  models: [\"old-way\"]\n", "entries are maps"},
 	}
 	for _, tc := range cases {
@@ -980,7 +1006,6 @@ scratchpad:
 llm:
   endpoint: "http://192.168.0.2:8080/v1"
   api_key: ""
-  max_context_tokens: 32768
   default_temperature: 0.7
   request_timeout: 5m
   max_tokens_response: 16384
@@ -994,6 +1019,7 @@ llm:
     - id: "Qwen3.8 Flash Next"
       default: true
       thinking_profile: qwen3_8
+      context_size: 32768
     - id: "quiet-model"
       thinking_profile: operator_p
 `
@@ -1005,7 +1031,8 @@ llm:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.LLM.DefaultModelID() != "Qwen3.8 Flash Next" || cfg.LLM.MaxContextTokens != 32768 ||
+	if cfg.LLM.DefaultModelID() != "Qwen3.8 Flash Next" || cfg.LLM.ContextSizeFor("Qwen3.8 Flash Next") != 32768 ||
+		cfg.LLM.ContextSizeFor("quiet-model") != 0 ||
 		cfg.LLM.DefaultTemperature != 0.7 || cfg.LLM.MaxTokensResponse != 16384 ||
 		!cfg.LLM.Vision || cfg.LLM.RequestTimeout.D() != 5*time.Minute {
 		t.Errorf("existing llm values changed meaning: %+v", cfg.LLM)

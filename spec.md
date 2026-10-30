@@ -167,10 +167,13 @@ llm:
       thinking_profile: "qwen3_8"      # catalogue id: this model's choices;
                                        # omitted or "none" hides the dropdown
                                        # for this model (no inheritance)
-  max_context_tokens: -1                 # -1 = read the window from the endpoint's /v1/models
-                                         # listing (context_length); a number pins it. When auto
-                                         # detects nothing the meter degrades to token counts and
-                                         # overfull conversations fail at the endpoint (§6.1)
+      # context_size: 131072           # the window in tokens: a number pins
+                                       # it; omitted or -1 discovers it from
+                                       # the endpoint's /v1/models listing
+                                       # (context_length) and falls back to
+                                       # unlimited — meter shows plain token
+                                       # counts, overfull conversations fail
+                                       # at the endpoint (§6.1)
   default_temperature: 0.7
   request_timeout: 5m
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
@@ -438,7 +441,7 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 | GET | `/api/v1/conversations?q=&cursor=` | List user's conversations (newest updated first, optional title search). |
 | POST | `/api/v1/conversations` | `{title?, model?, system_prompt?}` → create. A missing `system_prompt` inherits the user's `default_system_prompt` (the row stores the copy; later default edits never rewrite existing chats). |
 | DELETE | `/api/v1/conversations?older_than=` | Bulk housekeeping (`older_than` ∈ `1d`/`1w`/`1mo`/`1y`/`all`, calendar-approximated 1/7/30/365 days; anything else → 400). Hard-deletes the caller's conversations with `updated_at` older than the cutoff — `all` spares none — FK cascades as per-row delete does; answers `{deleted, ids}` so the UI knows whether its open thread died, and approval memory dies with each row. |
-| GET | `/api/v1/conversations/{id}` | Metadata + pinned files. Carries `thinking`: the **effective** choice (`default`, or a saved one still valid under the current endpoint/model/type/profile — §6.3). |
+| GET | `/api/v1/conversations/{id}` | Metadata + pinned files. Carries `thinking`: the **effective** choice (`default`, or a saved one still valid under the current endpoint/model/type/profile — §6.3). Carries `max_context_tokens`: the context window of the model the conversation runs on — the meter's denominator, a model property that travels with the conversation (`§6.1`; absent when auto-detection has nothing). Opening a conversation is that window's refresh point. |
 | PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt, thinking choice (`{thinking}`; §6.3). |
 | DELETE | `/api/v1/conversations/{id}` | Hard delete; FK cascades to messages → tool calls & attachment links. |
 | GET | `/api/v1/conversations/{id}/messages?cursor=` | Full history (incl. tool-call cards). |
@@ -474,8 +477,6 @@ the chip behind as a historical record whose download 404s (by design).
 model, since a choice list describes a model; `null` when the selector is off. The SPA reads
 the row for the conversation's active model — its own pick, else `default_model`; only ids
 and labels cross the wire, §6.3),
-`max_context_tokens` (the context window in force for the meter: the pinned config
-number, or the endpoint-discovered one while auto; `null` while auto-detection has nothing),
 message
 char limit, tools
 map — `web_search`/`web_fetch`/`code_run` — and file caps: max size, max attachments,
@@ -500,7 +501,8 @@ everything else behind auth.
    is append-only, which keeps the endpoint's prefix cache warm (a trimmed prompt re-prefills
    everything after the shift — minutes on modest hardware), and silently forgetting old
    turns is a worse failure than a refusal. Overflow is answered before sending when the
-   window is known — config pin or `/v1/models` discovery — with `409 context_full`
+   window for the conversation's model is known — its entry's pinned `context_size` or
+   `/v1/models` discovery — with `409 context_full`
    ("start a new chat"); when it is not, the endpoint's own error stands. `/compact`-style
    summarisation is the eventual successor, not built (agreed 2026-10-28).
 3. Send to `llm.endpoint` `POST /chat/completions` with `stream: true` and the JSON tool
@@ -1327,8 +1329,10 @@ feature). The **regenerate** button shares that row at the far left, so the two
 footnotes on the answer sit on one line and the figure never shifts when the
 button appears or disappears;
 docked above the composer a **context-fullness line** reads `71.5K (37%)` — the
-newest reply's total tokens against the window in force (pinned config, or
-discovered from the endpoint), exact figures in the tooltip; with no window
+newest reply's total tokens against the window carried by the conversation itself
+(its model's pinned `context_size`, or the discovered one — the denominator is a
+model property and travels with the chat, §6.1), exact figures in the tooltip; a
+model switch redraws the same figure against the new model's window; with no window
 known it reduces to the count alone (`71.5K`), and it stays hidden with no usage
 figure at all. Counts always carry the K suffix — even `0.2K` — because that
 suffix is what says the line counts tokens, with exact numbers in the tooltip.

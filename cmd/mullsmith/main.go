@@ -188,7 +188,7 @@ func run(args []string) int {
 	}
 
 	srv := server.New(cfg, db, logger, version, codeRunner, mailer)
-	srv.StartContextWindowProbe() // no-op unless llm.max_context_tokens is -1
+	srv.StartContextWindowProbe() // no-op unless some entry leaves context_size to auto
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("listening",
@@ -709,24 +709,25 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 		for _, want := range missing {
 			fmt.Printf("[FAIL] llm.models             %q not offered by endpoint\n", want)
 		}
-		// Context window (§2.2): a pinned number is the operator's word;
-		// -1 means we read the endpoint's — for the DEFAULT model, the one
-		// the meter divides by — and report honestly when the endpoint
-		// says nothing.
-		window, known := llm.ContextLengthFor(models, cfg.LLM.DefaultModelID())
-		switch {
-		case cfg.LLM.MaxContextTokens > 0 && known && window != cfg.LLM.MaxContextTokens:
-			fmt.Printf("[warn] llm.max_context_tokens config pins %d, endpoint reports %d for %q\n",
-				cfg.LLM.MaxContextTokens, window, cfg.LLM.DefaultModelID())
-		case cfg.LLM.MaxContextTokens > 0:
-			fmt.Printf("[ok]   llm.max_context_tokens pinned at %d (endpoint: %s)\n",
-				cfg.LLM.MaxContextTokens, windowOrNone(window, known))
-		case known:
-			fmt.Printf("[ok]   llm.max_context_tokens auto (-1): using %d reported by %q\n", window, cfg.LLM.DefaultModelID())
-		default:
-			fmt.Printf("[warn] llm.max_context_tokens auto (-1): endpoint reports no window for %q — the\n", cfg.LLM.DefaultModelID())
-			fmt.Printf("                           fullness meter shows token counts only and overlong\n")
-			fmt.Printf("                           conversations fail at the endpoint; set a number to fix.\n")
+		// Context windows (§2.2): each entry's context_size is the
+		// operator's word; auto entries read the endpoint's listing, and
+		// we report honestly, per model, when the endpoint says nothing.
+		for _, m := range cfg.LLM.Models {
+			window, known := llm.ContextLengthFor(models, m.ID)
+			switch {
+			case m.ContextSize > 0 && known && window != m.ContextSize:
+				fmt.Printf("[warn] llm.models             %q: config pins context_size %d, endpoint reports %d\n",
+					m.ID, m.ContextSize, window)
+			case m.ContextSize > 0:
+				fmt.Printf("[ok]   llm.models             %q: context_size pinned at %d (endpoint: %s)\n",
+					m.ID, m.ContextSize, windowOrNone(window, known))
+			case known:
+				fmt.Printf("[ok]   llm.models             %q: context_size auto, %d reported by the endpoint\n", m.ID, window)
+			default:
+				fmt.Printf("[warn] llm.models             %q: context_size auto and the endpoint reports no\n", m.ID)
+				fmt.Printf("                           window — the fullness meter shows token counts only\n")
+				fmt.Printf("                           and overlong conversations fail at the endpoint.\n")
+			}
 		}
 	}
 	if cfg.Scratchpad.CodeExec.Enabled {

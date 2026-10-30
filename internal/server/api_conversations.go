@@ -24,7 +24,7 @@ const (
 // effective choice (saved-and-valid, else Default) so a fresh page load
 // shows exactly what the next request will send.
 func (s *Server) conversationJSON(c *store.Conversation) map[string]any {
-	return map[string]any{
+	j := map[string]any{
 		"id":            c.ID,
 		"title":         c.Title,
 		"model":         c.Model,
@@ -33,6 +33,14 @@ func (s *Server) conversationJSON(c *store.Conversation) map[string]any {
 		"created_at":    c.CreatedAt.UTC().Format(timeRFC3339),
 		"updated_at":    c.UpdatedAt.UTC().Format(timeRFC3339),
 	}
+	// The context window of the model this conversation runs on — the
+	// meter's denominator travels with the conversation, because the
+	// window is a model property (§6.1). Unknown (auto, endpoint silent)
+	// is null: the SPA then shows a bare token count.
+	if w := s.contextWindow(s.thinkingModel(c.Model)); w > 0 {
+		j["max_context_tokens"] = w
+	}
+	return j
 }
 
 const timeRFC3339 = "2006-01-02T15:04:05Z07:00"
@@ -213,8 +221,8 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 	}
 	// A new chat is the refresh point for auto-detected context windows
 	// (§2.2): async when one is already cached, grace-capped when not.
-	if s.cfg.LLM.MaxContextTokens <= 0 {
-		s.refreshContextWindow()
+	if s.cfg.LLM.AnyContextAuto() {
+		s.refreshContextWindows()
 	}
 	writeJSON(w, http.StatusCreated, s.conversationJSON(c))
 }
@@ -228,6 +236,9 @@ func (s *Server) handleConversationGet(w http.ResponseWriter, r *http.Request) {
 		s.writeConvErr(w, r, err)
 		return
 	}
+	// Opening a conversation is its denominator's refresh point: async
+	// once known, grace-capped on the first-ever look at this model.
+	s.refreshContextWindowFor(s.thinkingModel(c.Model))
 	writeJSON(w, http.StatusOK, s.conversationJSON(c))
 }
 
@@ -297,6 +308,11 @@ func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		s.writeConvErr(w, r, err)
 		return
+	}
+	// A model switch may have just moved the conversation to a model
+	// whose window was never looked at: refresh before projecting.
+	if body.Model != nil {
+		s.refreshContextWindowFor(s.thinkingModel(c.Model))
 	}
 	writeJSON(w, http.StatusOK, s.conversationJSON(c))
 }

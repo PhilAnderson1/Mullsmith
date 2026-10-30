@@ -126,7 +126,6 @@ func TestTLSConfigAddsHSTSAndUpgrade(t *testing.T) {
 
 func TestMetaStub(t *testing.T) {
 	cfg := testCfg()
-	cfg.LLM.MaxContextTokens = 32768 // the context meter's denominator
 	ts := newTestServer(t, cfg)
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/api/v1/meta")
@@ -141,8 +140,10 @@ func TestMetaStub(t *testing.T) {
 	if meta["app"] != "mullsmith" || meta["registration"] != "invite-only" {
 		t.Errorf("meta = %v", meta)
 	}
-	if meta["max_context_tokens"] != float64(32768) {
-		t.Errorf("max_context_tokens = %v, want 32768", meta["max_context_tokens"])
+	// The context window no longer rides meta: it is a model property,
+	// carried per conversation (§6.1).
+	if _, present := meta["max_context_tokens"]; present {
+		t.Error("meta still carries max_context_tokens")
 	}
 	if _, leaked := meta["api_key"]; leaked {
 		t.Error("meta must not expose api_key")

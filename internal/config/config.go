@@ -241,14 +241,19 @@ type Runtime struct {
 
 // LLMModel is one entry of the llm.models picker (§2.2): the model ID
 // sent to the endpoint, whether conversations with no explicit choice run
-// on it, and which thinking-profile catalogue entry names its dropdown.
-// Every fact about a model lives ON its entry — nothing is implied by
-// position except the fallback default — so the list has one honest shape
-// with no shorthand form.
+// on it, which thinking-profile catalogue entry names its dropdown, and
+// its context window. Every fact about a model lives ON its entry —
+// nothing is implied by position except the fallback default — so the
+// list has one honest shape with no shorthand form.
 type LLMModel struct {
 	ID              string `yaml:"id"`
 	Default         bool   `yaml:"default"`
 	ThinkingProfile string `yaml:"thinking_profile"`
+	// ContextSize is the window in tokens: a positive number pins it;
+	// omitted (or -1, normalised by setDefaults) discovers it from the
+	// endpoint's /models listing and falls back to unlimited — meter by
+	// count, no send gate — when the endpoint says nothing (spec §6.1).
+	ContextSize int `yaml:"context_size"`
 }
 
 type LLM struct {
@@ -259,7 +264,6 @@ type LLM struct {
 	// claiming it means the first entry (so a one-model deployment needs
 	// no marking at all — Validate still requires at least one entry).
 	Models             []LLMModel `yaml:"models"`
-	MaxContextTokens   int        `yaml:"max_context_tokens"`
 	DefaultTemperature float64    `yaml:"default_temperature"`
 	RequestTimeout     Duration   `yaml:"request_timeout"`
 	MaxTokensResponse  int        `yaml:"max_tokens_response"`
@@ -482,6 +486,27 @@ func capNumber(v any) (int, bool) {
 	return 0, false
 }
 
+// rawList reads a section's list-of-mappings from the as-written document
+// (context_size's cap-syntax check runs here: a decoded 0 cannot tell
+// "omitted" from "spelled"). Missing or malformed → nil.
+func (c *Config) rawList(section, key string) []map[string]any {
+	sec, ok := c.rawDoc[section].(map[string]any)
+	if !ok {
+		return nil
+	}
+	items, ok := sec[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		if m, ok := it.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // spelledZero reports whether the config file spells section.key out as
 // the number 0 — invisible to typed reads once setDefaults has folded an
 // absent key into its default (§2.2: 0 is never a legal spelling on an
@@ -651,6 +676,10 @@ func legacyModelKeys(doc map[string]any) error {
 		return errors.New(`llm.thinking_profile has moved into llm.models — spell thinking_profile on each entry: ` +
 			`- {id: "<model>", thinking_profile: <profile-id>}`)
 	}
+	if _, ok := llmSec["max_context_tokens"]; ok {
+		return errors.New(`llm.max_context_tokens has moved into llm.models — spell context_size on each entry ` +
+			`(omit it or write -1 to auto-detect from the endpoint): - {id: "<model>", context_size: 131072}`)
+	}
 	if items, ok := llmSec["models"].([]any); ok {
 		for _, it := range items {
 			if _, isMap := it.(map[string]any); !isMap {
@@ -671,6 +700,44 @@ func (l *LLM) ModelProfiles() map[string]string {
 		out[m.ID] = m.ThinkingProfile
 	}
 	return out
+}
+
+// ContextSizeFor pins the window in force for a model: its entry's
+// positive number, or 0 meaning auto (discover, unlimited if unknown).
+// Models outside the picker read the default entry — the same fallback
+// as the thinking profile.
+func (l *LLM) ContextSizeFor(model string) int {
+	for _, m := range l.Models {
+		if m.ID == model {
+			if m.ContextSize > 0 {
+				return m.ContextSize
+			}
+			return 0
+		}
+	}
+	for _, m := range l.Models {
+		if m.Default {
+			if m.ContextSize > 0 {
+				return m.ContextSize
+			}
+			return 0
+		}
+	}
+	if len(l.Models) > 0 && l.Models[0].ContextSize > 0 {
+		return l.Models[0].ContextSize
+	}
+	return 0
+}
+
+// AnyContextAuto reports whether at least one entry leaves its window to
+// discovery — the probe's only reason to run.
+func (l *LLM) AnyContextAuto() bool {
+	for _, m := range l.Models {
+		if m.ContextSize <= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveAgainst anchors one configured path at base and cleans it;
@@ -798,10 +865,13 @@ func (c *Config) setDefaults() {
 	if c.Scratchpad.CodeExec.MaxMemory == 0 {
 		c.Scratchpad.CodeExec.MaxMemory = 256 << 20 // matches configs/config.yaml
 	}
-	if c.LLM.MaxContextTokens == 0 {
-		// -1 (auto): discover the window from the endpoint's GET /models
-		// context_length. A spelled-out number pins it instead (§2.2).
-		c.LLM.MaxContextTokens = -1
+	// Any entry leaving context_size unset (or spelled -1) discovers its
+	// window from the endpoint (§2.2); a positive number pins it. The
+	// internal sentinel for "auto" is -1.
+	for i := range c.LLM.Models {
+		if c.LLM.Models[i].ContextSize <= 0 {
+			c.LLM.Models[i].ContextSize = -1
+		}
 	}
 	if c.LLM.MaxTokensResponse == 0 {
 		c.LLM.MaxTokensResponse = 4096
@@ -1063,20 +1133,30 @@ func (c *Config) Validate() error {
 	if defaults > 1 {
 		f.bad("llm.models: at most one entry may set default: true")
 	}
-	// llm.max_context_tokens: -1 is the off-sentinel for auto-detection
-	// (the window is taken from the endpoint's /models context_length);
-	// anything else must be a positive number of tokens. A spelled 0 folds
-	// into the default like on every cap knob, hence rawDoc.
-	if c.LLM.MaxContextTokens < -1 {
-		f.bad("llm.max_context_tokens: must be -1 (auto-detect) or a positive number of tokens")
-	} else if c.spelledZero("llm", "max_context_tokens") {
-		f.bad("llm.max_context_tokens: 0 is not allowed — use -1 to auto-detect, or a positive number")
+	// llm.models[].context_size: a positive number pins the window; -1
+	// (or omitted) auto-detects from the endpoint's /models listing. A
+	// spelled 0 folds into that default like on every cap knob, so the
+	// house syntax is enforced from the raw document instead.
+	for i, v := range c.rawList("llm", "models") {
+		raw, ok := v["context_size"]
+		if !ok {
+			continue
+		}
+		n, isNum := capNumber(raw)
+		if !isNum {
+			f.bad("llm.models[%d].context_size: must be a number of tokens, -1 (auto), or omitted", i)
+		} else if n == 0 {
+			f.bad("llm.models[%d].context_size: 0 is not allowed — omit it or write -1 to auto-detect, or a positive number", i)
+		}
+	}
+	// A pinned window must still leave room for the reply itself.
+	for _, m := range c.LLM.Models {
+		if m.ContextSize > 0 && c.LLM.MaxTokensResponse >= m.ContextSize {
+			f.bad("llm.max_tokens_response: must be smaller than the pinned context_size of %q (%d)", m.ID, m.ContextSize)
+		}
 	}
 	if c.LLM.MaxTokensResponse <= 0 {
 		f.bad("llm.max_tokens_response: must be > 0")
-	}
-	if c.LLM.MaxContextTokens > 0 && c.LLM.MaxTokensResponse >= c.LLM.MaxContextTokens {
-		f.bad("llm.max_tokens_response: must be smaller than max_context_tokens")
 	}
 	if c.LLM.DefaultTemperature < 0 || c.LLM.DefaultTemperature > 2 {
 		f.bad("llm.default_temperature: must be within 0..2")

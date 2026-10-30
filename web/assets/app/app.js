@@ -761,14 +761,17 @@ function fmtTokens(n) {
 
 // updateCtxMeter fills the fullness line above the composer: the freshest
 // assistant total (prompt+completion of the last reply, an estimate where
-// the endpoint reported nothing) against the context window from
-// /api/v1/meta — "71.5K (37%)". With no known window it reduces to the
-// count alone; with no usage figure at all there is nothing to say.
+// the endpoint reported nothing) against the context window carried by
+// the conversation itself — the window is a model property, so it travels
+// with the chat, not with meta — "71.5K (37%)". With no known window it
+// reduces to the count alone; with no usage figure at all there is
+// nothing to say.
 function updateCtxMeter(used) {
   const el = $("#ctx-meter");
   if (!el) return;
+  if (used > 0) state.lastCtxUsed = used; // remembered for a model switch
   el.classList.remove("ctx-meter-full"); // a live figure replaces any refusal
-  const max = (state.meta && state.meta.max_context_tokens) || 0;
+  const max = (state.currentConv && state.currentConv.max_context_tokens) || 0;
   if (!(used > 0)) {
     el.hidden = true;
     return;
@@ -1932,6 +1935,7 @@ function renderConversation() {
 
   if (!state.currentId) {
     state.currentConv = null;
+    state.lastCtxUsed = 0; // the meter speaks for one thread only
     $("#thread").replaceChildren(initialEmptyState());
     updateCtxMeter(0); // no thread: no meter
   }
@@ -1958,15 +1962,10 @@ async function newChat() {
   try {
     const c = await api.createConversation("");
     state.convs.unshift(c);
-    // A new chat is also the server's refresh point for an auto-detected
-    // context window, so re-read meta: the meter gets its denominator even
-    // if boot-time discovery raced a starting model server.
-    try {
-      const meta = await api.meta();
-      const fresh = (meta && meta.max_context_tokens) || 0;
-      const now = (state.meta && state.meta.max_context_tokens) || 0;
-      if (fresh && fresh !== now) state.meta = meta;
-    } catch (_) { /* the old denominator stands */ }
+    // The created conversation carries its model's context window (the
+    // server refreshed auto-detection on create), so the meter gets its
+    // denominator even if boot-time discovery raced a starting model
+    // server — no extra round-trip here.
     const list = $("#conv-list");
     list.prepend(convRow(c));
     markActive();
@@ -1995,6 +1994,9 @@ async function onModelChange(ev) {
   // a saved choice outside the new model's list falls back to Default.
   populateThinkingChoices();
   syncThinkingSelect();
+  // The meter's denominator is the NEW model's window — redraw the
+  // figure it already has against it.
+  updateCtxMeter(state.lastCtxUsed || 0);
 }
 
 // --- thinking-level selector -----------------------------------------------------

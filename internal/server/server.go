@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"mullsmith/internal/agent"
@@ -93,14 +92,13 @@ type Server struct {
 	// switch first, so the nil mailer is unreachable; sendConfirmMail and
 	// friends lean on Outbox.Send's nil-receiver safety anyway.
 	mailer *mail.Outbox
-	// ctxWindow caches the endpoint-discovered context window while
-	// llm.max_context_tokens is -1 (auto): the newest context_length the
-	// /models listing reported for the configured model; 0 = unknown.
-	// A pinned config bypasses discovery entirely.
-	ctxWindow atomic.Int64
+	// discoveredWindows caches the endpoint-reported context windows per
+	// model (lower-cased id) while an entry leaves context_size to auto;
+	// a pinned entry never consults it (spec §2.2/§6.1).
+	discoveredWindows *windowsCache
 	// windowProbe is the seam for the /models lookup; tests substitute
 	// canned answers.
-	windowProbe func(context.Context) (int, bool)
+	windowProbe func(context.Context) (map[string]int, bool)
 }
 
 // hashQueue is how many callers may wait behind the hash gate before new
@@ -171,7 +169,8 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	// Auto window (§2.2 llm.max_context_tokens: -1): the seam is set here;
 	// the first probe itself belongs to StartContextWindowProbe so tests
 	// can install canned answers before anything runs.
-	s.windowProbe = s.probeEndpointWindow
+	s.windowProbe = s.probeEndpointWindows
+	s.discoveredWindows = newWindowsCache()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -304,11 +303,8 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// Only id+label cross the wire: request
 		// templates and credentials stay server-side.
 		"thinking": s.thinkingMeta(),
-		// The context window in force for the SPA's meter and fullness
-		// warning: the pinned llm.max_context_tokens, or the auto-detected
-		// one; null while auto-detection has nothing — the UI then shows
-		// a bare "K tokens used" instead of a percentage.
-		"max_context_tokens": s.contextWindowMeta(),
+		// (The context window no longer rides meta: it is a model
+		// property, so each conversation carries its own — §6.1.)
 		"limits": map[string]any{
 			"max_message_chars": s.cfg.Limits.MaxMessageChars,
 		},

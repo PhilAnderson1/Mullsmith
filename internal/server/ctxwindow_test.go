@@ -10,16 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"mullsmith/internal/config"
 	"mullsmith/internal/store"
 )
 
 // newWindowTest builds one Server with a canned windowProbe — installed
-// after construction, so nothing is probed until a test calls
-// refreshContextWindow — plus a signed-in session for meta reads.
-func newWindowTest(t *testing.T, pinned int, probe func(context.Context) (int, bool)) (*authTest, *Server, *store.DB) {
+// after construction, so nothing is probed until a test refreshes — plus
+// a signed-in session for conversation reads. entries override the model
+// list when non-nil.
+func newWindowTest(t *testing.T, probe func(context.Context) (map[string]int, bool), entries ...config.LLMModel) (*authTest, *Server, *store.DB) {
 	t.Helper()
 	cfg := chatCfg(t, "http://127.0.0.1:1/v1") // endpoint unused: the probe is canned
-	cfg.LLM.MaxContextTokens = pinned
+	if len(entries) > 0 {
+		cfg.LLM.Models = entries
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
 	s := New(cfg, db, logger, "test", nil, nil)
@@ -35,66 +39,101 @@ func newWindowTest(t *testing.T, pinned int, probe func(context.Context) (int, b
 }
 
 func TestContextWindowPinnedBeatsDiscovery(t *testing.T) {
-	_, s, _ := newWindowTest(t, 5000, func(context.Context) (int, bool) {
-		t.Error("a pinned config must never probe the endpoint")
-		return 9999, true
-	})
-	s.refreshContextWindow()
-	if got := s.contextWindow(); got != 5000 {
-		t.Errorf("contextWindow() = %d, want the pinned 5000", got)
-	}
-	if got := s.contextWindowMeta(); got != int64(5000) {
-		t.Errorf("meta window = %v, want 5000", got)
+	_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
+		t.Error("an all-pinned config must never probe the endpoint")
+		return map[string]int{"m1": 9999}, true
+	}, config.LLMModel{ID: "m1", Default: true, ContextSize: 5000})
+	s.refreshContextWindows()
+	if got := s.contextWindow("m1"); got != 5000 {
+		t.Errorf("contextWindow(m1) = %d, want the pinned 5000", got)
 	}
 }
 
-func TestContextWindowAutoDiscovery(t *testing.T) {
-	_, s, _ := newWindowTest(t, -1, func(context.Context) (int, bool) { return 9999, true })
-	if got := s.contextWindow(); got != 0 {
+func TestContextWindowAutoDiscoveryPerModel(t *testing.T) {
+	_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
+		return map[string]int{"m1": 9999, "m2": 4000}, true
+	},
+		config.LLMModel{ID: "m1", Default: true},
+		config.LLMModel{ID: "m2"},
+	)
+	if got := s.contextWindow("m1"); got != 0 {
 		t.Fatalf("fresh auto window = %d, want unknown", got)
 	}
-	// meta waits (grace-capped) for the first probe, so even the first
-	// read after startup carries the discovered number.
-	if got := s.contextWindowMeta(); got != int64(9999) {
-		t.Errorf("meta window = %v, want 9999 after discovery", got)
+	s.refreshContextWindows() // unknown yet: this one waits
+	if got := s.contextWindow("m1"); got != 9999 {
+		t.Errorf("m1 window = %d, want 9999 after discovery", got)
+	}
+	if got := s.contextWindow("m2"); got != 4000 {
+		t.Errorf("m2 window = %d, want 4000 after discovery", got)
+	}
+	// Listing spelling differs in case: the cache keys lower-cased.
+	if got := s.contextWindow("M1"); got != 9999 {
+		t.Errorf("case-insensitive lookup = %d, want 9999", got)
 	}
 }
 
-func TestContextWindowUnknownIsNullMeta(t *testing.T) {
-	// The dumb-proxy case: nothing reported → JSON null, gate open.
-	_, s, _ := newWindowTest(t, -1, func(context.Context) (int, bool) { return 0, false })
-	if got := s.contextWindowMeta(); got != nil {
-		t.Errorf("meta window = %v, want nil while unresolved", got)
+func TestContextWindowUnknownIsNull(t *testing.T) {
+	// The dumb-proxy case: nothing reported → unlimited, gate open.
+	_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) { return nil, false })
+	if got := s.contextWindow("m1"); got != 0 {
+		t.Errorf("window = %d, want 0 while unresolved", got)
 	}
-	if s.conversationFull("whatever", "plenty of content") {
+	if s.conversationFull("whatever", "m1", "plenty of content") {
 		t.Error("gate must be open while the window is unknown")
 	}
 }
 
 func TestContextWindowRefreshIsAsyncWhenKnown(t *testing.T) {
 	calls := make(chan struct{}, 8)
-	_, s, _ := newWindowTest(t, -1, func(context.Context) (int, bool) {
+	_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
 		calls <- struct{}{}
-		return 8000, true
+		return map[string]int{"m1": 8000}, true
 	})
-	s.refreshContextWindow() // unknown yet: this one waits
+	s.refreshContextWindows() // unknown yet: this one waits
 	select {
 	case <-calls:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first refresh never probed")
 	}
-	if got := s.contextWindow(); got != 8000 {
+	if got := s.contextWindow("m1"); got != 8000 {
 		t.Fatalf("window = %d, want 8000", got)
 	}
 	start := time.Now()
-	s.refreshContextWindow() // known now: must not block on the probe
+	s.refreshContextWindows() // known now: must not block on the probe
 	if time.Since(start) > 50*time.Millisecond {
 		t.Errorf("refresh with a cached value blocked for %v", time.Since(start))
 	}
 }
 
+// A conversation's payload carries the window of ITS model — the meter's
+// denominator travels with the conversation, not with meta.
+func TestConversationCarriesItsModelsWindow(t *testing.T) {
+	a, _, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
+		return map[string]int{"m1": 9999}, true
+	},
+		config.LLMModel{ID: "m1", Default: true},
+		config.LLMModel{ID: "m2", ContextSize: 6000},
+	)
+	c := createConv(t, a, map[string]any{"title": "win"})
+	var proj map[string]any
+	getJSON(t, a, "/api/v1/conversations/"+c.ID, &proj)
+	if proj["max_context_tokens"] != float64(9999) {
+		t.Fatalf("default-model conversation window = %v, want discovered 9999", proj["max_context_tokens"])
+	}
+	patchResp := a.do(http.MethodPatch, "/api/v1/conversations/"+c.ID, map[string]any{"model": "m2"})
+	patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch model: %d", patchResp.StatusCode)
+	}
+	getJSON(t, a, "/api/v1/conversations/"+c.ID, &proj)
+	if proj["max_context_tokens"] != float64(6000) {
+		t.Errorf("m2 conversation window = %v, want the pinned 6000", proj["max_context_tokens"])
+	}
+}
+
 func TestConversationFullGate(t *testing.T) {
-	a, s, db := newWindowTest(t, 50, func(context.Context) (int, bool) { return 50, true })
+	a, s, db := newWindowTest(t, func(context.Context) (map[string]int, bool) { return map[string]int{"m1": 50}, true },
+		config.LLMModel{ID: "m1", Default: true, ContextSize: 50})
 	u, err := db.UserByEmail(context.Background(), "gate@b.io")
 	if err != nil || u == nil {
 		t.Fatalf("owner lookup: %v", err)
@@ -111,16 +150,16 @@ func TestConversationFullGate(t *testing.T) {
 
 	// ~10 tokens of history against a 50-token window: space to spare.
 	seed(strings.Repeat("y", 40))
-	if s.conversationFull(c.ID, "hi") {
+	if s.conversationFull(c.ID, "m1", "hi") {
 		t.Error("gate closed with room to spare")
 	}
 	// Cross the window with one big turn: the gate answers before the send.
 	seed(strings.Repeat("x", 240)) // ~60 tokens
-	if !s.conversationFull(c.ID, "hi") {
+	if !s.conversationFull(c.ID, "m1", "hi") {
 		t.Error("gate open with history past the window")
 	}
 	// A conversation the store cannot read never reads as full.
-	if s.conversationFull("00NOTAREALID00", "hi") {
+	if s.conversationFull("00NOTAREALID00", "m1", "hi") {
 		t.Error("unknown conversation must not read as full")
 	}
 }

@@ -74,10 +74,10 @@ llm:
     - id: "your-model-name"
       default: true
       # thinking_profile: qwen3_8
-  max_context_tokens: -1                 # -1 = read the window from the endpoint's /models listing;
-                                         # set a number to pin it. When auto-detection finds
-                                         # nothing, the meter shows plain token counts and an
-                                         # overfull conversation fails at the endpoint.
+      # context_size: 131072   # the window in tokens: a number pins it;
+                               # omitted or -1 discovers it from the
+                               # endpoint's /models listing and falls back
+                               # to unlimited (meter shows counts only)
   default_temperature: 0.7
   request_timeout: 5m
   max_tokens_response: 4096
