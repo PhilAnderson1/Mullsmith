@@ -91,8 +91,9 @@ install_config_if_missing() {
 }
 
 install_config_if_missing "$config_source" /etc/mullsmith/config.yaml
-# The sample config names these thinking catalogues; they overlay the
-# catalogues embedded in the binary and may be edited without a rebuild.
+# The sample config names these thinking catalogues: they are the sole
+# source of the endpoint and profile IDs, so they must be present (and
+# may be edited freely) for the thinking selector to work.
 install_config_if_missing "$endpoints_source" /etc/mullsmith/endpoints.yaml
 install_config_if_missing "$profiles_source" /etc/mullsmith/thinking-profiles.yaml
 

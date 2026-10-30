@@ -2,10 +2,11 @@
 // (thinking-control-specification.md). Two catalogues drive it: endpoints
 // describe how one request convention expresses a thinking choice as JSON
 // request fields, profiles list the ordered choices for the single
-// configured model. Both ship embedded in the binary (data/) and may be
-// extended or replaced per ID by operator-supplied YAML files — a new
-// profile or request mapping is a YAML edit plus a restart, never a
-// recompile.
+// configured model. Both live exclusively in the operator-supplied YAML
+// files named by llm.endpoints_file / llm.profiles_file — nothing is
+// baked into the binary, so a new profile or request mapping is a YAML
+// edit plus a restart, never a recompile, and removing an entry from a
+// file truly removes it.
 //
 // The package knows nothing about HTTP: Build resolves the configured
 // selection into a Runtime (effective choices, request-route, fragment
@@ -16,7 +17,6 @@ package thinking
 import (
 	"bytes"
 	"crypto/sha256"
-	_ "embed" // required by the go:embed directives below
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,11 +28,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed data/endpoints.yaml
-var embeddedEndpoints []byte
-
-//go:embed data/thinking-profiles.yaml
-var embeddedProfiles []byte
+// profileNone is the only built-in profile: it selects no choices at all,
+// so the selector stays hidden and requests carry no thinking fields. It
+// is the profile a selection falls back to when none is named, which is
+// why profiles_file is optional exactly then.
+const profileNone = "none"
 
 // DefaultID is the built-in choice every visible selector starts with. It
 // means "use server/model settings" and adds no request fields; the ID is
@@ -111,8 +111,8 @@ type Settings struct {
 	// SelectorEnable is llm.thinking_selector_enable: nil falls back to
 	// the legacy shape (a selector exists when an endpoint type or a
 	// non-"none" profile is spelled out); true/false decides outright.
-	// A true switch still requires an explicit endpoint_type and profile
-	// to name — the sample config shows the usual pair.
+	// A true switch still requires an explicit endpoint_type — and, like
+	// any enabled selection, the catalogue file(s) the IDs come from.
 	SelectorEnable *bool
 }
 
@@ -126,17 +126,17 @@ type Runtime struct {
 	warnings []string
 }
 
-// Build parses the catalogues (embedded, then per-ID external
-// replacement/addition) and resolves the configured selection. It returns
-// (nil, nil) when the selector is off — explicitly via SelectorEnable,
-// or by the legacy shape of nothing thinking-related configured, which
-// must keep working untouched.
+// Build parses the catalogue files named by the settings (the sole
+// source — nothing is embedded) and resolves the configured selection.
+// It returns (nil, nil) when the selector is off — explicitly via
+// SelectorEnable, or by the legacy shape of nothing thinking-related
+// configured, which must keep working untouched.
 func Build(set Settings) (*Runtime, error) {
 	// The explicit switch decides outright; without it the selector
 	// exists exactly when the operator spelled out an endpoint type or a
 	// non-"none" profile (the pre-switch behaviour, kept intact).
 	explicit := set.SelectorEnable != nil
-	enabled := set.EndpointType != "" || (set.ProfileID != "" && set.ProfileID != "none")
+	enabled := set.EndpointType != "" || (set.ProfileID != "" && set.ProfileID != profileNone)
 	if explicit {
 		enabled = *set.SelectorEnable
 	}
@@ -151,23 +151,35 @@ func Build(set Settings) (*Runtime, error) {
 		}
 		return nil, nil
 	}
-	endpoints, profiles, err := loadCatalogues(set)
-	if err != nil {
-		return nil, err
-	}
-	epType, profID := set.EndpointType, set.ProfileID
+	// A spelled-out profile with no endpoint type is the older, more
+	// common typo — answered first, exactly as before the files became
+	// mandatory.
+	epType := set.EndpointType
 	if epType == "" {
 		if explicit {
 			return nil, errors.New("llm.thinking_selector_enable requires llm.endpoint_type")
 		}
 		return nil, fmt.Errorf("llm.thinking_profile %q requires llm.endpoint_type", set.ProfileID)
 	}
+	// The catalogue files are the only place an ID can come from, so a
+	// selection is unusable without the file its IDs live in.
+	if set.EndpointsFile == "" {
+		return nil, errors.New("llm.endpoint_type requires llm.endpoints_file: the endpoint catalogue is an external file")
+	}
+	profID := set.ProfileID
+	if profID == "" {
+		profID = profileNone
+	}
+	if profID != profileNone && set.ProfilesFile == "" {
+		return nil, fmt.Errorf("llm.thinking_profile %q requires llm.profiles_file: the profile catalogue is an external file", profID)
+	}
+	endpoints, profiles, err := loadCatalogues(set)
+	if err != nil {
+		return nil, err
+	}
 	ep, ok := endpoints[epType]
 	if !ok {
 		return nil, fmt.Errorf("llm.endpoint_type %q: no such entry in the endpoint catalogue", epType)
-	}
-	if profID == "" {
-		profID = "none"
 	}
 	prof, ok := profiles[profID]
 	if !ok {
@@ -188,44 +200,38 @@ func Build(set Settings) (*Runtime, error) {
 	return rt, nil
 }
 
-// loadCatalogues decodes embedded + external files, replaces embedded
-// entries by matching ID (the entire entry, never a recursive merge) and
-// adds new IDs, then validates every resulting entry.
+// loadCatalogues decodes the two operator files — the sole source for
+// every catalogue ID — and validates every entry. Callers guarantee the
+// files a selection references are set; a file that is merely configured
+// (selector off) is parsed and validated too.
 func loadCatalogues(set Settings) (map[string]*Endpoint, map[string]*Profile, error) {
-	ef, err := decodeEndpoints(embeddedEndpoints, "embedded endpoints")
+	raw, err := readFile(set.EndpointsFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	pf, err := decodeProfiles(embeddedProfiles, "embedded profiles")
+	ef, err := decodeEndpoints(raw, set.EndpointsFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	if set.EndpointsFile != "" {
-		raw, err := readFile(set.EndpointsFile)
-		if err != nil {
-			return nil, nil, err
-		}
-		over, err := decodeEndpoints(raw, set.EndpointsFile)
-		if err != nil {
-			return nil, nil, err
-		}
-		for id, ep := range over {
-			ef[id] = ep
-		}
-	}
+	pf := map[string]*Profile{}
 	if set.ProfilesFile != "" {
 		raw, err := readFile(set.ProfilesFile)
 		if err != nil {
 			return nil, nil, err
 		}
-		over, err := decodeProfiles(raw, set.ProfilesFile)
+		pf, err = decodeProfiles(raw, set.ProfilesFile)
 		if err != nil {
 			return nil, nil, err
 		}
-		for id, p := range over {
-			pf[id] = p
-		}
 	}
+	// "none" is the built-in no-choices profile, always available (which
+	// is exactly when profiles_file may be omitted) and always empty. A
+	// file may list it as `options: []`; giving it choices would fight
+	// the documented meaning of llm.thinking_profile: none, so it fails.
+	if p, ok := pf[profileNone]; ok && len(p.Options) > 0 {
+		return nil, nil, fmt.Errorf("%s: profile %q is the built-in no-choices entry and must have no options", set.ProfilesFile, profileNone)
+	}
+	pf[profileNone] = &Profile{}
 	for id, ep := range ef {
 		if err := validateEndpoint(id, ep); err != nil {
 			return nil, nil, err
@@ -518,11 +524,12 @@ type PublicChoice struct {
 }
 
 // Enabled reports a selected endpoint definition — its route replaces
-// the default /chat/completions suffix even when the profile is `none`.
+// the default /chat/completions suffix even when no profile choices are
+// selected ("none").
 func (r *Runtime) Enabled() bool { return r != nil && r.ep != nil }
 
 // SelectorVisible reports a profile with at least one usable option.
-// `none` (or a legacy config) hides the selector entirely: the feature is
+// "none" (or a legacy config) hides the selector entirely: the feature is
 // off, and a model that thinks by default keeps thinking.
 func (r *Runtime) SelectorVisible() bool { return r != nil && len(r.choices) > 0 }
 

@@ -9,12 +9,31 @@ import (
 	"testing"
 )
 
+// Nothing is embedded: the canonical catalogues in configs/ are the
+// reference data, read straight from the repo.
+var (
+	repoEndpoints = filepath.Join("..", "..", "configs", "endpoints.yaml")
+	repoProfiles  = filepath.Join("..", "..", "configs", "thinking-profiles.yaml")
+)
+
+// catSettings fills in the repo catalogue paths on any selection that
+// left them out; a test that names its own file keeps it.
+func catSettings(s Settings) Settings {
+	if s.EndpointsFile == "" {
+		s.EndpointsFile = repoEndpoints
+	}
+	if s.ProfilesFile == "" {
+		s.ProfilesFile = repoProfiles
+	}
+	return s
+}
+
 func gufoQwen38(t *testing.T) *Runtime {
 	t.Helper()
-	rt, err := Build(Settings{
+	rt, err := Build(catSettings(Settings{
 		EndpointURL:  "http://192.168.0.2:8080/v1",
 		EndpointType: "gufo", ProfileID: "qwen3_8", MaxOutput: 16384,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build gufo/qwen3_8: %v", err)
 	}
@@ -91,7 +110,7 @@ func TestGufoQwen38ChoicesAndFragments(t *testing.T) {
 // sending xhigh is profile data, not a global alias. And neither the
 // thinking-only Qwen nor GLM-5.3 ever gains an Off choice.
 func TestProfileEffortsAndMissingOff(t *testing.T) {
-	oss, err := Build(Settings{EndpointType: "gufo", ProfileID: "gpt_oss"})
+	oss, err := Build(catSettings(Settings{EndpointType: "gufo", ProfileID: "gpt_oss"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +124,7 @@ func TestProfileEffortsAndMissingOff(t *testing.T) {
 	}
 
 	for _, prof := range []string{"glm5_3", "qwen3_8_thinking_only"} {
-		rt, err := Build(Settings{EndpointType: "gufo", ProfileID: prof})
+		rt, err := Build(catSettings(Settings{EndpointType: "gufo", ProfileID: prof}))
 		if err != nil {
 			t.Fatalf("%s: %v", prof, err)
 		}
@@ -126,7 +145,7 @@ func TestRecipeAndAllowlistFiltering(t *testing.T) {
 
 	for _, ep := range openaiEndpoints {
 		for _, prof := range profiles {
-			rt, err := Build(Settings{EndpointType: ep, ProfileID: prof, MaxOutput: 16384})
+			rt, err := Build(catSettings(Settings{EndpointType: ep, ProfileID: prof, MaxOutput: 16384}))
 			if !slices.Contains([]string{"qwen3_5", "qwen3_6", "gemma4"}, prof) || ep != "lm_studio" {
 				if err != nil {
 					t.Errorf("%s/%s: %v", ep, prof, err)
@@ -168,11 +187,11 @@ func TestRecipeAndAllowlistFiltering(t *testing.T) {
 	// The LM Studio native allowlist: High (xhigh) excluded — but that
 	// definition cannot be selected at all in this build, so the pair is
 	// a configuration error, checked beside it.
-	if _, err := Build(Settings{EndpointType: "lm_studio_native", ProfileID: "qwen3_8"}); err == nil ||
+	if _, err := Build(catSettings(Settings{EndpointType: "lm_studio_native", ProfileID: "qwen3_8"})); err == nil ||
 		!strings.Contains(err.Error(), "lm_studio_chat") {
 		t.Errorf("lm_studio_native accepted: %v", err)
 	}
-	if _, err := Build(Settings{EndpointType: "ollama", ProfileID: "qwen3_5"}); err == nil ||
+	if _, err := Build(catSettings(Settings{EndpointType: "ollama", ProfileID: "qwen3_5"})); err == nil ||
 		!strings.Contains(err.Error(), "ollama_chat") {
 		t.Errorf("ollama native accepted: %v", err)
 	}
@@ -203,7 +222,7 @@ profiles:
 
 	// vLLM speaks thinking_token_budget; 2048 of a 16384 answer cap fits.
 	rt, err := Build(Settings{EndpointType: "vllm", ProfileID: "capped",
-		ProfilesFile: profiles, MaxOutput: 16384})
+		EndpointsFile: repoEndpoints, ProfilesFile: profiles, MaxOutput: 16384})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,15 +257,16 @@ endpoints:
 	// A preset >= the total output cap can never leave room for an
 	// answer: configuration error, not a quiet hide.
 	if _, err := Build(Settings{EndpointType: "vllm", ProfileID: "capped",
-		ProfilesFile: profiles, MaxOutput: 2048}); err == nil {
+		EndpointsFile: repoEndpoints, ProfilesFile: profiles, MaxOutput: 2048}); err == nil {
 		t.Fatal("budget 2048 accepted with max_tokens_response 2048")
 	}
 }
 
-// External files replace an embedded entry wholesale and add new IDs;
-// unknown referenced IDs fail clearly; an unusable file is a startup
-// error (the legacy path parses configured files too).
-func TestExternalOverlayAndSelections(t *testing.T) {
+// The configured files are the SOLE catalogue source: an entry is exactly
+// what its file says, new IDs are simply available, unknown referenced
+// IDs fail clearly, and an unusable file is a startup error (the legacy
+// path parses configured files too).
+func TestCatalogueFilesAreSoleSource(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		p := filepath.Join(dir, name)
@@ -282,8 +302,8 @@ profiles:
       effort: xhigh
 `)
 
-	// Replacement is of the ENTIRE entry: gufo's embedded requests/path
-	// are gone, only the file's version is live.
+	// An entry is its file, wholly: this gufo has only what is written
+	// here — the qwen3_8 effort recipes it used to pair with are gone.
 	if _, err := Build(Settings{EndpointType: "gufo", ProfileID: "qwen3_8",
 		EndpointsFile: endpoints, ProfilesFile: profiles}); err == nil {
 		t.Fatal("gufo/qwen3_8 accepted with the whole entry replaced (effort recipe is gone)")
@@ -312,11 +332,13 @@ profiles:
 	}
 
 	// Unknown explicit selections fail with the ID in the message.
-	if _, err := Build(Settings{EndpointType: "nope", ProfilesFile: profiles}); err == nil ||
+	if _, err := Build(Settings{EndpointType: "nope",
+		EndpointsFile: repoEndpoints, ProfilesFile: profiles}); err == nil ||
 		!strings.Contains(err.Error(), `"nope"`) {
 		t.Errorf("unknown endpoint_type: %v", err)
 	}
-	if _, err := Build(Settings{EndpointType: "gufo", ProfileID: "nope"}); err == nil ||
+	if _, err := Build(Settings{EndpointType: "gufo", ProfileID: "nope",
+		EndpointsFile: repoEndpoints}); err == nil ||
 		!strings.Contains(err.Error(), `"nope"`) {
 		t.Errorf("unknown thinking_profile: %v", err)
 	}
@@ -335,8 +357,8 @@ profiles:
 }
 
 // The explicit switch (llm.thinking_selector_enable): it outranks the
-// legacy shape both ways, and enabling alone applies the built-in
-// endpoint-type and profile defaults.
+// legacy shape both ways, and enabling still demands the endpoint type
+// and the catalogue files its IDs come from.
 func TestSelectorEnableSwitch(t *testing.T) {
 	yes, no := true, false
 	// The switch alone is not a selection: the endpoint type must still
@@ -345,18 +367,29 @@ func TestSelectorEnableSwitch(t *testing.T) {
 		!strings.Contains(err.Error(), "endpoint_type") {
 		t.Errorf("bare enable must fail without an endpoint_type: %v", err)
 	}
-	// Type spelled out, profile left empty → "none": runtime exists but
-	// the list stays hidden.
-	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo"}); rt.SelectorVisible() {
+	// Type named, catalogue file missing: the file error precedes any
+	// lookup — nothing is embedded to fall back on.
+	if _, err := Build(Settings{SelectorEnable: &yes, EndpointType: "gufo",
+		ProfilesFile: repoProfiles}); err == nil ||
+		!strings.Contains(err.Error(), "endpoints_file") {
+		t.Errorf("enable without endpoints_file must fail: %v", err)
+	}
+	// Type spelled out, profile left empty → built-in "none": runtime
+	// exists but the list stays hidden (no profiles_file needed).
+	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo",
+		EndpointsFile: repoEndpoints}); rt.SelectorVisible() {
 		t.Error(`enabled selection without a profile must behave like "none"`)
 	}
-	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo", ProfileID: "qwen3_8"}); !rt.SelectorVisible() {
+	if rt := mustBuild(t, catSettings(Settings{SelectorEnable: &yes,
+		EndpointType: "gufo", ProfileID: "qwen3_8"})); !rt.SelectorVisible() {
 		t.Error("enable with the full pair must show the selector")
 	}
-	if rt, err := Build(Settings{EndpointType: "gufo", ProfileID: "qwen3_8", SelectorEnable: &no}); rt != nil || err != nil {
+	if rt, err := Build(catSettings(Settings{EndpointType: "gufo", ProfileID: "qwen3_8",
+		SelectorEnable: &no})); rt != nil || err != nil {
 		t.Errorf("explicit disable must override a spelled-out selection: %v (%v)", rt, err)
 	}
-	if rt := mustBuild(t, Settings{SelectorEnable: &yes, EndpointType: "gufo", ProfileID: "none"}); rt.SelectorVisible() {
+	if rt := mustBuild(t, catSettings(Settings{SelectorEnable: &yes,
+		EndpointType: "gufo", ProfileID: "none"})); rt.SelectorVisible() {
 		t.Error(`thinking_profile "none" must hide the list even when enabled`)
 	}
 }
@@ -407,6 +440,9 @@ func TestStrictParsing(t *testing.T) {
 			}
 			set := Settings{EndpointType: "gufo"}
 			if tc.file == "p" {
+				// The endpoint side is real, so the failure under test
+				// is the profile file's own.
+				set.EndpointsFile = repoEndpoints
 				set.ProfilesFile = p
 				set.ProfileID = "a"
 			} else {
@@ -471,8 +507,8 @@ func TestFingerprintAndSavedResolution(t *testing.T) {
 		t.Error("fingerprint contains key-like material")
 	}
 	// A different profile/endpoint type means a different context.
-	other := mustBuild(t, Settings{EndpointURL: "http://192.168.0.2:8080/v1",
-		EndpointType: "vllm", ProfileID: "qwen3_8"})
+	other := mustBuild(t, catSettings(Settings{EndpointURL: "http://192.168.0.2:8080/v1",
+		EndpointType: "vllm", ProfileID: "qwen3_8"}))
 	if other.Fingerprint("Qwen3.8 Flash Next") == ctx {
 		t.Error("fingerprint ignores endpoint_type")
 	}

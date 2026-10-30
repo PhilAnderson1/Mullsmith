@@ -40,8 +40,8 @@ llm:
   vision_max_image_bytes: 1MiB
 
   thinking_selector_enable: true
-  endpoints_file: ./endpoints.yaml      # overlay on the embedded endpoint catalogue
-  profiles_file: ./thinking-profiles.yaml # overlay on the embedded profile catalogue
+  endpoints_file: ./endpoints.yaml      # the endpoint catalogue (sole source)
+  profiles_file: ./thinking-profiles.yaml # the thinking-profile catalogue (sole source)
   endpoint_type: gufo
   thinking_profile: qwen3_8
 ```
@@ -51,8 +51,8 @@ The five fields are:
 | Field | Meaning | When omitted or empty |
 |---|---|---|
 | `llm.thinking_selector_enable` | Explicitly shows (`true`) or hides (`false`) the thinking selector | Legacy rule: a selector exists exactly when an `endpoint_type` (or non-`none` `thinking_profile`) is spelled out |
-| `llm.endpoints_file` | Extra endpoint catalogue path, per-ID over the embedded catalogue | Use embedded endpoint definitions |
-| `llm.profiles_file` | Extra thinking-profile catalogue path, per-ID over the embedded catalogue | Use embedded thinking profiles |
+| `llm.endpoints_file` | Endpoint catalogue path — the only place endpoint IDs come from | A configured `endpoint_type` is a startup error |
+| `llm.profiles_file` | Thinking-profile catalogue path — the only place profile IDs come from | Allowed only when the profile is `none` (the built-in no-choices entry) |
 | `llm.endpoint_type` | Exact ID under `endpoints` | Retain the existing transport; no thinking selector. With the switch on, it is required |
 | `llm.thinking_profile` | Exact ID under `profiles` | Use `none`; no thinking selector |
 
@@ -66,7 +66,7 @@ Do not add a `default_thinking` configuration field. A new conversation starts a
 
 `show_reasoning` continues to control whether reasoning is displayed. It must not enable or disable model thinking. With the example configuration, a user may request High thinking while `show_reasoning: false` keeps the reasoning hidden.
 
-Embed the supplied catalogues using Go's embedding facility so the application still ships as one binary. When an external file is configured, parse and validate it, then replace embedded entries by matching ID and add new IDs. Replacement is of the entire entry, not a recursive merge. This lets a small external file add one profile or replace one endpoint definition without copying the catalogue. Explicitly configured unreadable or invalid files are startup errors. Omitted files are not errors. Reload on application restart; hot reload is unnecessary.
+The supplied catalogues are external YAML files and the sole source of endpoint and profile IDs: nothing is baked into the binary beyond the built-in no-choices profile `none`, which is why `profiles_file` may be omitted exactly when the profile is `none`. An entry is exactly what its file says, so editing, adding and deleting all take effect on restart. Explicitly configured unreadable or invalid files are startup errors, as is a selection whose catalogue file is missing (`endpoint_type` without `endpoints_file`, a named `thinking_profile` without `profiles_file`). Files configured but not yet referenced are still parsed and validated, so typos fail at startup. Reload on application restart; hot reload is unnecessary.
 
 The new catalogue schema is version 1. It replaces the earlier research-heavy `endpoints.yaml` prototype; do not attempt to parse that prototype as this schema.
 
@@ -258,7 +258,7 @@ The coding agent should:
 
 1. Inspect the existing `llm` configuration struct, request builder, composer controls, streaming decoder, tool loop and chat persistence before editing.
 2. Add typed catalogue structs and strict YAML parsing. Reject duplicate keys, unknown structural fields, unsupported schema versions, malformed entries, unknown modes, empty labels/IDs, duplicate option IDs, invalid placeholders and nonpositive/noninteger budgets. Request fragments themselves allow arbitrary JSON-compatible field names.
-3. Add embedded defaults, optional per-ID external replacement and cross-reference validation. Do not require users to compile plugins for a new JSON field convention.
+3. Load the catalogues from the configured external files only (nothing embedded) and cross-reference the selection against them. Do not require users to recompile for a new JSON field convention.
 4. Add the effective-choice computation and a small Thinking selector near the composer or existing generation controls. Expose only effective choices to the frontend; keep credentials and request templates server-side.
 5. Add the backend choice parameter, per-conversation persistence and generic fragment renderer. Keep all tool continuations consistent with the request snapshot.
 6. Integrate with the existing transport and verify its history/streaming behaviour. Reject selection of protocols the build does not implement; do not add native adapters as a prerequisite.
@@ -267,7 +267,7 @@ The coding agent should:
 Required automated tests:
 
 - The user's original `llm` block loads unchanged, and omitting all four new fields preserves legacy behaviour. The extended block loads with the exact existing values and four new fields shown in section 2.
-- External files can add a new ID and entirely replace an embedded entry; invalid referenced IDs fail clearly.
+- Catalogue files are the sole source: a new ID is available, an entry is exactly what its file says, a selection without its catalogue file fails clearly, and invalid referenced IDs fail clearly.
 - Qwen3.8 High sends the string `xhigh`; GPT-OSS High sends `high`; neither GLM-5.3 nor thinking-only Qwen exposes Off.
 - Every supplied profile option is checked against each endpoint recipe/allowlist. Missing recipes exclude choices, with the documented warning/error behaviour.
 - Default emits no thinking override. Switching High to Off or Default leaves no stale effort/budget fields.

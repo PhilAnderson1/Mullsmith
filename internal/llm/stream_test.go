@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -509,6 +510,22 @@ func captureServer(t *testing.T) (*httptest.Server, func() (string, map[string]a
 	}
 }
 
+// gufoQwen38 resolves the shipped gufo/qwen3_8 pair from the repo's
+// catalogue files — the catalogues live only there now.
+func gufoQwen38(t *testing.T) *thinking.Runtime {
+	t.Helper()
+	rt, err := thinking.Build(thinking.Settings{
+		EndpointType:  "gufo",
+		ProfileID:     "qwen3_8",
+		EndpointsFile: filepath.Join("..", "..", "configs", "endpoints.yaml"),
+		ProfilesFile:  filepath.Join("..", "..", "configs", "thinking-profiles.yaml"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rt
+}
+
 // The endpoint definition's path joins the base URL exactly once — the
 // reverse-proxy prefix in the URL survives.
 func TestClientRouteFromEndpointDefinition(t *testing.T) {
@@ -517,11 +534,7 @@ func TestClientRouteFromEndpointDefinition(t *testing.T) {
 	cfg.LLM.Endpoint = ts.URL + "/proxy/v1"
 	cfg.LLM.Model = "m"
 	cfg.LLM.MaxTokensResponse = 128
-	rt, err := thinking.Build(thinking.Settings{EndpointType: "gufo", ProfileID: "qwen3_8"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Thinking = rt
+	cfg.Thinking = gufoQwen38(t)
 	c := NewClient(cfg, nil)
 	if err := c.Stream(context.Background(), "", nil, func(Delta) error { return nil }); err != nil {
 		t.Fatal(err)
@@ -540,10 +553,7 @@ func TestStreamThinkingFragment(t *testing.T) {
 	cfg.LLM.Endpoint = ts.URL + "/v1"
 	cfg.LLM.Model = "m"
 	cfg.LLM.MaxTokensResponse = 128
-	rt, err := thinking.Build(thinking.Settings{EndpointType: "gufo", ProfileID: "qwen3_8"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := gufoQwen38(t)
 	cfg.Thinking = rt
 	c := NewClient(cfg, nil)
 

@@ -30,8 +30,8 @@ import (
 // through config.Load already carries the built runtime — startup would
 // have failed otherwise; it only gets its hidden-choice warnings logged.
 // Struct-literal configs (tests) that selected an endpoint type/profile
-// are resolved here from the embedded catalogues so the feature works
-// exactly as the loader would run it.
+// are resolved here from the configured catalogue files so the feature
+// works exactly as the loader would run it.
 func resolveThinking(cfg *config.Config, logger *slog.Logger) {
 	if cfg.Thinking == nil {
 		if cfg.LLM.EndpointType == "" && (cfg.LLM.ThinkingProfile == "" || cfg.LLM.ThinkingProfile == "none") {

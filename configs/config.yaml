@@ -89,15 +89,16 @@ llm:
   # True shows it, with endpoint_type selecting the request convention
   # for the URL above (must name a catalogue entry) and thinking_profile
   # the choices offered for the model above ("none" hides the list). The
-  # two files are overlays on the catalogues embedded in the binary: an
-  # entry with a matching ID is replaced wholesale, a new ID is added;
-  # relative paths resolve against this file's directory. There is
-  # deliberately no default_thinking: every conversation starts at the
-  # built-in Default (sends no override) and the user's pick is
-  # conversation state.
+  # two files ARE the catalogues — nothing is baked into the binary, so
+  # an edit, an addition or a deletion all take effect on restart.
+  # endpoint_type needs endpoints_file; a named thinking_profile needs
+  # profiles_file ("none" is built in). Relative paths resolve against
+  # this file's directory. There is deliberately no default_thinking:
+  # every conversation starts at the built-in Default (sends no override)
+  # and the user's pick is conversation state.
   thinking_selector_enable: false # true = show the dropdown
-  endpoints_file: ./endpoints.yaml        # overlay on the embedded endpoint catalogue
-  profiles_file: ./thinking-profiles.yaml # overlay on the embedded profile catalogue
+  endpoints_file: ./endpoints.yaml        # request-field recipes per endpoint type
+  profiles_file: ./thinking-profiles.yaml # choice lists per model
   endpoint_type: gufo             # must speak protocol openai_chat
   thinking_profile: qwen3_8       # or "none" to hide the list
 

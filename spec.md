@@ -170,8 +170,10 @@ llm:
   vision_max_image_bytes: 4MiB           # per-picture cap for view_image
   # Thinking control (thinking-control-specification.md, §6.3). All four
   # optional: omitted together, no selector appears and requests keep the
-  # plain transport. The files extend the catalogues embedded in the binary
-  # per ID — a matching ID replaces that entry wholesale, a new ID adds it.
+  # plain transport. The two files ARE the catalogues — nothing is baked
+  # into the binary, so edits, additions and deletions all take effect on
+  # restart. `endpoint_type` requires `endpoints_file`; a named
+  # `thinking_profile` requires `profiles_file` ("none" is built in).
   # Relative paths resolve against this config file's directory.
   endpoints_file: ""                     # e.g. ./endpoints.yaml (request-field recipes)
   profiles_file: ""                      # e.g. ./thinking-profiles.yaml (choice lists)
@@ -535,8 +537,10 @@ Event taxonomy (SSE `event:` field): `start`, `token`, `reasoning`, `title`,
 
 `internal/thinking` owns the feature: two catalogues (endpoints = how one request convention
 expresses a choice as JSON fields; profiles = the ordered choices for the configured model),
-both shipped in the binary and extendable per ID by `llm.endpoints_file`/`llm.profiles_file`
-— a new profile or mapping is a YAML edit plus a restart, never a recompile. `llm.thinking_selector_enable`
+read from `llm.endpoints_file`/`llm.profiles_file`, which are their **sole source** — nothing is
+baked into the binary beyond the no-choices profile `none`, so adding, editing or deleting an
+entry is a YAML edit plus a restart, never a recompile. A selection whose catalogue file is
+missing is a configuration error. `llm.thinking_selector_enable`
 shows or hides the selector outright (enabled it still requires an `endpoint_type`), and omitting the
 switch keeps the legacy rule (a selector exists exactly when one of type/profile is spelled out). `config.Load`
 builds the runtime after `Validate` (which stays pure); an unreadable configured file, an

@@ -32,6 +32,32 @@ func writeCfg(t *testing.T, body string) string {
 	return p
 }
 
+// repoCatalogueLine points a config at one shipped catalogue file by
+// absolute path — a config under test lives in a temp directory, where
+// relative paths resolve differently (the subject of
+// TestLoadThinkingExtended instead).
+func repoCatalogueLine(t *testing.T, name string) string {
+	t.Helper()
+	p, err := filepath.Abs(filepath.Join("..", "..", "configs", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch name {
+	case "endpoints.yaml":
+		return fmt.Sprintf("  endpoints_file: %q\n", p)
+	case "thinking-profiles.yaml":
+		return fmt.Sprintf("  profiles_file: %q\n", p)
+	}
+	t.Fatalf("unknown catalogue %q", name)
+	return ""
+}
+
+// catalogueTail carries both shipped catalogue files.
+func catalogueTail(t *testing.T) string {
+	t.Helper()
+	return repoCatalogueLine(t, "endpoints.yaml") + repoCatalogueLine(t, "thinking-profiles.yaml")
+}
+
 func TestLoadMinimalAndDefaults(t *testing.T) {
 	cfg, err := Load(writeCfg(t, minimalYAML))
 	if err != nil {
@@ -863,14 +889,40 @@ func TestLoadThinkingOmittedIsLegacy(t *testing.T) {
 // the selected combination resolves to the documented choice list.
 func TestLoadThinkingExtended(t *testing.T) {
 	dir := t.TempDir()
-	// Small overlay files: adding an ID must not disturb the selection
-	// (the embedded gufo/qwen3_8 entries stay live untouched).
-	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(
-		"schema_version: 1\nendpoints:\n  extra:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: true}}\n"), 0o600); err != nil {
+	// The files ARE the catalogues now: they define the selected gufo
+	// and qwen3_8 entries, alongside an extra ID each that must not
+	// disturb the selection.
+	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
+schema_version: 1
+endpoints:
+  gufo:
+    protocol: openai_chat
+    path: /chat/completions
+    requests:
+      'off':
+        chat_template_kwargs: {enable_thinking: false}
+      effort:
+        chat_template_kwargs: {enable_thinking: true}
+        reasoning_effort: $effort
+  extra:
+    protocol: openai_chat
+    path: /c
+    requests: {'off': {x: true}}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "thinking-profiles.yaml"), []byte(
-		"schema_version: 1\nprofiles:\n  operator_p:\n    options: []\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "thinking-profiles.yaml"), []byte(`
+schema_version: 1
+profiles:
+  qwen3_8:
+    options:
+    - {id: 'off', label: 'Off', mode: 'off'}
+    - {id: low, label: Low, mode: effort, effort: low}
+    - {id: medium, label: Medium, mode: effort, effort: medium}
+    - {id: high, label: High, mode: effort, effort: xhigh}
+  operator_p:
+    options: []
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	body := `
@@ -944,7 +996,7 @@ func TestLoadThinkingFailures(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Load(writeCfg(t, minimalYAML+"  "+tc.tail)); err == nil {
+			if _, err := Load(writeCfg(t, minimalYAML+catalogueTail(t)+"  "+tc.tail)); err == nil {
 				t.Errorf("config accepted: %s", tc.tail)
 			}
 		})
@@ -952,6 +1004,23 @@ func TestLoadThinkingFailures(t *testing.T) {
 	t.Run("unreadable file", func(t *testing.T) {
 		if _, err := Load(writeCfg(t, minimalYAML+"  endpoints_file: ./gone.yaml\n  endpoint_type: gufo\n")); err == nil {
 			t.Error("missing endpoints_file accepted")
+		}
+	})
+	// Nothing is embedded: a selection without the file its ID lives in
+	// is a startup error, not a silent fallback.
+	t.Run("selection without its catalogue file", func(t *testing.T) {
+		if _, err := Load(writeCfg(t, minimalYAML+"  endpoint_type: gufo\n")); err == nil {
+			t.Error("endpoint_type without endpoints_file accepted")
+		}
+		// Endpoint catalogue present, profile named without its file.
+		if _, err := Load(writeCfg(t, minimalYAML+repoCatalogueLine(t, "endpoints.yaml")+
+			"  endpoint_type: gufo\n  thinking_profile: qwen3_8\n")); err == nil {
+			t.Error("thinking_profile without profiles_file accepted")
+		}
+		// "none" is built in, so the profile file stays optional then.
+		if _, err := Load(writeCfg(t, minimalYAML+repoCatalogueLine(t, "endpoints.yaml")+
+			"  endpoint_type: gufo\n")); err != nil {
+			t.Errorf("endpoint type without a profile must load (built-in none): %v", err)
 		}
 	})
 }
@@ -965,7 +1034,7 @@ func TestLoadThinkingSelectorEnable(t *testing.T) {
 		}
 	})
 	t.Run("enable with the full pair shows the selector", func(t *testing.T) {
-		cfg, err := Load(writeCfg(t, minimalYAML+"  thinking_selector_enable: true\n  endpoint_type: gufo\n  thinking_profile: qwen3_8\n"))
+		cfg, err := Load(writeCfg(t, minimalYAML+catalogueTail(t)+"  thinking_selector_enable: true\n  endpoint_type: gufo\n  thinking_profile: qwen3_8\n"))
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}

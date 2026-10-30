@@ -262,10 +262,12 @@ type LLM struct {
 	// transport is kept and no thinking selector appears. When enabled
 	// true, endpoint_type must name a catalogue entry (the sample config
 	// shows the usual pair); thinking_profile may stay empty for "none".
-	// The two files extend the embedded catalogues per ID (relative paths
-	// resolve against this config file's directory). Omitting the switch
-	// entirely keeps the legacy rule: a selector exists exactly when an
-	// endpoint type (or non-"none" profile) is spelled out. There is no
+	// The two files are the sole source of the catalogues — nothing is
+	// built in beyond "none" — so endpoint_type requires endpoints_file
+	// and a named profile requires profiles_file (relative paths resolve
+	// against this config file's directory). Omitting the switch entirely
+	// keeps the legacy rule: a selector exists exactly when an endpoint
+	// type (or non-"none" profile) is spelled out. There is no
 	// default_thinking here on purpose: a conversation starts at the
 	// built-in Default and the user's choice is conversation state, not
 	// another global LLM setting.
@@ -541,11 +543,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	c.resolvePaths()
-	// The thinking runtime reads its catalogues (embedded, plus any
-	// operator files), so it is built here rather than inside the pure
-	// Validate: an explicitly configured unreadable or invalid file is a
-	// startup error, and the selected endpoint/profile combination must
-	// be cross-checked before the server ever serves a choice list.
+	// The thinking runtime reads its catalogues from the configured
+	// files, so it is built here rather than inside the pure Validate: an
+	// explicitly configured unreadable or invalid file, or a selection
+	// whose file is missing, is a startup error, and the selected
+	// endpoint/profile combination must be cross-checked before the
+	// server ever serves a choice list.
 	rt, err := thinking.Build(thinking.Settings{
 		EndpointURL:    c.LLM.Endpoint,
 		EndpointType:   c.LLM.EndpointType,

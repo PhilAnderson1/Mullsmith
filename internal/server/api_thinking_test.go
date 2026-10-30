@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,13 +17,16 @@ import (
 	"mullsmith/internal/store"
 )
 
-// thinkingCfg: the gufo/qwen3_8 combination resolved from the embedded
-// catalogues by server.New (struct-literal configs carry no runtime).
+// thinkingCfg: the gufo/qwen3_8 combination resolved by server.New from
+// the repo's catalogue files (struct-literal configs carry no runtime,
+// and the catalogues only ever come from files).
 func thinkingCfg(t *testing.T, endpoint string) *config.Config {
 	cfg := chatCfg(t, endpoint)
 	cfg.LLM.Models = []string{"m1", "m2"}
 	cfg.LLM.EndpointType = "gufo"
 	cfg.LLM.ThinkingProfile = "qwen3_8"
+	cfg.LLM.EndpointsFile = filepath.Join("..", "..", "configs", "endpoints.yaml")
+	cfg.LLM.ProfilesFile = filepath.Join("..", "..", "configs", "thinking-profiles.yaml")
 	cfg.Tools.Agent.MaxToolRounds = 4
 	return cfg
 }
