@@ -268,7 +268,6 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	defer cancel()
 	stop := c.watchStorage(runCtx, cancel, root, inv.UserID)
 	out, err := c.Runner.Run(runCtx, inv.UserID, runner.Request{
-		RuntimeID:  args.Runtime,
 		Binary:     binary,
 		ScratchDir: userRoot,
 		WorkDir:    workDir,

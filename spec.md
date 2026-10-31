@@ -179,7 +179,6 @@ llm:
                                        # stays text-only: plain manifest, no
                                        # view_image ever offered to it
   default_temperature: 0.7
-  request_timeout: 5m
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
   vision_max_image_bytes: 4MiB           # per-picture cap for view_image (all vision models)
   # Thinking control (thinking-control-specification.md, §6.3). All three

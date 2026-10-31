@@ -44,7 +44,7 @@ func clientFor(ts *httptest.Server, transport http.RoundTripper) *Client {
 // collect drains a Stream into one content/reasoning string.
 func collect(t *testing.T, c *Client, msgs []ChatMessage) (content, reasoning string, usage int64, err error) {
 	t.Helper()
-	err = c.Stream(context.Background(), "", msgs, func(d Delta) error {
+	err = c.StreamTools(context.Background(), "", msgs, nil, nil, func(d Delta) error {
 		content += d.Content
 		reasoning += d.Reasoning
 		if d.Usage > 0 {
@@ -101,7 +101,7 @@ func TestStreamUsageCompletionTokens(t *testing.T) {
 	ts := sseServer(t, body)
 
 	var usage, completion int64
-	err := clientFor(ts, nil).Stream(context.Background(), "", nil, func(d Delta) error {
+	err := clientFor(ts, nil).StreamTools(context.Background(), "", nil, nil, nil, func(d Delta) error {
 		if d.Usage > 0 {
 			usage = d.Usage
 		}
@@ -265,7 +265,7 @@ func TestStreamCancelAborts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan error, 1)
 	go func() {
-		err := clientFor(ts, nil).Stream(ctx, "", nil, func(Delta) error { return nil })
+		err := clientFor(ts, nil).StreamTools(ctx, "", nil, nil, nil, func(Delta) error { return nil })
 		got <- err
 	}()
 	time.Sleep(100 * time.Millisecond) // let the first delta arrive
@@ -311,7 +311,7 @@ func TestStreamRequestBody(t *testing.T) {
 	cfg.LLM.DefaultTemperature = 0.7
 
 	c := NewClient(cfg, nil)
-	if err := c.Stream(context.Background(), "other-model", []ChatMessage{{Role: "user", Content: "x"}},
+	if err := c.StreamTools(context.Background(), "other-model", []ChatMessage{{Role: "user", Content: "x"}}, nil, nil,
 		func(Delta) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestStreamToolCallFragments(t *testing.T) {
 	var frags []ToolCallDelta
 	var finish string
 	var done bool
-	err := c.Stream(context.Background(), "", nil, func(d Delta) error {
+	err := c.StreamTools(context.Background(), "", nil, nil, nil, func(d Delta) error {
 		frags = append(frags, d.ToolCalls...)
 		if d.Finish != "" {
 			finish = d.Finish
@@ -414,7 +414,7 @@ func TestStreamWithoutToolsOmitsFields(t *testing.T) {
 	}))
 	defer ts.Close()
 	c := clientFor(ts, nil)
-	if err := c.Stream(context.Background(), "m", []ChatMessage{{Role: "user", Content: "hi"}},
+	if err := c.StreamTools(context.Background(), "m", []ChatMessage{{Role: "user", Content: "hi"}}, nil, nil,
 		func(Delta) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +536,7 @@ func TestClientRouteFromEndpointDefinition(t *testing.T) {
 	cfg.LLM.MaxTokensResponse = 128
 	cfg.Thinking = gufoQwen38(t)
 	c := NewClient(cfg, nil)
-	if err := c.Stream(context.Background(), "", nil, func(Delta) error { return nil }); err != nil {
+	if err := c.StreamTools(context.Background(), "", nil, nil, nil, func(Delta) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if path, _ := last(); path != "/proxy/v1/chat/completions" {

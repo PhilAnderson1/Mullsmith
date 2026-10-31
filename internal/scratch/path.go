@@ -96,15 +96,6 @@ func Resolve(root, userID, rel string) (string, error) {
 	return filepath.Join(append([]string{dir}, segs...)...), nil
 }
 
-// Within reports whether abs is dir itself or below it (both cleaned paths).
-func Within(dir, abs string) bool {
-	rel, err := filepath.Rel(dir, abs)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}
-
 // --- fd-pinned operations ---------------------------------------------------
 
 type openResult struct {
@@ -369,16 +360,6 @@ func OpenDir(root, userID, rel string) (*os.File, error) {
 		return nil, mapOpenErr(err)
 	}
 	return os.NewFile(uintptr(fd), or.final), nil
-}
-
-// ReadDir lists a directory inside the user's scratchpad.
-func ReadDir(root, userID, rel string) ([]fs.DirEntry, error) {
-	f, err := OpenDir(root, userID, rel)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return f.ReadDir(-1)
 }
 
 // ReadDirLimit lists at most limit entries of a directory inside the user's

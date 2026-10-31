@@ -144,22 +144,15 @@ var (
 	ErrAborted = errors.New("generation aborted")
 )
 
-// Stream posts the chat route with stream:true and invokes onDelta for
-// every parsed piece of content/reasoning (plus one final Done delta).
+// StreamTools streams the chat route with stream:true and invokes onDelta
+// for every parsed piece of content/reasoning (plus one final Done delta).
 // Cancelling ctx aborts the upstream request. Lenient parsing per spec §6.2:
 // unknown fields ignored, malformed chunk lines skipped, a stream that
 // closes without [DONE] is tolerated.
 //
 // Retry policy: none mid-stream; one retry on connection-refused before the
-// first delta.
-func (c *Client) Stream(ctx context.Context, model string, msgs []ChatMessage,
-	onDelta func(Delta) error,
-) error {
-	return c.StreamTools(ctx, model, msgs, nil, nil, onDelta)
-}
-
-// StreamTools is Stream with tool specs advertised (spec §6.1 step 3) and
-// an optional thinking fragment: the already-rendered JSON fields one
+// first delta. Tool specs are advertised (spec §6.1 step 3) along with an
+// optional thinking fragment: the already-rendered JSON fields one
 // thinking choice adds (thinking-control-specification.md §6), deep-merged
 // into every request attempt. Callers render it once per generation, so a
 // selection change mid-flight cannot reach this stream's continuations;

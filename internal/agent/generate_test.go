@@ -32,7 +32,7 @@ func genFor(t *testing.T, ts *httptest.Server) *Generator {
 	cfg.LLM.Endpoint = ts.URL + "/v1"
 	cfg.LLM.Models = []config.LLMModel{{ID: "test-model", Default: true}}
 	cfg.LLM.MaxTokensResponse = 128
-	return &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	return &Generator{LLM: llm.NewClient(cfg, nil)}
 }
 
 func TestRoundAccumulatesToolCallsByIndex(t *testing.T) {

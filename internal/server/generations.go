@@ -150,18 +150,6 @@ func (r *genRegistry) Abort(genID, userID string) bool {
 	return true
 }
 
-func (r *genRegistry) CountForUser(userID string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	n := 0
-	for _, g := range r.byID {
-		if g.UserID == userID {
-			n++
-		}
-	}
-	return n
-}
-
 func (r *genRegistry) Count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

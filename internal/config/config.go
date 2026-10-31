@@ -271,9 +271,14 @@ type LLM struct {
 	// no marking at all — Validate still requires at least one entry).
 	Models             []LLMModel `yaml:"models"`
 	DefaultTemperature float64    `yaml:"default_temperature"`
-	RequestTimeout     Duration   `yaml:"request_timeout"`
-	MaxTokensResponse  int        `yaml:"max_tokens_response"`
-	ShowReasoning      bool       `yaml:"show_reasoning"`
+	// RequestTimeout is retired: no request path ever read it (streaming
+	// deliberately carries no global client timeout, and the one
+	// non-streaming quest bounds itself). It exists only so Validate can
+	// tell operators running old configs what changed instead of failing
+	// on an unknown key.
+	RequestTimeout    *Duration `yaml:"request_timeout"` // retired
+	MaxTokensResponse int       `yaml:"max_tokens_response"`
+	ShowReasoning     bool      `yaml:"show_reasoning"`
 	// VisionMaxImageBytes is the per-picture cap for view_image across
 	// all vision models (default 4 MiB); which models may see at all is
 	// per entry (llm.models[].vision).
@@ -927,9 +932,6 @@ func (c *Config) setDefaults() {
 			c.LLM.Models[0].Default = true
 		}
 	}
-	if c.LLM.RequestTimeout == 0 {
-		c.LLM.RequestTimeout = Duration(5 * time.Minute)
-	}
 	if c.LLM.VisionMaxImageBytes == 0 {
 		c.LLM.VisionMaxImageBytes = 4 << 20
 	}
@@ -1044,7 +1046,6 @@ func (c *Config) Validate() error {
 		{"scratchpad.artifact_ttl", c.Scratchpad.ArtifactTTL},
 		{"scratchpad.work_ttl", c.Scratchpad.WorkTTL},
 		{"scratchpad.code_execution.timeout", c.Scratchpad.CodeExec.Timeout},
-		{"llm.request_timeout", c.LLM.RequestTimeout},
 		{"tools.web_fetch.timeout", c.Tools.WebFetch.Timeout},
 	} {
 		if k.v < 0 {
@@ -1092,6 +1093,12 @@ func (c *Config) Validate() error {
 	// move instead of silently ignoring values an old config still carries.
 	if c.RateLimit.RequestsPerMinute != nil || c.RateLimit.ChatMessagesPerHour != nil {
 		f.bad("rate_limit: retired — move requests_per_minute and chat_messages_per_hour into the limits: block")
+	}
+	// llm.request_timeout: retired — nothing ever read it (streaming
+	// deliberately has no global client timeout; the titling quest bounds
+	// itself). Say so rather than let the strict decoder echo a raw key.
+	if c.LLM.RequestTimeout != nil {
+		f.bad("llm.request_timeout: retired — no request ever used this knob; delete this key")
 	}
 
 	if c.Database.Dir == "" {

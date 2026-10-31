@@ -54,16 +54,6 @@ func isBlockedIP(addr netip.Addr) bool {
 	return false
 }
 
-// SafeAddr reports whether an IP literal may be dialed (exported for
-// validation in URL pre-checks and tests).
-func SafeAddr(ip string) bool {
-	a, err := netip.ParseAddr(ip)
-	if err != nil {
-		return false
-	}
-	return !isBlockedIP(a)
-}
-
 func (t *GuardedTransport) lookup(ctx context.Context, host string) ([]string, error) {
 	if t.LookupHost != nil {
 		return t.LookupHost(ctx, host)

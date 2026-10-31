@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"mullsmith/internal/config"
 	"mullsmith/internal/llm"
 )
 
@@ -18,7 +17,7 @@ const (
 )
 
 // ErrClientGone is returned by the emit callback when the browser
-// disconnects; Generate maps it to status "aborted".
+// disconnects; Round maps it to status "aborted".
 var ErrClientGone = errors.New("client disconnected")
 
 // Result carries the final state of a generation for persistence.
@@ -37,15 +36,7 @@ type Result struct {
 
 // Generator streams one assistant turn against the configured endpoint.
 type Generator struct {
-	Cfg *config.Config
 	LLM *llm.Client
-}
-
-// Generate runs one round without tools (kept for callers that predate M4).
-func (g *Generator) Generate(ctx context.Context, model string,
-	msgs []llm.ChatMessage, emit func(kind, text string) error,
-) Result {
-	return g.Round(ctx, model, msgs, nil, nil, emit, nil)
 }
 
 // Round streams one model round (spec §6.1 step 3–5). Tool deltas are

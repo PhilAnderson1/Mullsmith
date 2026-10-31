@@ -37,7 +37,7 @@ export async function streamChat(path, body, handlers, signal) {
       /* non-JSON error body */
     }
     const err = (data && data.error) || {};
-    throw new ApiError(resp.status, err.code, err.message, err.request_id);
+    throw new ApiError(resp.status, err.code, err.message);
   }
 
   const reader = resp.body.getReader();

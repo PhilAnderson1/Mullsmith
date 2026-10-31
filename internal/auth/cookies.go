@@ -65,11 +65,3 @@ func CSRFCookie(token string, secure bool) *http.Cookie {
 		SameSite: http.SameSiteLaxMode,
 	}
 }
-
-// ClearCSRFCookie expires the CSRF cookie.
-func ClearCSRFCookie(secure bool) *http.Cookie {
-	c := CSRFCookie("", secure) // #nosec G124 -- see CSRFCookie
-	c.Expires = time.Unix(0, 0)
-	c.MaxAge = -1
-	return c
-}

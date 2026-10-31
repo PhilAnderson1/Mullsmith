@@ -217,7 +217,7 @@ func TestGenRegistryAtomicReservation(t *testing.T) {
 	}
 	r.Finish(g1)
 	r.Finish(g2)
-	if r.CountForUser("alice") != 0 || len(r.byID) != 0 {
+	if len(r.byID) != 0 {
 		t.Errorf("registry leaked after Finish: %+v", r.byID)
 	}
 

@@ -111,7 +111,7 @@ func testCgroupRoot(t *testing.T) string {
 			}
 		}
 		if _, err := b.Run(context.Background(), "userA", runner.Request{
-			RuntimeID: "sh", Binary: "/bin/sh", ScratchDir: s,
+			Binary: "/bin/sh", ScratchDir: s,
 			WorkDir: filepath.Join(s, "work"), Script: "true",
 		}); err != nil {
 			testCgroupErr = err
@@ -149,7 +149,7 @@ func scratchDirs(t *testing.T) dirs {
 
 func (d dirs) req(script string) runner.Request {
 	return runner.Request{
-		RuntimeID: "sh", Binary: "/bin/sh",
+		Binary:     "/bin/sh",
 		ScratchDir: d.scratch, WorkDir: d.work, Script: script,
 	}
 }

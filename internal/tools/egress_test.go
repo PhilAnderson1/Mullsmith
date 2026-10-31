@@ -6,10 +6,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 )
+
+// isBlockedLiteral applies the very predicate GuardedTransport dials by
+// (an unparseable literal counts as blocked).
+func isBlockedLiteral(s string) bool {
+	a, err := netip.ParseAddr(s)
+	return err != nil || isBlockedIP(a)
+}
 
 // fakeLookup injects DNS answers so the matrix exercises the blocklist
 // without touching real DNS (and simulates rebinding-adjacent answer sets).
@@ -43,16 +51,16 @@ func TestSSRFBlocklistMatrix(t *testing.T) {
 		"::ffff:192.168.1.1", // IPv4-mapped private
 	}
 	for _, ip := range blocked {
-		if SafeAddr(ip) {
-			t.Errorf("SafeAddr(%q) = true, want blocked", ip)
+		if !isBlockedLiteral(ip) {
+			t.Errorf("%q must be blocked", ip)
 		}
 	}
 	allowed := []string{
 		"8.8.8.8", "93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946",
 	}
 	for _, ip := range allowed {
-		if !SafeAddr(ip) {
-			t.Errorf("SafeAddr(%q) = false, want allowed", ip)
+		if isBlockedLiteral(ip) {
+			t.Errorf("%q must be allowed", ip)
 		}
 	}
 }

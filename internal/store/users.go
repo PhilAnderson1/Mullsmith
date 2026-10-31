@@ -49,6 +49,11 @@ func nilIfEmpty(s string) any {
 	return s
 }
 
+// CreateUser inserts a user row directly. Production paths never call it:
+// registration goes through Register (which also consumes an invite and
+// seeds the first conversation). Test fixtures use it precisely for that
+// difference — a user with no side effects, so conversation-counting
+// tests start from an empty thread list.
 func (d *DB) CreateUser(ctx context.Context, u *User) error {
 	if u.ID == "" {
 		u.ID = id.New()

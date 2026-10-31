@@ -54,14 +54,14 @@ func TestPasswordPolicy(t *testing.T) {
 	}
 }
 
-func TestValidEmail(t *testing.T) {
-	for _, ok := range []string{"a@b.co", "first.last+tag@sub.example.com"} {
-		if !ValidEmail(ok) {
-			t.Errorf("should be valid: %s", ok)
+func TestEmailValidityVerdicts(t *testing.T) {
+	for _, in := range []string{"a@b.co", "first.last+tag@sub.example.com"} {
+		if _, ok := NormalizeEmail(in); !ok {
+			t.Errorf("should be valid: %s", in)
 		}
 	}
 	for _, bad := range []string{"", "no-at", "a@b", "a@b.", "a b@c.de", "@b.co", strings.Repeat("x", 300) + "@b.co"} {
-		if ValidEmail(bad) {
+		if _, ok := NormalizeEmail(bad); ok {
 			t.Errorf("should be invalid: %q", bad)
 		}
 	}

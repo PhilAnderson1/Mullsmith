@@ -73,19 +73,6 @@ func ProbeModels(ctx context.Context, cfg *config.Config) ([]Model, error) {
 	return models, nil
 }
 
-// Probe returns just the model ids of ProbeModels.
-func Probe(ctx context.Context, cfg *config.Config) ([]string, error) {
-	models, err := ProbeModels(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(models))
-	for _, m := range models {
-		ids = append(ids, m.ID)
-	}
-	return ids, nil
-}
-
 // ContextLengthFor returns the reported window of one model id, and whether
 // the listing carried one at all.
 func ContextLengthFor(models []Model, want string) (int, bool) {

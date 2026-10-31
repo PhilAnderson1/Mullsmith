@@ -30,38 +30,3 @@ func (d *DB) InviteAvailable(ctx context.Context, code string) (bool, error) {
 	}
 	return usedBy == nil, nil
 }
-
-// InviteInfo is the admin-visible state of a code.
-type InviteInfo struct {
-	Code      string
-	CreatedAt time.Time
-	UsedBy    string // empty when unused
-	UsedAt    time.Time
-}
-
-// ListInvites returns all invites, newest first.
-func (d *DB) ListInvites(ctx context.Context) ([]InviteInfo, error) {
-	rows, err := d.sqlDB.QueryContext(ctx,
-		`SELECT code, created_at, COALESCE(used_by, ''), COALESCE(used_at, 0)
-		 FROM invites ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []InviteInfo
-	for rows.Next() {
-		var (
-			i               InviteInfo
-			created, usedAt int64
-		)
-		if err := rows.Scan(&i.Code, &created, &i.UsedBy, &usedAt); err != nil {
-			return nil, err
-		}
-		i.CreatedAt = time.Unix(created, 0)
-		if usedAt != 0 {
-			i.UsedAt = time.Unix(usedAt, 0)
-		}
-		out = append(out, i)
-	}
-	return out, rows.Err()
-}

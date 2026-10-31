@@ -91,9 +91,3 @@ func NormalizeEmail(raw string) (string, bool) {
 	}
 	return norm, true
 }
-
-// ValidEmail is the verdict-only form of NormalizeEmail.
-func ValidEmail(raw string) bool {
-	_, ok := NormalizeEmail(raw)
-	return ok
-}

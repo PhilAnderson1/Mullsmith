@@ -79,6 +79,16 @@ func TestParseRelAccepts(t *testing.T) {
 	}
 }
 
+// within is the test-side containment check for Resolve's lexical result
+// (production sandboxing is fd-based and needs no such predicate).
+func within(dir, abs string) bool {
+	rel, err := filepath.Rel(dir, abs)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 func TestResolveContainment(t *testing.T) {
 	root := newRoot(t)
 	for _, rel := range []string{".", "a", "a/b", "uploads/f.csv", "x/y/z"} {
@@ -86,7 +96,7 @@ func TestResolveContainment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve(%q): %v", rel, err)
 		}
-		if !Within(filepath.Join(root, testULID), got) {
+		if !within(filepath.Join(root, testULID), got) {
 			t.Errorf("Resolve(%q) = %q escapes the user root", rel, got)
 		}
 	}
@@ -122,9 +132,9 @@ func TestFileOpsRoundTrip(t *testing.T) {
 		t.Errorf("Stat = %v, %v", fi, err)
 	}
 
-	entries, err := ReadDir(root, testULID, "uploads/reports/2026")
+	entries, _, err := ReadDirLimit(root, testULID, "uploads/reports/2026", 100)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "q3.csv" {
-		t.Errorf("ReadDir = %v, %v", entries, err)
+		t.Errorf("ReadDirLimit = %v, %v", entries, err)
 	}
 
 	if err := Remove(root, testULID, "uploads/reports/2026/q3.csv"); err != nil {
@@ -225,8 +235,8 @@ func TestSymlinkedUserRootRejected(t *testing.T) {
 	if err := MkdirAll(root, testULID, "work/x"); !errors.Is(err, ErrPathUnsafe) {
 		t.Errorf("MkdirAll = %v, want ErrPathUnsafe", err)
 	}
-	if _, err := ReadDir(root, testULID, "."); !errors.Is(err, ErrPathUnsafe) {
-		t.Errorf("ReadDir = %v, want ErrPathUnsafe", err)
+	if _, _, err := ReadDirLimit(root, testULID, ".", 100); !errors.Is(err, ErrPathUnsafe) {
+		t.Errorf("ReadDirLimit = %v, want ErrPathUnsafe", err)
 	}
 	if _, err := os.Lstat(filepath.Join(outside, "victim.txt")); err != nil {
 		t.Error("external tree must be untouched")
@@ -358,7 +368,7 @@ func FuzzPathContainment(f *testing.F) {
 			return
 		}
 		userRoot := filepath.Join(root, testULID)
-		if !Within(userRoot, got) {
+		if !within(userRoot, got) {
 			t.Fatalf("Resolve(%q) = %q escapes %q", rel, got, userRoot)
 		}
 		// And the resolved path must survive re-parsing (idempotence).

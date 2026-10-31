@@ -342,6 +342,20 @@ rate_limit:
 	}
 }
 
+// llm.request_timeout is retired — no request path ever read it. An old
+// config still spelling it must get a retirement message, not a silent
+// no-op (or a raw unknown-key complaint from the strict decoder).
+func TestRetiredRequestTimeout(t *testing.T) {
+	_, err := Load(writeCfg(t, minimalYAML+"  request_timeout: 5m\n"))
+	if err == nil {
+		t.Fatal("retired request_timeout accepted, want error")
+	}
+	if !strings.Contains(err.Error(), "request_timeout") ||
+		!strings.Contains(err.Error(), "retired") {
+		t.Errorf("error = %v, want a retirement message", err)
+	}
+}
+
 // TestShippedTemplateMirrorsCodeDefaults keeps configs/config.yaml honest:
 // every policy value it spells out must equal the default the program
 // applies when that key is absent (measured by Loading the minimal config).
@@ -398,6 +412,9 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 		// Retired with per-model picker entries: the choice list lives on
 		// llm.models entries now, and legacyModelKeys rejects this spelling.
 		"llm.thinking_profile": true,
+		// Retired 2026-10-31: no request path ever read it (streaming has
+		// no global client timeout by design; titling bounds itself).
+		"llm.request_timeout": true,
 	}
 	for path, codeDefault := range miniLeaf {
 		if _, ok := exceptions[path]; !ok && !leafEqual(codeDefault, tmplLeaf[path]) {
@@ -1034,7 +1051,6 @@ llm:
   endpoint: "http://192.168.0.2:8080/v1"
   api_key: ""
   default_temperature: 0.7
-  request_timeout: 5m
   max_tokens_response: 16384
   show_reasoning: false
   vision_max_image_bytes: 1MiB
@@ -1061,8 +1077,7 @@ llm:
 	if cfg.LLM.DefaultModelID() != "Qwen3.8 Flash Next" || cfg.LLM.ContextSizeFor("Qwen3.8 Flash Next") != 32768 ||
 		cfg.LLM.ContextSizeFor("quiet-model") != 0 ||
 		cfg.LLM.DefaultTemperature != 0.7 || cfg.LLM.MaxTokensResponse != 16384 ||
-		!cfg.LLM.VisionFor("Qwen3.8 Flash Next") || cfg.LLM.VisionFor("quiet-model") ||
-		cfg.LLM.RequestTimeout.D() != 5*time.Minute {
+		!cfg.LLM.VisionFor("Qwen3.8 Flash Next") || cfg.LLM.VisionFor("quiet-model") {
 		t.Errorf("existing llm values changed meaning: %+v", cfg.LLM)
 	}
 	if cfg.LLM.EndpointType != "gufo" ||

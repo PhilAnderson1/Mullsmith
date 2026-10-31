@@ -3,11 +3,10 @@
 // on any response), one ApiError type carrying the server envelope.
 
 export class ApiError extends Error {
-  constructor(status, code, message, requestId) {
+  constructor(status, code, message) {
     super(message || `HTTP ${status}`);
     this.status = status;
     this.code = code || "";
-    this.requestId = requestId || "";
   }
 }
 
@@ -30,7 +29,7 @@ async function finalize(resp) {
   }
   if (!resp.ok) {
     const err = (data && data.error) || {};
-    throw new ApiError(resp.status, err.code, err.message, err.request_id);
+    throw new ApiError(resp.status, err.code, err.message);
   }
   return data;
 }

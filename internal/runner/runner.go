@@ -27,12 +27,11 @@ import (
 var ErrBusy = errors.New("another code run is already in flight")
 
 // Request describes one execution. The caller resolves the interpreter from
-// the config allowlist; a RuntimeID that is not allowlisted never reaches a
-// Runner and Binary always comes from the server's own config, never the
-// model (§9.9 layer 2).
+// the config allowlist; an un-allowlisted runtime never reaches a Runner and
+// Binary always comes from the server's own config, never the model
+// (§9.9 layer 2).
 type Request struct {
-	RuntimeID string
-	Binary    string // allowlisted absolute path (host path)
+	Binary string // allowlisted absolute path (host path)
 	// ScratchDir is the user's scratchpad root (host path). The jail mounts
 	// it read-write at /scratchpad — the payload sees uploads/, artifacts/
 	// and work/ exactly as the fs_* tools do — with uploads/ overlaid

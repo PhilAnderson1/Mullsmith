@@ -60,14 +60,14 @@ func TestProbeModelsReadsWindows(t *testing.T) {
 	}
 }
 
-func TestProbeStillReturnsIDSOnly(t *testing.T) {
+func TestProbeModelsKeepsListingOrder(t *testing.T) {
 	ts := modelsServer(t, `{"data":[{"id":"a","context_length":9},{"id":"b"}]}`)
-	ids, err := Probe(context.Background(), probeCfg(ts))
+	models, err := ProbeModels(context.Background(), probeCfg(ts))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
-		t.Errorf("ids = %v", ids)
+	if len(models) != 2 || models[0].ID != "a" || models[1].ID != "b" {
+		t.Errorf("models = %v", models)
 	}
 }
 

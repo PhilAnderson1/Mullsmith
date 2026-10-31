@@ -17,10 +17,9 @@ const state = {
   // the composer once the conversation is actually open (spec §10 UX).
   focusOnOpen: false,
   currentConv: null,
-  messagesCursor: "",
   inflight: null, // live generation: { controller, genId, msgId, raw, ... }
   // uploads staged in the composer, sent as attachment_paths with the message
-  pending: [], // { path, name, size, uploading }
+  pending: [], // { path, download_url, name, size, uploading }
   filesOpen: false,
   filesKind: "",
   settingsOpen: false,
@@ -842,7 +841,6 @@ async function selectConversation(id) {
   try {
     state.currentConv = await api.getConversation(id);
     state.currentId = id;
-    state.messagesCursor = "";
     await loadFirstMessages();
     markActive();
     renderConversation();
@@ -874,7 +872,6 @@ async function loadFirstMessages() {
     // tool cards attached to the assistant message that proposed the call.
     for (const m of data.items) if (isDisplayable(m)) thread.appendChild(msgNode(m));
   }
-  state.messagesCursor = data.next_cursor;
   refreshLastAssistant();
   updateCtxMeter(lastContextUsed(data.items));
   scrollThreadToBottom();
@@ -895,7 +892,6 @@ function earlierButton(cursor) {
       // same ref so the whole page lands between the button and what was there.
       const ref = nextBtn ? nextBtn.nextSibling : host.firstChild;
       for (const m of data.items) if (isDisplayable(m)) host.insertBefore(msgNode(m), ref);
-      state.messagesCursor = data.next_cursor;
       refreshLastAssistant();
     } catch (err) {
       handleErr(err, "load earlier messages");
@@ -1117,9 +1113,6 @@ const TOOL_STATE_LABELS = {
 };
 
 function toolStateLabel(status) {
-  if (status === "ok") return "done";
-  if (status === "denied") return "denied";
-  if (status === "error") return "failed";
   return TOOL_STATE_LABELS[status] || status || "unknown";
 }
 
@@ -1180,7 +1173,6 @@ function renderToolResults(container, data) {
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     const title = document.createElement("span");
-    title.className = "tool-link-title";
     title.textContent = String(it.title || href).slice(0, 160);
     const host = document.createElement("span");
     host.className = "tool-link-host";
@@ -1218,18 +1210,17 @@ function attachApproval(card, st, d) {
   label.textContent = `Allow ${d.tool || "the tool"} to run?`;
   const allow = document.createElement("button");
   allow.type = "button";
-  allow.className = "btn small primary approval-allow";
+  allow.className = "btn small primary";
   allow.textContent = "Allow";
   const deny = document.createElement("button");
   deny.type = "button";
-  deny.className = "btn small ghost approval-deny";
+  deny.className = "btn small ghost";
   deny.textContent = "Deny";
   // §6.1/§9.9: code_run offers "always allow in this conversation".
   let rememberBox = null;
   if (d.rememberable) {
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.className = "approval-remember-input";
     const txt = document.createElement("span");
     txt.textContent = " Always allow in this conversation";
     rememberBox = document.createElement("label");
@@ -1429,6 +1420,9 @@ async function onAttachPick(ev) {
     try {
       const rec = await api.uploadFile(file);
       entry.path = rec.path;
+      // Carry the download URL through: the optimistic user bubble's file
+      // chip is built from it before the thread ever reloads.
+      entry.download_url = rec.download_url;
       entry.uploading = false;
     } catch (err) {
       state.pending = state.pending.filter((x) => x !== entry);

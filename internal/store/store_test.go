@@ -104,12 +104,15 @@ func TestRegisterConsumesInvite(t *testing.T) {
 		t.Error("user must not exist after failed invite register")
 	}
 
-	list, err := db.ListInvites(ctx)
-	if err != nil || len(list) != 1 {
-		t.Fatalf("ListInvites: %v %v", list, err)
+	// The consumption itself is the point of this test: read the row
+	// directly — there is no listing endpoint on purpose.
+	var usedBy *string
+	if err := db.sqlDB.QueryRowContext(ctx,
+		`SELECT used_by FROM invites WHERE code = 'gk-testcode'`).Scan(&usedBy); err != nil {
+		t.Fatalf("invite row after register: %v", err)
 	}
-	if list[0].UsedBy != u.ID {
-		t.Errorf("invite used_by = %q, want %q", list[0].UsedBy, u.ID)
+	if usedBy == nil || *usedBy != u.ID {
+		t.Errorf("invite used_by = %v, want %q", usedBy, u.ID)
 	}
 }
 

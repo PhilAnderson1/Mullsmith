@@ -36,7 +36,7 @@ func TestTitleBudgetSurvivesAlwaysThinkingEndpoint(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL
 	cfg.LLM.Models = []config.LLMModel{{ID: "qwen/qwen3.8-27b", Default: true}}
-	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	g := &Generator{LLM: llm.NewClient(cfg, nil)}
 	title, err := g.Title(context.Background(), "", "how do I bake sourdough", nil)
 	if err != nil {
 		t.Fatalf("Title: %v", err)
@@ -59,7 +59,7 @@ func TestTitleCarriesQuietFragment(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL
 	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
-	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	g := &Generator{LLM: llm.NewClient(cfg, nil)}
 	title, err := g.Title(context.Background(), "m", "how do I bake sourdough",
 		map[string]any{"reasoning_effort": "none"})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestTitleFallbackHintWithoutFragment(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL
 	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
-	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	g := &Generator{LLM: llm.NewClient(cfg, nil)}
 	if _, err := g.Title(context.Background(), "m", "how do I bake sourdough", nil); err != nil {
 		t.Fatalf("Title: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestTitleRejectsTruncatedEcho(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.LLM.Endpoint = ts.URL
 	cfg.LLM.Models = []config.LLMModel{{ID: "m", Default: true}}
-	g := &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	g := &Generator{LLM: llm.NewClient(cfg, nil)}
 	if _, err := g.Title(context.Background(), "m", echo, nil); err == nil {
 		t.Error("echoed question must not become a title")
 	}
@@ -122,7 +122,7 @@ func TestTitleRejectsTruncatedEcho(t *testing.T) {
 	}))
 	defer tsShort.Close()
 	cfg.LLM.Endpoint = tsShort.URL
-	g = &Generator{Cfg: cfg, LLM: llm.NewClient(cfg, nil)}
+	g = &Generator{LLM: llm.NewClient(cfg, nil)}
 	if _, err := g.Title(context.Background(), "m", echo, nil); err != nil {
 		t.Errorf("short in-words title should stand: %v", err)
 	}

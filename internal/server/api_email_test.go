@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,30 +16,18 @@ import (
 	"mullsmith/internal/store"
 )
 
-// --- harness: an app whose "SMTP" records jobs in memory ---------------------
+// --- harness: an app whose "SMTP" records jobs in a channel -------------------
 
 type fakeMailer struct {
-	mu   sync.Mutex
-	jobs []mail.Job
-	ch   chan mail.Job
+	ch chan mail.Job
 }
 
 func (f *fakeMailer) Deliver(to, subject, body string) error {
-	j := mail.Job{To: to, Subject: subject, Body: body}
-	f.mu.Lock()
-	f.jobs = append(f.jobs, j)
-	f.mu.Unlock()
 	select {
-	case f.ch <- j:
+	case f.ch <- mail.Job{To: to, Subject: subject, Body: body}:
 	default:
 	}
 	return nil
-}
-
-func (f *fakeMailer) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.jobs)
 }
 
 // next waits (test-poll convention) for the next queued delivery.
