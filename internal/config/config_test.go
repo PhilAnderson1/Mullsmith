@@ -991,7 +991,7 @@ func TestLoadThinkingExtended(t *testing.T) {
 	// and qwen3_8 entries, alongside an extra ID each that must not
 	// disturb the selection.
 	if err := os.WriteFile(filepath.Join(dir, "endpoints.yaml"), []byte(`
-schema_version: 1
+schema_version: 2
 endpoints:
   gufo:
     protocol: openai_chat
@@ -1010,7 +1010,7 @@ endpoints:
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "thinking-profiles.yaml"), []byte(`
-schema_version: 1
+schema_version: 2
 profiles:
   qwen3_8:
     options:

@@ -584,12 +584,11 @@ refuses startup. Every profile any picker entry names is validated eagerly, so a
 selection is a startup error too, never a mid-flight surprise. Endpoint range misses hide the
 offending choice with a startup warning; a
 budget preset that could leave no room inside `max_tokens_response` is a configuration error.
-Both files carry a `schema_version`; **1 and 2 are accepted independently per file** (a mixed
-pair works, an unknown version refuses startup). Version 1 keeps its original meaning and may
-not carry the version 2 additions, so an external v1 override can never inherit them by
-accident.
+Both files carry a `schema_version`; **this build accepts 2 only** and refuses startup for
+anything else, naming the version it speaks — an older file is not translated on anyone's
+behalf.
 
-**Model template parameters (version 2).** A model's chat template may call its boolean
+**Model template parameters.** A model's chat template may call its boolean
 thinking switch `enable_thinking`, `thinking`, or have no such argument. That NAME belongs to
 the profile (`template_parameters: {thinking_toggle: …}`); whether the request carries template
 arguments at all belongs to the endpoint, which references the whole-KEY placeholder

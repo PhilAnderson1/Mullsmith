@@ -13,13 +13,11 @@
 // fragments, applicability fingerprint); the chat layer merges rendered
 // fragments into the normal request body.
 //
-// Both files carry a schema_version and are accepted at 1 or 2
-// independently, so a mixed pair works. Version 1 keeps its original
-// meaning and may not carry the version 2 additions (template_defaults,
-// template_parameters, the $template.thinking_toggle key); each entry
-// remembers the version of the file it came from, which is what decides
-// this — nothing is deep-merged between files, an entry is exactly its
-// file says (addendum §2).
+// Both catalogues are versioned: a file must say `schema_version: 2`,
+// which is what defines the model template parameters (template_defaults,
+// template_parameters, the $template.thinking_toggle key). Older version 1
+// files are refused at startup with a message saying so — nothing is
+// translated on their behalf.
 package thinking
 
 import (
@@ -75,20 +73,15 @@ type Endpoint struct {
 	Protocol string              `yaml:"protocol"`
 	Path     string              `yaml:"path"`
 	Requests map[string]Fragment `yaml:"requests"`
-	// TemplateDefaults is the version 2 compatibility default for the
-	// model template parameters a request fragment may reference — the
-	// name an older catalogue spelled literally. It is a default, never
-	// evidence that every model uses that name, and it has no effect on
-	// a fragment that does not reference the parameter.
+	// TemplateDefaults is the compatibility default for the model
+	// template parameters a request fragment may reference — the name an
+	// older catalogue spelled literally. It is a default, never evidence
+	// that every model uses that name, and it has no effect on a fragment
+	// that does not reference the parameter.
 	TemplateDefaults TemplateParams `yaml:"template_defaults"`
 	EffortValues     []string       `yaml:"effort_values"`
 	BudgetMin        int            `yaml:"budget_min"`
 	BudgetMax        int            `yaml:"budget_max"` // 0 = no catalogue ceiling
-
-	// version is the schema_version of the file this entry was read from.
-	// It gates the version 2 fields and placeholder: an external version
-	// 1 override can never inherit a new field by accident.
-	version int
 }
 
 // Option is one entry of a profile's ordered options array.
@@ -103,13 +96,11 @@ type Option struct {
 // Profile is one entry under `profiles`.
 type Profile struct {
 	Options []Option `yaml:"options"`
-	// TemplateParameters names this model family's template conventions
-	// (version 2): the property its chat template calls its thinking
-	// switch, or an explicit null when the template has no such
-	// argument. Absent means "use the endpoint's default".
+	// TemplateParameters names this model family's template conventions:
+	// the property its chat template calls its thinking switch, or an
+	// explicit null when the template has no such argument. Absent means
+	// "use the endpoint's default".
 	TemplateParameters TemplateParams `yaml:"template_parameters"`
-
-	version int // see Endpoint.version
 }
 
 type endpointsFile struct {
@@ -339,23 +330,21 @@ func readFile(path string) ([]byte, error) {
 	return raw, nil
 }
 
-// schema versions this build speaks: 1 (literal fragments only) and 2
-// (model template parameters). Anything else, including 0/absent, fails.
-func supportedSchema(v int) bool { return v == 1 || v == 2 }
+// schemaVersion is the only catalogue version this build speaks. Version 1
+// is not translated: an operator's file either says 2 or startup fails with
+// the reason, rather than silently running a different dialect.
+const schemaVersion = 2
 
 func decodeEndpoints(raw []byte, src string) (map[string]*Endpoint, error) {
 	var f endpointsFile
 	if err := decodeStrict(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	if !supportedSchema(f.SchemaVersion) {
-		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks 1 and 2)", src, f.SchemaVersion)
+	if f.SchemaVersion != schemaVersion {
+		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks %d)", src, f.SchemaVersion, schemaVersion)
 	}
 	if len(f.Endpoints) == 0 {
 		return nil, fmt.Errorf("%s: no endpoints defined", src)
-	}
-	for _, ep := range f.Endpoints {
-		ep.version = f.SchemaVersion
 	}
 	return f.Endpoints, nil
 }
@@ -365,14 +354,11 @@ func decodeProfiles(raw []byte, src string) (map[string]*Profile, error) {
 	if err := decodeStrict(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	if !supportedSchema(f.SchemaVersion) {
-		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks 1 and 2)", src, f.SchemaVersion)
+	if f.SchemaVersion != schemaVersion {
+		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks %d)", src, f.SchemaVersion, schemaVersion)
 	}
 	if len(f.Profiles) == 0 {
 		return nil, fmt.Errorf("%s: no profiles defined", src)
-	}
-	for _, p := range f.Profiles {
-		p.version = f.SchemaVersion
 	}
 	return f.Profiles, nil
 }
@@ -411,18 +397,11 @@ func validateEndpoint(id string, ep *Endpoint) error {
 	if len(ep.Requests) == 0 {
 		return fmt.Errorf("endpoint %q: requests must provide at least one mode", id)
 	}
-	// A version 1 file keeps its previous meaning outright: it cannot
-	// carry the new fields or the new placeholder, so a v1 entry that
-	// spells them is a mistake to report, not a thing to honour.
-	if ep.version < 2 && ep.TemplateDefaults != nil {
-		return fmt.Errorf("endpoint %q: template_defaults requires schema_version 2 (this file says %d)", id, ep.version)
-	}
-	dynamic := ep.version >= 2
 	for mode, frag := range ep.Requests {
 		if !slices.Contains(modes, mode) {
 			return fmt.Errorf("endpoint %q: unknown request mode %q (want off, on, effort or budget)", id, mode)
 		}
-		if err := checkFragment(frag, mode, id, dynamic); err != nil {
+		if err := checkFragment(frag, mode, id); err != nil {
 			return err
 		}
 	}
@@ -450,21 +429,20 @@ func validateEndpoint(id string, ep *Endpoint) error {
 // be the ones this mode substitutes. Any other $-leading string is a
 // misspelling caught at load, not silently forwarded at request time.
 //
-// dynamic says whether this entry may use the version 2 whole-key
-// placeholder $template.thinking_toggle — as a key at any depth, and only
-// with a boolean literal value, which is the one thing the renderer
-// renames the key around.
-func checkFragment(frag Fragment, mode, epID string, dynamic bool) error {
+// The whole-key placeholder $template.thinking_toggle is the one legal
+// $-leading key, at any depth, and only with a boolean literal value —
+// that value is the only thing the renderer renames the key around.
+func checkFragment(frag Fragment, mode, epID string) error {
 	where := fmt.Sprintf("endpoint %q requests[%q]", epID, mode)
-	return walkFragment(where, "", map[string]any(frag), mode, dynamic)
+	return walkFragment(where, "", map[string]any(frag), mode)
 }
 
 // walkFragment checks one member of a fragment.
-func walkFragment(where, path string, v any, mode string, dynamic bool) error {
+func walkFragment(where, path string, v any, mode string) error {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, child := range t {
-			if err := walkKey(where, path, k, child, mode, dynamic); err != nil {
+			if err := walkKey(where, path, k, child, mode); err != nil {
 				return err
 			}
 		}
@@ -472,13 +450,13 @@ func walkFragment(where, path string, v any, mode string, dynamic bool) error {
 		// yaml decodes nested mappings inside a named map type as the
 		// same named type — the walk treats it as the map it is.
 		for k, child := range map[string]any(t) {
-			if err := walkKey(where, path, k, child, mode, dynamic); err != nil {
+			if err := walkKey(where, path, k, child, mode); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for i, child := range t {
-			if err := walkFragment(where, fmt.Sprintf("%s[%d]", path, i), child, mode, dynamic); err != nil {
+			if err := walkFragment(where, fmt.Sprintf("%s[%d]", path, i), child, mode); err != nil {
 				return err
 			}
 		}
@@ -507,11 +485,8 @@ func walkFragment(where, path string, v any, mode string, dynamic bool) error {
 
 // walkKey checks one object member by name. The placeholder is legal only
 // as a whole key carrying a boolean; every other $-leading key fails.
-func walkKey(where, path, k string, child any, mode string, dynamic bool) error {
+func walkKey(where, path, k string, child any, mode string) error {
 	if k == tokenTemplateKey {
-		if !dynamic {
-			return fmt.Errorf("%s%s: %s requires schema_version 2", where, path, tokenTemplateKey)
-		}
 		if _, ok := child.(bool); !ok {
 			return fmt.Errorf("%s%s: %s must carry a boolean literal, not %T (its value is what the switch is set to)",
 				where, path, tokenTemplateKey, child)
@@ -521,15 +496,12 @@ func walkKey(where, path, k string, child any, mode string, dynamic bool) error 
 	if strings.HasPrefix(k, "$") {
 		return fmt.Errorf("%s%s: keys may not start with $ (%q)", where, path, k)
 	}
-	return walkFragment(where, path+"."+k, child, mode, dynamic)
+	return walkFragment(where, path+"."+k, child, mode)
 }
 
 func validateProfile(id string, p *Profile) error {
 	if id == "" {
 		return errors.New("profiles: an entry has an empty ID")
-	}
-	if p.version < 2 && p.TemplateParameters != nil {
-		return fmt.Errorf("profile %q: template_parameters requires schema_version 2 (this file says %d)", id, p.version)
 	}
 	seen := map[string]bool{}
 	for i, o := range p.Options {
@@ -682,7 +654,6 @@ func endpointCanon(ep *Endpoint) any {
 		reqs[mode] = frag
 	}
 	return map[string]any{
-		"schema_version":    ep.version,
 		"protocol":          ep.Protocol,
 		"path":              ep.Path,
 		"requests":          reqs,
@@ -702,8 +673,7 @@ func profileCanon(prof *Profile, pr params) any {
 		})
 	}
 	return map[string]any{
-		"schema_version": prof.version,
-		"options":        opts,
+		"options": opts,
 		// The resolved pair view, so an endpoint default this profile
 		// relies on counts as part of the profile's meaning too.
 		"template_parameters": pr.canon(),

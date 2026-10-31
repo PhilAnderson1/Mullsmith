@@ -104,10 +104,10 @@ llm:
   # this file's directory. There is deliberately no default_thinking:
   # every conversation starts at the built-in Default (sends no override)
   # and the user's pick is conversation state.
-  # Both catalogue files carry a schema_version: 1 and 2 are accepted per
-  # file, so an unchanged v1 catalogue keeps working. Version 2 adds the
-  # model template switch: the profile names it (thinking_profile's entry
-  # spells template_parameters: {thinking_toggle: …}, or null when the
+  # Both catalogue files carry a schema_version, and this build speaks 2:
+  # anything else refuses startup rather than being translated. Version 2
+  # holds the model template switch: the profile names it (thinking_profile's
+  # entry spells template_parameters: {thinking_toggle: …}, or null when the
   # template has no such argument) and the endpoint references it as
   # $template.thinking_toggle. Nothing new belongs in this block.
   endpoints_file: ./endpoints.yaml        # request-field recipes per endpoint type

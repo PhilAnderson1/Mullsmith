@@ -204,7 +204,7 @@ func TestBudgetOptions(t *testing.T) {
 		return p
 	}
 	profiles := write(t, "profiles.yaml", `
-schema_version: 1
+schema_version: 2
 profiles:
   capped:
     options:
@@ -232,7 +232,7 @@ profiles:
 	// Endpoint ceiling: a definition with budget_max 1024 hides 2048 —
 	// and hides everything, so the combination itself is rejected.
 	ceiled := write(t, "endpoints.yaml", `
-schema_version: 1
+schema_version: 2
 endpoints:
   capped_ep:
     protocol: openai_chat
@@ -270,7 +270,7 @@ func TestCatalogueFilesAreSoleSource(t *testing.T) {
 		return p
 	}
 	endpoints := write("endpoints.yaml", `
-schema_version: 1
+schema_version: 2
 endpoints:
   gufo:
     protocol: openai_chat
@@ -286,7 +286,7 @@ endpoints:
         stop_thinking: true
 `)
 	profiles := write("profiles.yaml", `
-schema_version: 1
+schema_version: 2
 profiles:
   qwen3_8:
     options:
@@ -311,7 +311,7 @@ profiles:
 	rt2 := mustBuild(t, Settings{EndpointType: "mine", ProfileID: "mine_p",
 		EndpointsFile: endpoints,
 		ProfilesFile: write("p2.yaml", `
-schema_version: 1
+schema_version: 2
 profiles:
   mine_p:
     options:
@@ -436,29 +436,31 @@ func TestStrictParsing(t *testing.T) {
 		body  string
 		wants string // substring of the error
 	}{
-		{"dup key", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", ""},
-		{"unknown field", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n    discover: true\n", "discover"},
-		{"schema v3", "e", "schema_version: 3\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
+		{"dup key", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", ""},
+		{"unknown field", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n    discover: true\n", "discover"},
+		{"schema v1 endpoints", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
+		{"schema v3 endpoints", "e", "schema_version: 3\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
+		{"schema v1 profiles", "p", "schema_version: 1\nprofiles:\n  a:\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "schema_version"},
 		{"schema v3 profiles", "p", "schema_version: 3\nprofiles:\n  a:\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "schema_version"},
 		{"unknown template parameter", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_tgl: thinking}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "unknown template parameter"},
 		{"template parameter not a name", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_toggle: a.b}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "not a single property name"},
 		{"template parameter wrong type", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_toggle: true}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "property name or null"},
 		{"template parameters not a mapping", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: thinking\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "must be a mapping"},
-		{"bad mode", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests:\n      turbo: {x: 1}\n", "turbo"},
-		{"path no slash", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: chat\n    requests: {'off': {x: 1}}\n", "path"},
-		{"stray token", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: $efforts}}\n", "$efforts"},
-		{"token wrong mode", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: $effort}}\n", "$effort"},
-		{"budget token in effort", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {effort: {x: $budget_tokens}}\n", "$budget_tokens"},
-		{"dollar key", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {$meta: 1}}\n", "$meta"},
-		{"empty requests", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {}\n", "at least one mode"},
-		{"dup option", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: 'off'}\n    - {id: x, label: Y, mode: 'on'}\n", "duplicate"},
-		{"reserved id", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: default, label: D, mode: 'off'}\n", "reserved"},
-		{"empty label", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: x, label: '', mode: 'off'}\n", "label"},
-		{"bad mode", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: turbo}\n", "turbo"},
-		{"effort without value", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: effort}\n", "effort is required"},
-		{"off with effort", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: 'off', effort: low}\n", "takes no effort"},
-		{"zero budget", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: budget, budget_tokens: 0}\n", "positive"},
-		{"nonint budget", "p", "schema_version: 1\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: budget, budget_tokens: lots}\n", "into int"},
+		{"bad mode", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests:\n      turbo: {x: 1}\n", "turbo"},
+		{"path no slash", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: chat\n    requests: {'off': {x: 1}}\n", "path"},
+		{"stray token", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: $efforts}}\n", "$efforts"},
+		{"token wrong mode", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: $effort}}\n", "$effort"},
+		{"budget token in effort", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {effort: {x: $budget_tokens}}\n", "$budget_tokens"},
+		{"dollar key", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {$meta: 1}}\n", "$meta"},
+		{"empty requests", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {}\n", "at least one mode"},
+		{"dup option", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: 'off'}\n    - {id: x, label: Y, mode: 'on'}\n", "duplicate"},
+		{"reserved id", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: default, label: D, mode: 'off'}\n", "reserved"},
+		{"empty label", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: x, label: '', mode: 'off'}\n", "label"},
+		{"bad mode", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: turbo}\n", "turbo"},
+		{"effort without value", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: effort}\n", "effort is required"},
+		{"off with effort", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: 'off', effort: low}\n", "takes no effort"},
+		{"zero budget", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: budget, budget_tokens: 0}\n", "positive"},
+		{"nonint budget", "p", "schema_version: 2\nprofiles:\n  a:\n    options:\n    - {id: x, label: X, mode: budget, budget_tokens: lots}\n", "into int"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

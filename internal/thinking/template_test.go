@@ -267,12 +267,13 @@ endpoints:
 	}
 }
 
-// Version 1 files keep their original meaning, alone and mixed with
-// version 2: a v1 fragment stays literal even beside a v2 profile naming a
-// different switch, and a v1 profile gets the v2 endpoint's default.
-func TestVersionOneCompatibility(t *testing.T) {
-	v1Endpoints := writeCatalogue(t, "endpoints.yaml", `
-schema_version: 1
+// A fragment that spells its template switch literally is untouched by what
+// a profile calls its switch: a profile parameter has an effect only where
+// the endpoint fragment references the placeholder. Version 1 files are
+// refused outright — this build speaks one catalogue dialect.
+func TestLiteralFragmentsAndSchemaGate(t *testing.T) {
+	literal := writeCatalogue(t, "endpoints.yaml", `
+schema_version: 2
 endpoints:
   old:
     protocol: openai_chat
@@ -287,53 +288,31 @@ endpoints:
         reasoning_effort: $effort
     effort_values: [low, medium, high, xhigh]
 `)
-	v1Profiles := writeCatalogue(t, "profiles.yaml", `
-schema_version: 1
+	profiles := writeCatalogue(t, "profiles.yaml", `
+schema_version: 2
 profiles:
   legacy:
     options:
     - {id: 'off', label: 'Off', mode: 'off'}
     - {id: low, label: Low, mode: effort, effort: low}
 `)
-	// v1 + v1: the body is exactly what it always was.
-	if got := fragmentFor(t, v1Endpoints, "old", v1Profiles, "legacy", "off"); got != `{"chat_template_kwargs":{"enable_thinking":false}}` {
-		t.Errorf("v1 off = %s", got)
+	// The body is exactly what the file says, and a profile naming a
+	// different switch does not rewrite it automatically.
+	if got := fragmentFor(t, literal, "old", profiles, "legacy", "off"); got != `{"chat_template_kwargs":{"enable_thinking":false}}` {
+		t.Errorf("off = %s", got)
 	}
-	// v1 endpoint + v2 profile naming `thinking`: the literal field is
-	// not rewritten automatically.
-	rt, err := Build(Settings{EndpointType: "old", ProfileID: "kimi_k2_6",
-		EndpointsFile: v1Endpoints, ProfilesFile: writeCatalogue(t, "p2.yaml", v2Profiles)})
-	if err != nil {
-		t.Fatal(err)
+	if got := fixtureFragment(t, literal, "old", "kimi_k2_6", "off"); got != `{"chat_template_kwargs":{"enable_thinking":false}}` {
+		t.Errorf("literal endpoint + a profile naming `thinking` = %s, want the literal field untouched", got)
 	}
-	off, _ := rt.ResolveFor("", "off")
-	frag, err := rt.Fragment("", off)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := fragmentJSON(t, frag); got != `{"chat_template_kwargs":{"enable_thinking":false}}` {
-		t.Errorf("v1 endpoint + v2 profile = %s, want the literal field untouched", got)
-	}
-	// v2 endpoint (repo) + v1 profile: the endpoint default applies.
-	if got := fragmentFor(t, repoEndpoints, "vllm", v1Profiles, "legacy", "off"); got != `{"chat_template_kwargs":{"enable_thinking":false}}` {
-		t.Errorf("v2 endpoint + v1 profile = %s", got)
-	}
-	// A v1 entry may not carry the new fields or the new placeholder.
-	v1EndpointBodies := []string{
-		"schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    template_defaults: {thinking_toggle: thinking}\n    requests: {'off': {x: 1}}\n",
-		"schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {chat_template_kwargs: {$template.thinking_toggle: false}}}\n",
-	}
-	for _, body := range v1EndpointBodies {
-		_, err := Build(Settings{EndpointType: "a", ProfileID: "legacy",
-			EndpointsFile: writeCatalogue(t, "e1.yaml", body), ProfilesFile: v1Profiles})
-		if err == nil {
-			t.Errorf("version 1 endpoint file accepted a new field:\n%s", body)
-		}
-	}
-	v1ProfileBody := "schema_version: 1\nprofiles:\n  a:\n    template_parameters: {thinking_toggle: thinking}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n"
-	if _, err := Build(Settings{EndpointType: "gufo", ProfileID: "a",
-		EndpointsFile: repoEndpoints, ProfilesFile: writeCatalogue(t, "p3.yaml", v1ProfileBody)}); err == nil {
-		t.Errorf("version 1 profile file accepted template_parameters:\n%s", v1ProfileBody)
+	// Version 1 is not translated, it is rejected, with the version this
+	// build speaks in the message.
+	endpoints := "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n"
+	profilesFile := "schema_version: 1\nprofiles:\n  a:\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n"
+	_, err := Build(Settings{EndpointType: "a", ProfileID: "a",
+		EndpointsFile: writeCatalogue(t, "e1.yaml", endpoints),
+		ProfilesFile:  writeCatalogue(t, "p1.yaml", profilesFile)})
+	if err == nil || !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("version 1 catalogues accepted: %v", err)
 	}
 }
 

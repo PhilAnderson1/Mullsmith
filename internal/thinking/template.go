@@ -27,10 +27,10 @@ import (
 const paramThinkingToggle = "thinking_toggle"
 
 // tokenTemplateKey is the reserved placeholder, permitted ONLY as a whole
-// object key of a version 2 request fragment. It renames that key to
-// whatever thinking_toggle resolves to; its value must be a boolean
-// literal and travels unchanged. It is never a value, a substring, a path
-// expression, or part of a template language.
+// object key of a request fragment. It renames that key to whatever
+// thinking_toggle resolves to; its value must be a boolean literal and
+// travels unchanged. It is never a value, a substring, a path expression,
+// or part of a template language.
 const tokenTemplateKey = "$template." + paramThinkingToggle
 
 // paramNamePattern is what a switch may be called: one JSON property name,
