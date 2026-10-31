@@ -144,7 +144,7 @@ func TestProfileEffortsAndMissingOff(t *testing.T) {
 func TestRecipeAndAllowlistFiltering(t *testing.T) {
 	openaiEndpoints := []string{"gufo", "llama_cpp", "vllm", "lm_studio", "ollama_openai", "openrouter"}
 	profiles := []string{"none", "qwen3_5", "qwen3_6", "qwen3_8", "qwen3_8_thinking_only",
-		"gpt_oss", "gemma4", "deepseek_v4", "deepseek_v4_1", "glm5_3"}
+		"gpt_oss", "gemma4", "deepseek_v4", "deepseek_v4_0731", "glm5_3", "kimi_k2_6"}
 
 	for _, ep := range openaiEndpoints {
 		for _, prof := range profiles {
@@ -438,7 +438,12 @@ func TestStrictParsing(t *testing.T) {
 	}{
 		{"dup key", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", ""},
 		{"unknown field", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n    discover: true\n", "discover"},
-		{"schema v2", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
+		{"schema v3", "e", "schema_version: 3\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
+		{"schema v3 profiles", "p", "schema_version: 3\nprofiles:\n  a:\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "schema_version"},
+		{"unknown template parameter", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_tgl: thinking}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "unknown template parameter"},
+		{"template parameter not a name", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_toggle: a.b}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "not a single property name"},
+		{"template parameter wrong type", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_toggle: true}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "property name or null"},
+		{"template parameters not a mapping", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: thinking\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "must be a mapping"},
 		{"bad mode", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests:\n      turbo: {x: 1}\n", "turbo"},
 		{"path no slash", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: chat\n    requests: {'off': {x: 1}}\n", "path"},
 		{"stray token", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: $efforts}}\n", "$efforts"},

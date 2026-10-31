@@ -1,117 +1,139 @@
-schema_version: 1
+schema_version: 2
 profiles:
   none:
     options: []
   qwen3_5:
     options:
-    - id: 'off'
-      label: 'Off'
-      mode: 'off'
-    - id: 'on'
-      label: 'On'
-      mode: 'on'
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: 'on'
+        label: 'On'
+        mode: 'on'
+    template_parameters:
+      thinking_toggle: enable_thinking
   qwen3_6:
     options:
-    - id: 'off'
-      label: 'Off'
-      mode: 'off'
-    - id: 'on'
-      label: 'On'
-      mode: 'on'
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: 'on'
+        label: 'On'
+        mode: 'on'
+    template_parameters:
+      thinking_toggle: enable_thinking
   qwen3_8:
     options:
-    - id: 'off'
-      label: 'Off'
-      mode: 'off'
-    - id: low
-      label: Low
-      mode: effort
-      effort: low
-    - id: medium
-      label: Medium
-      mode: effort
-      effort: medium
-    - id: high
-      label: High
-      mode: effort
-      effort: xhigh
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: medium
+        label: Medium
+        mode: effort
+        effort: medium
+      - id: high
+        label: High
+        mode: effort
+        effort: xhigh
+    template_parameters:
+      thinking_toggle: enable_thinking
   qwen3_8_thinking_only:
     options:
-    - id: low
-      label: Low
-      mode: effort
-      effort: low
-    - id: medium
-      label: Medium
-      mode: effort
-      effort: medium
-    - id: high
-      label: High
-      mode: effort
-      effort: xhigh
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: medium
+        label: Medium
+        mode: effort
+        effort: medium
+      - id: high
+        label: High
+        mode: effort
+        effort: xhigh
+    template_parameters:
+      thinking_toggle: enable_thinking
   gpt_oss:
     options:
-    - id: low
-      label: Low
-      mode: effort
-      effort: low
-    - id: medium
-      label: Medium
-      mode: effort
-      effort: medium
-    - id: high
-      label: High
-      mode: effort
-      effort: high
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: medium
+        label: Medium
+        mode: effort
+        effort: medium
+      - id: high
+        label: High
+        mode: effort
+        effort: high
   gemma4:
     options:
-    - id: 'off'
-      label: 'Off'
-      mode: 'off'
-    - id: 'on'
-      label: 'On'
-      mode: 'on'
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: 'on'
+        label: 'On'
+        mode: 'on'
   deepseek_v4:
     options:
-    - id: 'off'
-      label: 'Off'
-      mode: 'off'
-    - id: high
-      label: High
-      mode: effort
-      effort: high
-    - id: max
-      label: Max
-      mode: effort
-      effort: max
-  deepseek_v4_1:
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: high
+        label: High
+        mode: effort
+        effort: high
+      - id: max
+        label: Max
+        mode: effort
+        effort: max
+  deepseek_v4_0731:
     options:
-    - id: 'off'
-      label: 'Off'
-      mode: 'off'
-    - id: low
-      label: Low
-      mode: effort
-      effort: low
-    - id: high
-      label: High
-      mode: effort
-      effort: high
-    - id: max
-      label: Max
-      mode: effort
-      effort: max
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: high
+        label: High
+        mode: effort
+        effort: high
+      - id: max
+        label: Max
+        mode: effort
+        effort: max
   glm5_3:
     options:
-    - id: low
-      label: Low
-      mode: effort
-      effort: low
-    - id: high
-      label: High
-      mode: effort
-      effort: high
-    - id: max
-      label: Max
-      mode: effort
-      effort: max
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: high
+        label: High
+        mode: effort
+        effort: high
+      - id: max
+        label: Max
+        mode: effort
+        effort: max
+  kimi_k2_6:
+    options:
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: 'on'
+        label: 'On'
+        mode: 'on'
+    # The Kimi K2.6 chat template calls its switch `thinking`, not
+    # `enable_thinking` — the vLLM/SGLang examples on the model card pass
+    # chat_template_kwargs {"thinking": true}. This is the name the
+    # $template.thinking_toggle placeholder in endpoints.yaml resolves to.
+    template_parameters:
+      thinking_toggle: thinking

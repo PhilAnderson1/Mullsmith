@@ -9,15 +9,24 @@
 // file truly removes it.
 //
 // The package knows nothing about HTTP: Build resolves the configured
-// selection into a Runtime (effective choices, request-route, fragment
-// renderer, applicability fingerprint); the chat layer merges rendered
+// selection into a Runtime (effective choices, request-route, compiled
+// fragments, applicability fingerprint); the chat layer merges rendered
 // fragments into the normal request body.
+//
+// Both files carry a schema_version and are accepted at 1 or 2
+// independently, so a mixed pair works. Version 1 keeps its original
+// meaning and may not carry the version 2 additions (template_defaults,
+// template_parameters, the $template.thinking_toggle key); each entry
+// remembers the version of the file it came from, which is what decides
+// this — nothing is deep-merged between files, an entry is exactly its
+// file says (addendum §2).
 package thinking
 
 import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,12 +72,23 @@ type Fragment map[string]any
 
 // Endpoint is one entry under `endpoints`.
 type Endpoint struct {
-	Protocol     string              `yaml:"protocol"`
-	Path         string              `yaml:"path"`
-	Requests     map[string]Fragment `yaml:"requests"`
-	EffortValues []string            `yaml:"effort_values"`
-	BudgetMin    int                 `yaml:"budget_min"`
-	BudgetMax    int                 `yaml:"budget_max"` // 0 = no catalogue ceiling
+	Protocol string              `yaml:"protocol"`
+	Path     string              `yaml:"path"`
+	Requests map[string]Fragment `yaml:"requests"`
+	// TemplateDefaults is the version 2 compatibility default for the
+	// model template parameters a request fragment may reference — the
+	// name an older catalogue spelled literally. It is a default, never
+	// evidence that every model uses that name, and it has no effect on
+	// a fragment that does not reference the parameter.
+	TemplateDefaults TemplateParams `yaml:"template_defaults"`
+	EffortValues     []string       `yaml:"effort_values"`
+	BudgetMin        int            `yaml:"budget_min"`
+	BudgetMax        int            `yaml:"budget_max"` // 0 = no catalogue ceiling
+
+	// version is the schema_version of the file this entry was read from.
+	// It gates the version 2 fields and placeholder: an external version
+	// 1 override can never inherit a new field by accident.
+	version int
 }
 
 // Option is one entry of a profile's ordered options array.
@@ -83,6 +103,13 @@ type Option struct {
 // Profile is one entry under `profiles`.
 type Profile struct {
 	Options []Option `yaml:"options"`
+	// TemplateParameters names this model family's template conventions
+	// (version 2): the property its chat template calls its thinking
+	// switch, or an explicit null when the template has no such
+	// argument. Absent means "use the endpoint's default".
+	TemplateParameters TemplateParams `yaml:"template_parameters"`
+
+	version int // see Endpoint.version
 }
 
 type endpointsFile struct {
@@ -118,11 +145,14 @@ type Settings struct {
 // Runtime is one validated, resolved selection. A nil *Runtime means the
 // feature is off: legacy configuration, no selector, existing transport.
 // modelState is one model's effective view: its profile's usable options
-// and the warnings their exclusions produced.
+// with their compiled request fragments, and the warnings their
+// exclusions produced.
 type modelState struct {
 	profID   string
 	choices  []Option
+	compiled map[string]map[string]any // choice id → immutable rendered fragment
 	warnings []string
+	canon    string // canonical resolved profile, part of the fingerprint
 }
 
 // Runtime is the validated selection: the endpoint fragment recipes, the
@@ -132,10 +162,11 @@ type modelState struct {
 // choices for models outside the picker are computed on demand from the
 // default profile.
 type Runtime struct {
-	set    Settings
-	ep     *Endpoint
-	profs  map[string]*Profile
-	states map[string]*modelState
+	set     Settings
+	ep      *Endpoint
+	profs   map[string]*Profile
+	states  map[string]*modelState
+	epCanon string // canonical resolved endpoint definition
 }
 
 // Build parses the catalogue files named by the settings (the sole
@@ -201,9 +232,10 @@ func Build(set Settings) (*Runtime, error) {
 			set.EndpointType, ep.Protocol, protocolOpenAI)
 	}
 	// Every profile any model resolves to is validated and reduced to
-	// its usable options NOW — a picker entry naming a missing profile
-	// is a startup error, and no lookup happens mid-flight.
-	rt := &Runtime{set: set, ep: ep, profs: profiles, states: map[string]*modelState{}}
+	// its usable, compiled options NOW — a picker entry naming a missing
+	// profile is a startup error, and no lookup or rendering happens
+	// mid-flight.
+	rt := &Runtime{set: set, ep: ep, profs: profiles, states: map[string]*modelState{}, epCanon: canonical(endpointCanon(ep))}
 	pids := []string{defPID}
 	for _, p := range set.ModelProfiles {
 		if p == "" {
@@ -222,11 +254,11 @@ func Build(set Settings) (*Runtime, error) {
 		if !ok {
 			return nil, fmt.Errorf("thinking_profile %q: no such entry in the profile catalogue", pid)
 		}
-		usable, warnings, err := rt.usableOptions(pid, prof)
+		st, err := rt.buildState(pid, prof)
 		if err != nil {
 			return nil, err
 		}
-		rt.states[pid] = &modelState{profID: pid, choices: usable, warnings: warnings}
+		rt.states[pid] = st
 	}
 	return rt, nil
 }
@@ -307,16 +339,23 @@ func readFile(path string) ([]byte, error) {
 	return raw, nil
 }
 
+// schema versions this build speaks: 1 (literal fragments only) and 2
+// (model template parameters). Anything else, including 0/absent, fails.
+func supportedSchema(v int) bool { return v == 1 || v == 2 }
+
 func decodeEndpoints(raw []byte, src string) (map[string]*Endpoint, error) {
 	var f endpointsFile
 	if err := decodeStrict(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	if f.SchemaVersion != 1 {
-		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks 1)", src, f.SchemaVersion)
+	if !supportedSchema(f.SchemaVersion) {
+		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks 1 and 2)", src, f.SchemaVersion)
 	}
 	if len(f.Endpoints) == 0 {
 		return nil, fmt.Errorf("%s: no endpoints defined", src)
+	}
+	for _, ep := range f.Endpoints {
+		ep.version = f.SchemaVersion
 	}
 	return f.Endpoints, nil
 }
@@ -326,11 +365,14 @@ func decodeProfiles(raw []byte, src string) (map[string]*Profile, error) {
 	if err := decodeStrict(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	if f.SchemaVersion != 1 {
-		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks 1)", src, f.SchemaVersion)
+	if !supportedSchema(f.SchemaVersion) {
+		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks 1 and 2)", src, f.SchemaVersion)
 	}
 	if len(f.Profiles) == 0 {
 		return nil, fmt.Errorf("%s: no profiles defined", src)
+	}
+	for _, p := range f.Profiles {
+		p.version = f.SchemaVersion
 	}
 	return f.Profiles, nil
 }
@@ -369,11 +411,18 @@ func validateEndpoint(id string, ep *Endpoint) error {
 	if len(ep.Requests) == 0 {
 		return fmt.Errorf("endpoint %q: requests must provide at least one mode", id)
 	}
+	// A version 1 file keeps its previous meaning outright: it cannot
+	// carry the new fields or the new placeholder, so a v1 entry that
+	// spells them is a mistake to report, not a thing to honour.
+	if ep.version < 2 && ep.TemplateDefaults != nil {
+		return fmt.Errorf("endpoint %q: template_defaults requires schema_version 2 (this file says %d)", id, ep.version)
+	}
+	dynamic := ep.version >= 2
 	for mode, frag := range ep.Requests {
 		if !slices.Contains(modes, mode) {
 			return fmt.Errorf("endpoint %q: unknown request mode %q (want off, on, effort or budget)", id, mode)
 		}
-		if err := checkFragment(frag, mode, id); err != nil {
+		if err := checkFragment(frag, mode, id, dynamic); err != nil {
 			return err
 		}
 	}
@@ -398,67 +447,89 @@ func validateEndpoint(id string, ep *Endpoint) error {
 
 // checkFragment walks one request fragment: every value must be JSON-
 // compatible, keys must be plain strings, and reserved $-tokens may only
-// be the one this mode substitutes. Any other $-leading string is a
+// be the ones this mode substitutes. Any other $-leading string is a
 // misspelling caught at load, not silently forwarded at request time.
-func checkFragment(frag Fragment, mode, epID string) error {
+//
+// dynamic says whether this entry may use the version 2 whole-key
+// placeholder $template.thinking_toggle — as a key at any depth, and only
+// with a boolean literal value, which is the one thing the renderer
+// renames the key around.
+func checkFragment(frag Fragment, mode, epID string, dynamic bool) error {
 	where := fmt.Sprintf("endpoint %q requests[%q]", epID, mode)
-	var walk func(path string, v any) error
-	walk = func(path string, v any) error {
-		switch t := v.(type) {
-		case map[string]any:
-			for k, child := range t {
-				if strings.HasPrefix(k, "$") {
-					return fmt.Errorf("%s%s: keys may not start with $ (%q)", where, path, k)
-				}
-				if err := walk(path+"."+k, child); err != nil {
-					return err
-				}
+	return walkFragment(where, "", map[string]any(frag), mode, dynamic)
+}
+
+// walkFragment checks one member of a fragment.
+func walkFragment(where, path string, v any, mode string, dynamic bool) error {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			if err := walkKey(where, path, k, child, mode, dynamic); err != nil {
+				return err
 			}
-		case Fragment:
-			// yaml decodes nested mappings inside a named map type as the
-			// same named type — the walk treats it as the map it is.
-			for k, child := range map[string]any(t) {
-				if strings.HasPrefix(k, "$") {
-					return fmt.Errorf("%s%s: keys may not start with $ (%q)", where, path, k)
-				}
-				if err := walk(path+"."+k, child); err != nil {
-					return err
-				}
+		}
+	case Fragment:
+		// yaml decodes nested mappings inside a named map type as the
+		// same named type — the walk treats it as the map it is.
+		for k, child := range map[string]any(t) {
+			if err := walkKey(where, path, k, child, mode, dynamic); err != nil {
+				return err
 			}
-		case []any:
-			for i, child := range t {
-				if err := walk(fmt.Sprintf("%s[%d]", path, i), child); err != nil {
-					return err
-				}
+		}
+	case []any:
+		for i, child := range t {
+			if err := walkFragment(where, fmt.Sprintf("%s[%d]", path, i), child, mode, dynamic); err != nil {
+				return err
 			}
-		case string:
-			if !strings.HasPrefix(t, "$") {
+		}
+	case string:
+		if !strings.HasPrefix(t, "$") {
+			return nil
+		}
+		switch mode {
+		case "effort":
+			if t == tokenEffort {
 				return nil
 			}
-			switch mode {
-			case "effort":
-				if t == tokenEffort {
-					return nil
-				}
-			case "budget":
-				if t == tokenBudget {
-					return nil
-				}
+		case "budget":
+			if t == tokenBudget {
+				return nil
 			}
-			return fmt.Errorf("%s%s: %q is not a token this mode substitutes", where, path, t)
-		case nil, bool, int, int64, float64:
-			return nil
-		default:
-			return fmt.Errorf("%s: value of type %T is not JSON-compatible", where, v)
+		}
+		return fmt.Errorf("%s%s: %q is not a token this mode substitutes", where, path, t)
+	case nil, bool, int, int64, float64:
+		return nil
+	default:
+		return fmt.Errorf("%s: value of type %T is not JSON-compatible", where, v)
+	}
+	return nil
+}
+
+// walkKey checks one object member by name. The placeholder is legal only
+// as a whole key carrying a boolean; every other $-leading key fails.
+func walkKey(where, path, k string, child any, mode string, dynamic bool) error {
+	if k == tokenTemplateKey {
+		if !dynamic {
+			return fmt.Errorf("%s%s: %s requires schema_version 2", where, path, tokenTemplateKey)
+		}
+		if _, ok := child.(bool); !ok {
+			return fmt.Errorf("%s%s: %s must carry a boolean literal, not %T (its value is what the switch is set to)",
+				where, path, tokenTemplateKey, child)
 		}
 		return nil
 	}
-	return walk("", map[string]any(frag))
+	if strings.HasPrefix(k, "$") {
+		return fmt.Errorf("%s%s: keys may not start with $ (%q)", where, path, k)
+	}
+	return walkFragment(where, path+"."+k, child, mode, dynamic)
 }
 
 func validateProfile(id string, p *Profile) error {
 	if id == "" {
 		return errors.New("profiles: an entry has an empty ID")
+	}
+	if p.version < 2 && p.TemplateParameters != nil {
+		return fmt.Errorf("profile %q: template_parameters requires schema_version 2 (this file says %d)", id, p.version)
 	}
 	seen := map[string]bool{}
 	for i, o := range p.Options {
@@ -504,19 +575,30 @@ func validateProfile(id string, p *Profile) error {
 
 // --- effective choices -----------------------------------------------------------
 
-// usableOptions walks the profile in UI order and keeps the options the
-// endpoint can actually express (§5). Endpoint limits exclude with a
-// warning; a budget preset that could never leave room for the answer is
-// a configuration error, and a nonempty profile with nothing usable left
-// rejects the combination rather than silently hiding every control.
-func (r *Runtime) usableOptions(profID string, prof *Profile) ([]Option, []string, error) {
-	var (
-		usable   []Option
-		warnings []string
-	)
+// buildState resolves one profile against the active endpoint: the options
+// the pair can express, each carrying its compiled request fragment, plus
+// the warnings their exclusions produced.
+//
+// Exclusions come in three kinds (§5, addendum §6). Endpoint limits — no
+// recipe for the mode, an effort outside the allowlist, a budget outside
+// the endpoint's range — hide the option with a warning. A budget preset
+// that could never leave room for the answer, and anything the renderer
+// cannot make sense of (an unresolved required parameter, colliding keys,
+// a non-boolean switch), are configuration errors, never a quietly
+// filtered choice. A fragment that renders EMPTY because its dynamic
+// switch resolved to null hides the option with a warning too: an empty
+// request is not a working control. A nonempty profile with nothing
+// usable left rejects the combination rather than hiding every control.
+func (r *Runtime) buildState(profID string, prof *Profile) (*modelState, error) {
+	pr := resolveParams(r.ep, prof)
+	st := &modelState{
+		profID:   profID,
+		compiled: map[string]map[string]any{},
+		canon:    canonical(profileCanon(prof, pr)),
+	}
 	for _, o := range prof.Options {
 		if _, ok := r.ep.Requests[o.Mode]; !ok {
-			warnings = append(warnings, fmt.Sprintf(
+			st.warnings = append(st.warnings, fmt.Sprintf(
 				"profile %q option %q: endpoint %q offers no %q request — choice hidden",
 				profID, o.ID, r.set.EndpointType, o.Mode))
 			continue
@@ -524,7 +606,7 @@ func (r *Runtime) usableOptions(profID string, prof *Profile) ([]Option, []strin
 		switch o.Mode {
 		case "effort":
 			if len(r.ep.EffortValues) > 0 && !slices.Contains(r.ep.EffortValues, o.Effort) {
-				warnings = append(warnings, fmt.Sprintf(
+				st.warnings = append(st.warnings, fmt.Sprintf(
 					"profile %q option %q: endpoint %q does not accept effort %q — choice hidden",
 					profID, o.ID, r.set.EndpointType, o.Effort))
 				continue
@@ -532,25 +614,100 @@ func (r *Runtime) usableOptions(profID string, prof *Profile) ([]Option, []strin
 		case "budget":
 			lo, hi := r.budgetRange()
 			if o.BudgetTokens < lo || (hi > 0 && o.BudgetTokens > hi) {
-				warnings = append(warnings, fmt.Sprintf(
+				st.warnings = append(st.warnings, fmt.Sprintf(
 					"profile %q option %q: budget %d outside endpoint %q range — choice hidden",
 					profID, o.ID, o.BudgetTokens, r.set.EndpointType))
 				continue
 			}
 			if r.set.MaxOutput > 0 && o.BudgetTokens >= r.set.MaxOutput {
-				return nil, nil, fmt.Errorf(
+				return nil, fmt.Errorf(
 					"profile %q option %q: budget %d leaves no room inside max_tokens_response %d",
 					profID, o.ID, o.BudgetTokens, r.set.MaxOutput)
 			}
 		}
-		usable = append(usable, o)
+		c := Choice{ID: o.ID, Label: o.Label, Mode: o.Mode, Effort: o.Effort, BudgetTokens: o.BudgetTokens}
+		rendered, omitted, err := compile(r.ep.Requests[o.Mode], c, pr, r.set.EndpointType, "")
+		if err != nil {
+			return nil, fmt.Errorf("profile %q option %q: %w", profID, o.ID, err)
+		}
+		frag, isObject := rendered.(map[string]any)
+		if omitted || !isObject || len(frag) == 0 {
+			st.warnings = append(st.warnings, fmt.Sprintf(
+				"profile %q option %q: endpoint %q renders no request fields for it (its template switch resolved to none) — choice hidden",
+				profID, o.ID, r.set.EndpointType))
+			continue
+		}
+		st.choices = append(st.choices, o)
+		st.compiled[o.ID] = frag
 	}
-	if len(prof.Options) > 0 && len(usable) == 0 {
-		return nil, nil, fmt.Errorf(
+	if len(prof.Options) > 0 && len(st.choices) == 0 {
+		return nil, fmt.Errorf(
 			"profile %q has no option endpoint %q can express (%s) — pick a different combination",
-			profID, r.set.EndpointType, strings.Join(warnings, "; "))
+			profID, r.set.EndpointType, strings.Join(st.warnings, "; "))
 	}
-	return usable, warnings, nil
+	warnings, err := auditPaths(profID, r.set.EndpointType, optionIDs(st.choices), st.compiled)
+	if err != nil {
+		return nil, err
+	}
+	st.warnings = append(st.warnings, warnings...)
+	return st, nil
+}
+
+func optionIDs(opts []Option) []string {
+	out := make([]string, 0, len(opts))
+	for _, o := range opts {
+		out = append(out, o.ID)
+	}
+	return out
+}
+
+// --- canonical definitions (applicability fingerprint) -------------------
+
+// canonical renders one resolved definition as stable text for the
+// fingerprint: encoding/json sorts map keys, so the same definitions
+// always read the same whatever order the file listed them in, and a
+// meaning change under an unchanged ID produces different text (addendum
+// §7.8). Catalogues hold no credentials, so nothing needs excluding.
+func canonical(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v) // never happens for these trees
+	}
+	return string(b)
+}
+
+func endpointCanon(ep *Endpoint) any {
+	reqs := make(map[string]any, len(ep.Requests))
+	for mode, frag := range ep.Requests {
+		reqs[mode] = frag
+	}
+	return map[string]any{
+		"schema_version":    ep.version,
+		"protocol":          ep.Protocol,
+		"path":              ep.Path,
+		"requests":          reqs,
+		"effort_values":     ep.EffortValues,
+		"budget_min":        ep.BudgetMin,
+		"budget_max":        ep.BudgetMax,
+		"template_defaults": params(ep.TemplateDefaults).canon(),
+	}
+}
+
+func profileCanon(prof *Profile, pr params) any {
+	opts := make([]any, 0, len(prof.Options))
+	for _, o := range prof.Options {
+		opts = append(opts, map[string]any{
+			"id": o.ID, "label": o.Label, "mode": o.Mode,
+			"effort": o.Effort, "budget_tokens": o.BudgetTokens,
+		})
+	}
+	return map[string]any{
+		"schema_version": prof.version,
+		"options":        opts,
+		// The resolved pair view, so an endpoint default this profile
+		// relies on counts as part of the profile's meaning too.
+		"template_parameters": pr.canon(),
+	}
 }
 
 // budgetRange resolves the endpoint's budget bounds; budget_min absent
@@ -698,12 +855,21 @@ func (r *Runtime) ResolveSaved(id, fingerprint, model string) (string, bool) {
 }
 
 // Fingerprint is the stable applicability context for a saved choice:
-// endpoint URL, model ID, endpoint type and the profile IN FORCE FOR
-// THAT MODEL — never the API key (§5). A model switch therefore keeps a
-// saved choice only when its profile and choices genuinely still apply.
+// endpoint URL, model ID, endpoint type, the profile IN FORCE FOR THAT
+// MODEL, and a canonical rendering of the resolved endpoint and profile
+// DEFINITIONS themselves — so editing what an entry means (a recipe
+// field, an effort list, a switch name) under an unchanged ID changes the
+// fingerprint too and resets a saved choice visibly to Default (addendum
+// §7.8). Never the API key (§5). A model switch therefore keeps a saved
+// choice only when the definitions behind it genuinely still apply.
 func (r *Runtime) Fingerprint(model string) string {
+	if r == nil {
+		return ""
+	}
+	st := r.stateFor(model)
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		r.set.EndpointURL, model, r.set.EndpointType, r.profileID(model),
+		r.epCanon + "\x00" + st.canon,
 	}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }

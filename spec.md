@@ -584,13 +584,38 @@ refuses startup. Every profile any picker entry names is validated eagerly, so a
 selection is a startup error too, never a mid-flight surprise. Endpoint range misses hide the
 offending choice with a startup warning; a
 budget preset that could leave no room inside `max_tokens_response` is a configuration error.
+Both files carry a `schema_version`; **1 and 2 are accepted independently per file** (a mixed
+pair works, an unknown version refuses startup). Version 1 keeps its original meaning and may
+not carry the version 2 additions, so an external v1 override can never inherit them by
+accident.
 
-- **Choice → request.** A choice is one ID from the profile. At request time the backend
-  renders the endpoint's ONE fragment for that choice's mode (`off`/`on`/`effort`/`budget`),
-  substituting `$effort`/`$budget_tokens` wholesale, and deep-merges it into the normal body
+**Model template parameters (version 2).** A model's chat template may call its boolean
+thinking switch `enable_thinking`, `thinking`, or have no such argument. That NAME belongs to
+the profile (`template_parameters: {thinking_toggle: …}`); whether the request carries template
+arguments at all belongs to the endpoint, which references the whole-KEY placeholder
+`$template.thinking_toggle` in a fragment and may ship a compatibility `template_defaults`
+name. The three states stay distinct: a name is used, an explicit `null` means never emit the
+switch (this is NOT Off), and absence takes the endpoint's default. One endpoint definition
+therefore serves Qwen (`enable_thinking`) and Kimi K2.6 (`thinking`) — shipped profiles say
+which — while standardised mappings (OpenRouter's `reasoning` object, LM Studio's
+`reasoning_effort`) are untouched by parameters they never reference. Placeholder values must
+be boolean literals; unknown parameter names, bad types and key collisions are configuration
+errors even in definitions nothing selects.
+
+- **Choice → request.** A choice is one ID from the profile. Each option of a resolved
+  endpoint/profile pair is rendered ONCE at startup into an immutable compiled fragment: the
+  endpoint's ONE fragment for that choice's mode (`off`/`on`/`effort`/`budget`) with
+  `$effort`/`$budget_tokens` substituted wholesale, and every `$template.thinking_toggle` key
+  renamed to the property the pair resolved — an option whose switch resolved to `null` renders
+  nothing, so it is hidden with a warning rather than offered as a control that sends no
+  fields, while an unrelated member of that object survives (objects are pruned only when
+  omission empties them). At request time the backend deep-merges a CLONE of the compiled
+  fragment into the normal body
   (nested objects merge key by key; no `extra_body` wrapper). The built-in `default` sends
-  nothing. Effort and budget never merge; a fresh copy is rendered per request, so no turn
-  inherits another's fields. Clients supply only the ID — never effort strings or JSON.
+  nothing. Effort and budget never merge; no turn inherits another's fields. Clients supply
+  only the ID — never effort strings, parameter names or JSON. Startup also audits the RENDERED
+  field paths across a pair's choices: one fragment driving the same setting through two
+  fields is a configuration error, and choices disagreeing about the path warn.
 - **Route.** With an endpoint definition selected, its `path` replaces the client's
   `/chat/completions` suffix, joined to `llm.endpoint` exactly once (a reverse-proxy prefix
   in the URL survives). Titling (`Complete`) never carries the conversation's choice —
@@ -599,8 +624,13 @@ budget preset that could leave no room inside `max_tokens_response` is a configu
   the model; the selector owns only the chat body.
 - **State.** `conversations.thinking` ('' = Default) plus `thinking_ctx` = sha256 over
   endpoint URL · the conversation's effective model · endpoint type · the profile IN FORCE
-  FOR THAT MODEL (never the
-  API key). Reads resolve the saved pair against the current context: any mismatch projects
+  FOR THAT MODEL · a canonical rendering of the resolved endpoint AND profile definitions
+  (map keys sorted, so file layout is irrelevant; credentials never enter a catalogue, so
+  there is nothing to exclude). A meaning change under unchanged ids — a recipe field, an
+  effort list, a switch name — therefore resets a saved choice visibly to Default; a
+  layout-only edit does not. Contexts saved by a build that hashed only the four ids no
+  longer match and reset once. Reads resolve the saved pair against the current context: any
+  mismatch projects
   `default` visibly rather than applying a choice belonging to another model. Switching
   between two picker models on the SAME profile keeps a saved choice; moving to a model
   whose profile cannot express it drops to `default`. An invalid
@@ -611,7 +641,8 @@ budget preset that could leave no room inside `max_tokens_response` is a configu
 - **UI.** A `Thinking` item inside the composer's **"+" add-menu** (§10.2), populated from
   the `meta.thinking` row for the conversation's active model. It shows whenever the
   deployment has thinking anywhere (`meta.thinking` non-null): a model with nothing to
-  choose sees a DISABLED dropdown whose tooltip points at switching model — hiding it
+  choose — its profile lists no options, whether that is `none` or any custom empty entry —
+  sees a DISABLED dropdown whose tooltip points at switching model; hiding it
   would leave the feature undiscoverable. Only when no entry anywhere names a profile
   (selector off, `meta.thinking` null) is the row hidden outright. A model switch rebuilds
   it for the model now in force. Changing it
