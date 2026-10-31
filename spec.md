@@ -1339,7 +1339,10 @@ Cross-cutting touch/responsive behavior:
 | **Chat (main)** | Left sidebar: conversation list (search, "New chat"; rename and delete hide behind a **"…"** on the row — revealed on hover, always visible where hover doesn't exist — and the same menu opens on right-click or mobile long press via `contextmenu`) with a muted **"Delete older than…"** command dropdown under it (1 day / 1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), a **"+" add-menu button** (a vertical popover holding the muted **Thinking** dropdown — Default first, then the choices
 listed for the conversation's active model in `meta.thinking`; disabled with a switch-model
 tooltip when the current model has nothing to choose, hidden only when the deployment has
-no thinking anywhere (§6.3) — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. Each assistant reply carries a muted **tok/s**
+no thinking anywhere (§6.3) — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. A new chat
+starts on the model the picker currently shows — the SPA passes that value on create, so
+"new chat" continues the model you were just on; the config default applies only when the
+picker itself shows the default. Each assistant reply carries a muted **tok/s**
 note, pinned to the right of a footnote row under the answer (completion tokens
 ÷ model-round time; absent on rows without timing, e.g. history from before the
 feature). The **regenerate** button shares that row at the far left, so the two

@@ -185,6 +185,27 @@ func TestJSModelPickerShowsModelInUse(t *testing.T) {
 	}
 }
 
+func TestJSNewChatInheritsSelectedModel(t *testing.T) {
+	// "New chat" continues from the picker's current model — the SPA
+	// passes it on create instead of letting the row default: chatting on
+	// model Y then starting a fresh chat stays on Y.
+	js, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc := jsFuncBody(t, string(js), "async function newChat()")
+	if !strings.Contains(nc, `createConversation("", $("#model-picker").value)`) {
+		t.Error(`newChat must pass the model picker's current value to createConversation`)
+	}
+	apiSrc, err := web.FS.ReadFile("assets/app/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(apiSrc), `{ title, model: model || "" }`) {
+		t.Error("api.createConversation must forward the model (empty = server default)")
+	}
+}
+
 func TestJSThinkingChoicesRebuiltPerConversation(t *testing.T) {
 	// The thinking dropdown describes ITS model, so opening a
 	// conversation on another model must rebuild the option list — not

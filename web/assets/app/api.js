@@ -94,7 +94,8 @@ export const api = {
     const qs = p.toString();
     return request("GET", "/api/v1/conversations" + (qs ? "?" + qs : ""));
   },
-  createConversation: (title) => request("POST", "/api/v1/conversations", { title }),
+  createConversation: (title, model) =>
+    request("POST", "/api/v1/conversations", { title, model: model || "" }),
   getConversation: (id) => request("GET", `/api/v1/conversations/${encodeURIComponent(id)}`),
   patchConversation: (id, patch) =>
     request("PATCH", `/api/v1/conversations/${encodeURIComponent(id)}`, patch),

@@ -1957,7 +1957,10 @@ function initialEmptyState() {
 async function newChat() {
   await abandonInflight();
   try {
-    const c = await api.createConversation("");
+    // A new chat continues from the model currently in the picker (the
+    // conversation you were last on), not the config default: pass the
+    // picker's value so the row stores it.
+    const c = await api.createConversation("", $("#model-picker").value);
     state.convs.unshift(c);
     // The created conversation carries its model's context window (the
     // server refreshed auto-detection on create), so the meter gets its
