@@ -144,7 +144,7 @@ func TestProfileEffortsAndMissingOff(t *testing.T) {
 func TestRecipeAndAllowlistFiltering(t *testing.T) {
 	openaiEndpoints := []string{"gufo", "llama_cpp", "vllm", "lm_studio", "ollama_openai", "openrouter"}
 	profiles := []string{"none", "qwen3_5", "qwen3_6", "qwen3_8", "qwen3_8_thinking_only",
-		"gpt_oss", "gemma4", "deepseek_v4", "deepseek_v4_0731", "glm5_3", "kimi_k2_6"}
+		"gpt_oss", "gemma4", "deepseek_v4", "deepseek_v4_1", "glm5_3", "kimi_k2_6"}
 
 	for _, ep := range openaiEndpoints {
 		for _, prof := range profiles {

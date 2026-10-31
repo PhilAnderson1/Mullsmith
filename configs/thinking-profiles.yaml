@@ -92,7 +92,7 @@ profiles:
         label: Max
         mode: effort
         effort: max
-  deepseek_v4_0731:
+  deepseek_v4_1:
     options:
       - id: 'off'
         label: 'Off'
