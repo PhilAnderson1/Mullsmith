@@ -185,6 +185,25 @@ func TestJSModelPickerShowsModelInUse(t *testing.T) {
 	}
 }
 
+func TestJSThinkingChoicesRebuiltPerConversation(t *testing.T) {
+	// The thinking dropdown describes ITS model, so opening a
+	// conversation on another model must rebuild the option list — not
+	// just re-point the previous model's options (syncThinkingSelect
+	// alone keeps the old list on screen).
+	b, err := web.FS.ReadFile("assets/app/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := jsFuncBody(t, string(b), "function renderConversation(")
+	pop, sync := strings.Index(rc, "populateThinkingChoices()"), strings.Index(rc, "syncThinkingSelect()")
+	if pop < 0 {
+		t.Fatal("renderConversation must rebuild the thinking choice list for the opened model")
+	}
+	if sync < 0 || pop > sync {
+		t.Error("the rebuilt list must be synced (choice applied) after population")
+	}
+}
+
 // The email_features SPA contract (plan §6, §8): the shell owns the new
 // forms, the hash router recognizes #forgot/#reset/#confirm (tokens scrubbed
 // after consumption), api.js names the five endpoints, and the register flow

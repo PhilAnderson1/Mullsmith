@@ -1924,6 +1924,10 @@ function renderConversation() {
   syncPlaceholder();
   if (!state.currentId) input.value = "";
   syncComposerButtons();
+  // Each dropdown entry describes ITS model: opening a conversation on
+  // another model must rebuild the choice list, not just re-point the
+  // previous model's options.
+  populateThinkingChoices();
   syncThinkingSelect();
 
   if (!state.currentId) {
