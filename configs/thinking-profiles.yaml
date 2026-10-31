@@ -124,6 +124,8 @@ profiles:
         mode: effort
         effort: max
   kimi_k2_6:
+    template_parameters:
+      thinking_toggle: thinking
     options:
       - id: 'off'
         label: 'Off'
@@ -131,9 +133,83 @@ profiles:
       - id: 'on'
         label: 'On'
         mode: 'on'
-    # The Kimi K2.6 chat template calls its switch `thinking`, not
-    # `enable_thinking` — the vLLM/SGLang examples on the model card pass
-    # chat_template_kwargs {"thinking": true}. This is the name the
-    # $template.thinking_toggle placeholder in endpoints.yaml resolves to.
+  kimi_k2_7_code:
     template_parameters:
-      thinking_toggle: thinking
+      thinking_toggle: null
+    options: []
+  kimi_k3:
+    template_parameters:
+      thinking_toggle: null
+    options:
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: high
+        label: High
+        mode: effort
+        effort: high
+      - id: max
+        label: Max
+        mode: effort
+        effort: max
+  minimax_m2_7:
+    template_parameters:
+      thinking_toggle: null
+    options: []
+  minimax_m3_1_flash:
+    template_parameters:
+      thinking_toggle: null
+    options:
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: medium
+        label: Medium
+        mode: effort
+        effort: medium
+      - id: high
+        label: High
+        mode: effort
+        effort: high
+      - id: xhigh
+        label: Extra high
+        mode: effort
+        effort: xhigh
+      - id: max
+        label: Max
+        mode: effort
+        effort: max
+  step3_7_flash:
+    template_parameters:
+      thinking_toggle: null
+    options:
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: medium
+        label: Medium
+        mode: effort
+        effort: medium
+      - id: high
+        label: High
+        mode: effort
+        effort: high
+  step5_preview:
+    template_parameters:
+      thinking_toggle: null
+    options:
+      - id: low
+        label: Low
+        mode: effort
+        effort: low
+      - id: medium
+        label: Medium
+        mode: effort
+        effort: medium
+      - id: high
+        label: High
+        mode: effort
+        effort: high
