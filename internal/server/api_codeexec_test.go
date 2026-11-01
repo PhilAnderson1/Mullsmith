@@ -59,7 +59,7 @@ func newCodeChatServer(t *testing.T, replies [][]string) (*authTest, *Server, *t
 		MaxMemory:       config.Size(256 << 20),
 	}
 
-	codeRunner, _, err := runner.NewForConfig(cfg)
+	codeRunner, err := runner.NewForConfig(cfg)
 	if errors.Is(err, runner.ErrNoCgroup) {
 		// Metered jails cannot be built in an undelegated session — the
 		// product itself refuses to start here. Run with sudo -E to

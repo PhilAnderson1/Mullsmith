@@ -90,21 +90,39 @@ func (s *Server) refreshContextWindows() {
 		return
 	}
 	if s.autoWindowsKnown() {
-		go s.doProbe()
+		s.ensureProbe()
 		return
 	}
-	s.refreshContextWindowsGraceful()
+	s.awaitProbe()
 }
 
-// refreshContextWindowsGraceful waits for a probe, but never longer than
-// the grace. Overlapping waits may each start a probe; that is cheap and
-// the last write wins with the same number.
-func (s *Server) refreshContextWindowsGraceful() {
+// ensureProbe starts a discovery probe UNLESS one is already running (R5):
+// a dozen concurrent opens used to mean a dozen GET /models against the
+// same endpoint. The returned channel closes when the probe in flight —
+// this caller's or the one it joined — finishes.
+func (s *Server) ensureProbe() <-chan struct{} {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	if s.probeDone != nil {
+		return s.probeDone
+	}
 	done := make(chan struct{})
+	s.probeDone = done
 	go func() {
-		defer close(done)
 		s.doProbe()
+		s.probeMu.Lock()
+		s.probeDone = nil
+		s.probeMu.Unlock()
+		close(done)
 	}()
+	return done
+}
+
+// awaitProbe joins the running probe, but never longer than the grace.
+// Overlapping waiters share ONE probe; the last write wins with the same
+// number.
+func (s *Server) awaitProbe() {
+	done := s.ensureProbe()
 	select {
 	case <-done:
 	case <-time.After(windowGrace):
@@ -119,18 +137,10 @@ func (s *Server) refreshContextWindowFor(model string) {
 		return
 	}
 	if s.contextWindow(model) > 0 {
-		go s.doProbe()
+		s.ensureProbe()
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.doProbe()
-	}()
-	select {
-	case <-done:
-	case <-time.After(windowGrace):
-	}
+	s.awaitProbe()
 }
 
 // pinnedOnly reports whether discovery has nothing to contribute.
@@ -220,35 +230,51 @@ func requestTokens(msgs []llm.ChatMessage, specs []llm.ToolSpec) int64 {
 	return used
 }
 
-// conversationFull answers "would the next request overflow?" — measured,
-// not approximated (finding 7): the gate builds the SAME request the send
-// would make (buildRequest: system prompt, guidance, tool schemas, manifests)
+// admission is the typed verdict of the send gate (C1). A successful
+// admission carries the exact history the accepted request is built from —
+// the rows read under the reservation plus the turn about to land — so the
+// generation never re-reads, and a nil slice can never double as an
+// error indicator: failures return (nil, err), refusals return a verdict
+// with full=true and a reason.
+type admission struct {
+	hist   []store.Message // valid only when !full
+	full   bool
+	reason string // "context_full" | "history_limit" when full
+}
+
+// admitSend answers "would the next request overflow?" — measured, not
+// approximated (finding 7): the gate builds the SAME request the send would
+// make (buildRequest: system prompt, guidance, tool schemas, manifests)
 // plus the turn about to land (extra/attPaths; empty on regenerate), and
 // compares the estimate with the window minus the output reserve.
-// excludeMsgID drops the reply a regeneration replaces — counting it would
+// excludeIDs drop the rows a regeneration retires — counting them would
 // refuse a replacement whose request excludes it.
 //
+// The read runs on the CALLER's context — for a real send that is the
+// generation's own reservation context (C1): the snapshot belongs to the
+// reserved operation, so no other generation can complete between admission
+// and acceptance, and no accepted send omits a completed predecessor.
+//
 // Still honest-by-estimate: agent.EstimateTokens is runes/4, so a send may
-// cross the real line a little early or late. The second result is the
-// refusal code — "context_full", or "history_limit" when the conversation
-// has outgrown context replay itself (finding 2: a past-cap history is an
-// explicit refusal, never a silently-truncated success; the row cap binds
-// even when the window is unknown, and the incoming turn counts toward it
-// — review2 finding 1). The third result is the history the verdict was
-// based on (incoming turn appended), so the generation that proceeds builds
-// its prompt from the SAME read — no second look can flip the decision
-// after the turn was committed. Accept-with-store-trouble: (false, "", nil)
-// — the caller re-reads before persisting, and that read's refusal stands.
-func (s *Server) conversationFull(conv *store.Conversation, userID, extra string, attPaths []string, excludeMsgID string) (bool, string, []store.Message) {
+// cross the real line a little early or late. The refusal reason is
+// "context_full", or "history_limit" when the conversation has outgrown
+// context replay itself (finding 2: a past-cap history is an explicit
+// refusal, never a silently-truncated success; the row cap binds even when
+// the window is unknown, and the incoming turn counts toward it — review2
+// finding 1). A failed store read is a typed error, not an open gate with a
+// nil history: the caller refuses without persisting anything.
+func (s *Server) admitSend(ctx context.Context, conv *store.Conversation,
+	userID, extra string, attPaths []string, excludeIDs []string,
+) (*admission, error) {
 	_, known := s.overflowLine(s.thinkingModel(conv.Model))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	hist, err := s.store.ContextHistory(ctx, conv.ID, excludeMsgID)
+	hist, err := s.store.ContextHistory(ctx, conv.ID, excludeIDs...)
 	if errors.Is(err, store.ErrHistoryLimit) {
-		return true, "history_limit", nil
+		return &admission{full: true, reason: "history_limit"}, nil
 	}
 	if err != nil {
-		return false, "", nil
+		return nil, err
 	}
 	// The row cap binds EVEN WITHOUT a discovered window (review2
 	// finding 1): it limits context REPLAY, not token cost, so the
@@ -264,12 +290,11 @@ func (s *Server) conversationFull(conv *store.Conversation, userID, extra string
 		incoming = 1
 	}
 	if len(hist)+incoming > store.ContextHistoryRows() {
-		return true, "history_limit", nil
+		return &admission{full: true, reason: "history_limit"}, nil
 	}
-	// The turn about to land rides the history the generation will build
-	// its prompt from — one read for decision AND request, so the caller
-	// never re-reads (and never 409s after committing).
-	if extra != "" || len(attPaths) > 0 {
+	// The turn about to land rides the history the generation builds its
+	// prompt from — one read for decision AND request.
+	if incoming > 0 {
 		turn := store.Message{Role: "user", Content: extra}
 		for _, p := range attPaths {
 			turn.Attachments = append(turn.Attachments, store.Attachment{Path: p})
@@ -279,11 +304,14 @@ func (s *Server) conversationFull(conv *store.Conversation, userID, extra string
 	if !known {
 		// Open token gate (window unknown: the endpoint arbitrates),
 		// but the row-cap verdict above stands.
-		return false, "", hist
+		return &admission{hist: hist}, nil
 	}
 	msgs, specs := s.buildRequest(conv, userID, hist)
 	line, _ := s.overflowLine(s.thinkingModel(conv.Model))
-	return requestTokens(msgs, specs) >= line, "context_full", hist
+	if requestTokens(msgs, specs) >= line {
+		return &admission{full: true, reason: "context_full"}, nil
+	}
+	return &admission{hist: hist}, nil
 }
 
 // continuationFull re-measures a growing tool continuation against the same

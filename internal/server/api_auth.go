@@ -277,7 +277,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("user registered", "user", user.ID, "ip", ip)
-	writeJSON(w, http.StatusCreated, s.mePayload(user)) // one identity shape on every door (see login)
+	writeJSON(w, http.StatusCreated, mePayload(user)) // one identity shape on every door (see login)
 }
 
 // --- POST /api/v1/auth/login -------------------------------------------------------
@@ -364,7 +364,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// you are (login, register, GET/PATCH /auth/me): the SPA seeds
 	// state.me from this response, and a leaner body here silently blanked
 	// the Settings prompt and pending-email notice until the next reload.
-	writeJSON(w, http.StatusOK, s.mePayload(user))
+	writeJSON(w, http.StatusOK, mePayload(user))
 }
 
 // invalidCredentials is the single generic 401 for every failure mode that
@@ -394,11 +394,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // --- GET / PATCH /api/v1/auth/me ---------------------------------------------------
 
-func (s *Server) mePayload(user *store.User) map[string]any {
-	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
-	if err != nil {
-		used = 0
-	}
+func mePayload(user *store.User) map[string]any {
 	return map[string]any{
 		"id":                    user.ID,
 		"email":                 user.Email,
@@ -406,15 +402,11 @@ func (s *Server) mePayload(user *store.User) map[string]any {
 		"name":                  user.Name,
 		"created_at":            user.CreatedAt.UTC().Format(time.RFC3339),
 		"default_system_prompt": user.DefaultSystemPrompt,
-		"quota": map[string]any{
-			"used_bytes":  used,
-			"total_bytes": int64(s.cfg.Scratchpad.UserQuota),
-		},
 	}
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.mePayload(UserFrom(r.Context())))
+	writeJSON(w, http.StatusOK, mePayload(UserFrom(r.Context())))
 }
 
 // handleMeUpdate lets the settings page change name, email and the default
@@ -517,7 +509,7 @@ func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("profile updated", "user", user.ID,
 		"email_changed", fresh.Email != user.Email, "email_pending", pendingAddr != "")
-	writeJSON(w, http.StatusOK, s.mePayload(fresh))
+	writeJSON(w, http.StatusOK, mePayload(fresh))
 }
 
 // --- POST /api/v1/auth/password ----------------------------------------------------------
@@ -563,22 +555,41 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	if err := s.store.SetPassword(r.Context(), user.ID, hash, time.Now()); err != nil {
+	// The whole transition — new hash (guarded by the hash verified
+	// above), reset-link cut, revocation of every other session, and the
+	// replacement of this one — commits as ONE database operation (C4).
+	// A revocation failure can no longer be logged while the handler
+	// answers success: there is no partial state for the log to describe.
+	sess := sessionFrom(r.Context())
+	remembered := sess.Remembered
+	now := time.Now()
+	expires := now.Add(s.cfg.Auth.SessionTTL.D())
+	if remembered {
+		expires = now.Add(s.cfg.Auth.RememberTTL.D())
+	}
+	rot, err := s.store.ChangePasswordAndRotate(r.Context(), user.ID, hash,
+		user.PasswordHash, sess.IDHash, remembered, expires, now, truncate(r.UserAgent(), 255))
+	switch {
+	case errors.Is(err, store.ErrStalePassword):
+		// Someone changed the password between verification and commit;
+		// nothing was applied (the guard rejected the UPDATE inside the
+		// transaction), so the honest answer is "try again".
+		writeAPIError(w, r, http.StatusConflict, "password_changed_concurrently",
+			"the password changed during this request; try again")
+		return
+	case err != nil && errors.Is(err, store.ErrUserNotFound):
+		unauthenticated(w, r)
+		return
+	case err != nil:
+		s.logger.Error("password change failed", "error", err, "user", user.ID,
+			"rid", RequestIDFrom(r.Context()))
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	// Revoke every other session; rotate the current one (spec §9.1).
-	if _, err := s.store.DeleteSessionsForUser(r.Context(), user.ID, sessionFrom(r.Context()).IDHash); err != nil {
-		s.logger.Warn("session revocation failed", "error", err)
-	}
-	if err := s.store.DeleteSession(r.Context(), sessionFrom(r.Context()).IDHash); err != nil {
-		s.logger.Warn("session rotate delete failed", "error", err)
-	}
-	remembered := sessionFrom(r.Context()).Remembered
-	if err := s.newSessionAndCookie(w, r, user, remembered); err != nil {
-		s.logger.Error("session rotate create failed", "error", err)
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-		return
+	// The cookie rides ONLY on a committed rotation.
+	http.SetCookie(w, auth.SessionCookie(rot.Raw, remembered, rot.ExpiresAt, secureRequest(s.cfg, r)))
+	if tok, err := auth.NewCSRFToken(); err == nil {
+		http.SetCookie(w, auth.CSRFCookie(tok, secureRequest(s.cfg, r)))
 	}
 	s.logger.Info("password changed; sessions revoked", "user", user.ID)
 	w.WriteHeader(http.StatusNoContent)
@@ -597,6 +608,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 // browser should not walk around with a phantom that 401s on the next click.
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
+	// Coordinate with live work first (C6): every generation of this
+	// account is cancelled before the rows go, so no model call or tool
+	// execution is still running when its owner's storage is removed, and
+	// a final write racing the delete reads as cancellation, not success.
+	s.gens.AbortUser(user.ID)
 	deleted, err := s.store.DeleteUser(r.Context(), user.ID)
 	if err != nil {
 		s.logger.Error("account deletion failed", "error", err, "user", user.ID,
@@ -613,8 +629,30 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		// The account is already gone; the orphan sweep collects the bytes.
 		s.logger.Error("scratchpad removal after account delete failed", "error", err, "user", user.ID)
 	}
+	// A cancelled tool may still be inside a filesystem call as the
+	// removal runs; sweep once more (detached, bounded) after the
+	// generation slots it held have freed, so no bytes outlive the
+	// deletion that reported completion (C6).
+	go s.sweepRemovedUserDirs(user.ID) // #nosec G118 -- detached by design: the sweep must outlive the response; it is bounded and mints its own contexts
 	s.logger.Info("account deleted", "user", user.ID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sweepRemovedUserDirs re-removes a deleted account's scratchpad tree once
+// its cancelled generations have released their slots. No-op when nothing
+// was recreated behind the removal.
+func (s *Server) sweepRemovedUserDirs(userID string) {
+	deadline := time.Now().Add(30 * time.Second)
+	for s.gens.countUser(userID) > 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	u, err := s.store.UserByID(context.Background(), userID)
+	if err != nil || u != nil {
+		return // still an account (or lookup trouble): leave the tree alone
+	}
+	if err := scratch.RemoveUserDirs(s.cfg.Scratchpad.Root, userID); err != nil {
+		s.logger.Warn("late scratchpad sweep after account delete", "error", err, "user", userID)
+	}
 }
 
 func truncate(s string, n int) string {

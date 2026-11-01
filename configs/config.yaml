@@ -89,6 +89,12 @@ llm:
   max_tokens_response: 4096
   show_reasoning: false
   vision_max_image_bytes: 4MiB    # per-picture cap for view_image (all vision models)
+  # Upstream PROGRESS budgets — silence caps, never total stream timeouts.
+  # A long reasoning run that keeps sending data is never cut short.
+  upstream_header_timeout: "90s"  # wait for the endpoint's response headers
+  upstream_stall_timeout: "120s"  # max silence between bytes mid-stream; any
+                                  # byte counts as progress, SSE comment
+                                  # heartbeats included. -1 turns either off.
   # --- Thinking control (thinking-control-specification.md) -------------
   # There is no selector switch: the dropdown appears exactly when at
   # least one llm.models entry spells a real thinking_profile — a model

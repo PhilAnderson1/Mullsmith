@@ -28,29 +28,6 @@ type Attachment struct {
 // filename, the basename of the path is the name.
 func (a Attachment) Name() string { return path.Base(a.Path) }
 
-// AttachFilesToMessage links upload paths to a message in one transaction.
-// Ownership is STRUCTURAL, not a row lookup: the caller has already proven
-// every path resolves to a regular file inside this user's sandbox
-// (the fd-pinned sandbox makes "another user's file" unaddressable), so
-// there is nothing left to verify — a plain insert batch. userID is kept in
-// the signature because every call site is scoped to one user; it documents
-// the contract rather than gating it. Duplicate (message, path) pairs are
-// PK violations; callers dedupe up front.
-func (d *DB) AttachFilesToMessage(ctx context.Context, messageID, userID string, paths []string) error {
-	tx, err := d.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, p := range paths {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO attachments(message_id, path) VALUES(?, ?)`, messageID, p); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 // attachmentsForMessages loads the attachments of many messages in one
 // query, keyed by message id (ordered by path for stable chips).
 func (d *DB) attachmentsForMessages(ctx context.Context, messageIDs []string) (map[string][]Attachment, error) {

@@ -150,10 +150,63 @@ func (r *genRegistry) Abort(genID, userID string) bool {
 	return true
 }
 
+// AbortConv cancels the live generation of one conversation whose rows are
+// being deleted (C6) — but ONLY for the conversation's owner (review3
+// issue 1): the delete handler authorizes before it gets here, and the
+// registry refuses to be a second way to touch another account's work.
+// The cancel is issued with the registry lock released and nothing is
+// awaited: the generation notices at its next context check and its final
+// writes then land as ErrRowGone/ErrConversationNotFound — which the
+// orchestrator reads as cancellation, not storage failure.
+func (r *genRegistry) AbortConv(convID, userID string) bool {
+	r.mu.Lock()
+	g, ok := r.byConv[convID]
+	if ok && g.UserID != userID {
+		r.mu.Unlock()
+		return false // a foreign conversation: the registry stays untouched
+	}
+	r.mu.Unlock()
+	if ok {
+		g.cancel()
+	}
+	return ok
+}
+
+// AbortUser cancels every live generation of one account — the
+// deletion counterpart of AbortConv (C6): after the owner's rows are gone
+// there is no work worth continuing, and no slot held while anyone waits.
+func (r *genRegistry) AbortUser(userID string) {
+	r.mu.Lock()
+	var running []*generation
+	for _, g := range r.byID {
+		if g.UserID == userID {
+			running = append(running, g)
+		}
+	}
+	r.mu.Unlock()
+	for _, g := range running {
+		g.cancel()
+	}
+}
+
 func (r *genRegistry) Count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.byID)
+}
+
+// countUser reports the running generations of one account (the account-
+// delete sweep's idle check, C6).
+func (r *genRegistry) countUser(userID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, g := range r.byID {
+		if g.UserID == userID {
+			n++
+		}
+	}
+	return n
 }
 
 // abortAll cancels every in-flight generation and reports how many were

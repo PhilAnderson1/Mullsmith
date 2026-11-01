@@ -9,7 +9,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildDate=$(DATE)
 
-.PHONY: build test test-js race vet lint vuln fuzz-short check dist
+.PHONY: build test test-js test-browser race vet lint vuln fuzz-short check dist
 
 build:
 	mkdir -p bin
@@ -24,6 +24,15 @@ test:
 test-js:
 	node --test "web/test/*.test.mjs"
 
+# Real-browser equivalence suite (C7 Stage 6): Chromium drives the shipped
+# HTML/JS against the real Go binary with a scripted fake LLM endpoint.
+# Playwright is DEV-ONLY (web/test/browser/package.json documents it; the
+# runtime stays dependency-free, spec §10). Resolution: this folder's
+# `node_modules` (run `npm install` in web/test/browser) or any GLOBAL
+# install — the suite itself falls back to `npm root -g`.
+test-browser: build
+	node --test web/test/browser/equivalence.test.mjs
+
 race:
 	go test -race ./...
 
@@ -32,18 +41,25 @@ vet:
 
 # gosec must report no issues (§9.15 release gate); suppressions are per-line
 # "#nosec RULE -- justification" comments, which gosec honors by default.
+# `go install` puts tools under GOPATH/bin, which is not always on PATH —
+# fall back to that location so `make check` works on a fresh dev box.
+GOSEC ?= $(shell command -v gosec 2>/dev/null || echo "$(shell go env GOPATH)/bin/gosec")
 lint:
-	gosec ./...
+	$(GOSEC) ./...
 
+GOVULNCHECK ?= $(shell command -v govulncheck 2>/dev/null || echo "$(shell go env GOPATH)/bin/govulncheck")
 vuln:
-	govulncheck ./...
+	$(GOVULNCHECK) ./...
 
 # Short bounded fuzzing of the scratchpad path sandbox (§9.7). CI can raise
 # -fuzztime; the seed corpus lives in internal/scratch.
 fuzz-short:
 	go test ./internal/scratch -run '^$$' -fuzz 'FuzzPath' -fuzztime 60s
 
-check: vet race lint vuln
+# One documented local gate: vet, race-tested Go suite, static checks,
+# AND the JavaScript suite (R6) — CI runs node separately, but a local
+# "check" that skips the client checks is not a whole-app gate.
+check: vet race lint vuln test-js
 
 # Release artifact: single static binary stamped with version/commit/date.
 dist: build

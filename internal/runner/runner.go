@@ -102,15 +102,14 @@ func (g *gate) acquire(ctx context.Context, userID string) (func(), error) {
 // enabled. The probe is a hard requirement: mullsmith must not serve
 // code_run promises it cannot enforce, so a missing or non-functional
 // bwrap is a startup error, never a silent degradation.
-func NewForConfig(cfg *config.Config) (Runner, []string, error) {
+func NewForConfig(cfg *config.Config) (Runner, error) {
 	ce := &cfg.Scratchpad.CodeExec
 	if !ce.Enabled {
-		return nil, nil, nil
+		return nil, nil
 	}
 	if err := ProbeBwrap(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	var warn []string
 	timeout := ce.Timeout.D()
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -131,13 +130,13 @@ func NewForConfig(cfg *config.Config) (Runner, []string, error) {
 		NetworkOpen: ce.AllowNetwork,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Same fail-closed contract as the bwrap probe: per-run cgroup metering
 	// (audit2 finding 2) must be arming-capable here, or code_run promises
 	// bounds we cannot enforce. Delegate=yes on the unit is the usual fix.
 	if r.cgroupRoot == "" {
-		return nil, nil, ErrNoCgroup
+		return nil, ErrNoCgroup
 	}
-	return r, warn, nil
+	return r, nil
 }

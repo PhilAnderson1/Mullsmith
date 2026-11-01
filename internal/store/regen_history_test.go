@@ -107,7 +107,7 @@ func TestBeginRegeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ph, err := db.BeginRegeneration(ctx, u.ID, conv.ID, old.ID)
+	ph, err := db.BeginTurnRegeneration(ctx, u.ID, conv.ID, old.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,13 +130,14 @@ func TestBeginRegeneration(t *testing.T) {
 	if len(hist) != 1 || hist[0].ID != userMsg.ID {
 		t.Errorf("history = %+v, want only the user turn (streaming row must not replay)", hist)
 	}
-	if last, err := db.IsLastMessageInConversation(ctx, conv.ID, ph.ID); err != nil || !last {
-		t.Errorf("placeholder is not the newest row (last=%v err=%v)", last, err)
+	page, _, err := db.ListMessages(ctx, u.ID, conv.ID, "", 10)
+	if err != nil || len(page) == 0 || page[len(page)-1].ID != ph.ID {
+		t.Fatalf("placeholder is not the newest row: %+v (%v)", page, err)
 	}
 
 	// The generation completes into the placeholder — final history is the
 	// user turn plus the regenerated answer, exactly one reply deep.
-	if err := db.FinalizeMessage(ctx, ph.ID, "new answer", "complete", 1, 1, 1); err != nil {
+	if err := db.FinalizeMessage(ctx, ph.ID, "new answer", "complete", "", 1, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	hist, _ = db.ContextHistory(ctx, conv.ID, "")
@@ -145,7 +146,7 @@ func TestBeginRegeneration(t *testing.T) {
 	}
 
 	// Re-running against the retired id cannot resurrect anything.
-	if _, err := db.BeginRegeneration(ctx, u.ID, conv.ID, old.ID); !errors.Is(err, ErrConversationNotFound) {
+	if _, err := db.BeginTurnRegeneration(ctx, u.ID, conv.ID, old.ID, ""); !errors.Is(err, ErrConversationNotFound) {
 		t.Errorf("retired id = %v, want ErrConversationNotFound", err)
 	}
 
@@ -157,7 +158,7 @@ func TestBeginRegeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := countMessages(t, db, conv.ID)
-	if _, err := db.BeginRegeneration(ctx, u.ID, conv.ID, ph.ID); !errors.Is(err, ErrNotLastMessage) {
+	if _, err := db.BeginTurnRegeneration(ctx, u.ID, conv.ID, ph.ID, ""); !errors.Is(err, ErrNotLastMessage) {
 		t.Fatalf("not-newest swap = %v, want ErrNotLastMessage", err)
 	}
 	if countMessages(t, db, conv.ID) != before {
@@ -172,12 +173,12 @@ func TestBeginRegeneration(t *testing.T) {
 	if err := db.CreateUser(ctx, other); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.BeginRegeneration(ctx, other.ID, conv.ID, nudge.ID); !errors.Is(err, ErrConversationNotFound) {
+	if _, err := db.BeginTurnRegeneration(ctx, other.ID, conv.ID, nudge.ID, ""); !errors.Is(err, ErrConversationNotFound) {
 		t.Errorf("foreign swap = %v, want ErrConversationNotFound", err)
 	}
 	// A USER row is not regenerable through the store either (belt to the
 	// handler's 400): same indistinguishable not-found.
-	if _, err := db.BeginRegeneration(ctx, u.ID, conv.ID, nudge.ID); !errors.Is(err, ErrConversationNotFound) ||
+	if _, err := db.BeginTurnRegeneration(ctx, u.ID, conv.ID, nudge.ID, ""); !errors.Is(err, ErrConversationNotFound) ||
 		countMessages(t, db, conv.ID) != before {
 		t.Error("user-row swap must be refused without side effects")
 	}

@@ -66,13 +66,14 @@ func (s *Server) messageJSON(m *store.Message, userID string) map[string]any {
 	if m.DurationMS != nil && *m.DurationMS > 0 {
 		j["duration_ms"] = *m.DurationMS
 	}
-	if m.ToolCallID != "" {
-		j["tool_call_id"] = m.ToolCallID
+	if m.GenerationID != "" {
+		// Which generation produced this round.
+		j["generation_id"] = m.GenerationID
 	}
-	if m.Synthetic {
-		// Server-inserted turn (view_image, §7.2): the client renders no
-		// bubble for it. Absent means a genuine message.
-		j["synthetic"] = true
+	if m.StatusNote != "" {
+		// The durable reason the live stream announced (C7), rendered as the
+		// bubble's status note instead of a generic per-status line.
+		j["status_note"] = m.StatusNote
 	}
 	if len(m.Calls) > 0 {
 		calls := make([]map[string]any, 0, len(m.Calls))
@@ -82,7 +83,10 @@ func (s *Server) messageJSON(m *store.Message, userID string) map[string]any {
 				"tool":      tc.Tool,
 				"arguments": tc.Arguments,
 				"status":    tc.Status,
-				"result":    tc.Result,
+				// The card payload as stored (C7): the same {summary,data}
+				// the live tool_end event carried, so one projection renders
+				// both views.
+				"display": tc.Display,
 			})
 		}
 		j["tool_calls"] = calls
@@ -330,11 +334,26 @@ func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleConversationDelete(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
-	if err := s.store.DeleteConversation(r.Context(), user.ID, r.PathValue("id")); err != nil {
+	convID := r.PathValue("id")
+	// Authorization is a PREREQUISITE for every side effect (review3
+	// issue 1): ownership resolves before the cancel is even requested, so
+	// a foreign account's DELETE — which answers the same 404 — cannot
+	// touch the owner's running generation or remembered consent.
+	if _, err := s.store.ConversationForUser(r.Context(), user.ID, convID); err != nil {
 		s.writeConvErr(w, r, err)
 		return
 	}
-	s.remembered.forget(r.PathValue("id")) // consent dies with the conversation (§9.9)
+	// Coordinate with the live generation before deleting rows (C6): its
+	// model call and any tool execution stop at their context, and the
+	// final writes racing this delete read as cancellation (ErrRowGone /
+	// ErrConversationNotFound) rather than as a saved state the browser
+	// will never load. No wait: the cancel does not hold anything up.
+	s.gens.AbortConv(convID, user.ID)
+	if err := s.store.DeleteConversation(r.Context(), user.ID, convID); err != nil {
+		s.writeConvErr(w, r, err)
+		return
+	}
+	s.remembered.forget(convID) // consent dies with the conversation (§9.9)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -370,6 +389,13 @@ func (s *Server) handleConversationsPrune(w http.ResponseWriter, r *http.Request
 		return
 	}
 	for _, convID := range ids {
+		// Cancel each deleted conversation's live generation (C6) before
+		// this response: rows are gone, so continuing model work or tool
+		// launches have nothing left to write to — stop them now instead
+		// of letting their final writes race the prune. ids are exactly
+		// the ownership-filtered rows PruneConversations deleted (review3
+		// issue 1), and the registry double-checks the owner anyway.
+		s.gens.AbortConv(convID, user.ID)
 		s.remembered.forget(convID) // consent dies with the conversation (§9.9)
 	}
 	if ids == nil {

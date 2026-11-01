@@ -145,7 +145,6 @@ func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	return Result{
 		Content: string(body),
 		Summary: sum,
-		Data:    map[string]any{"path": rel, "entries": outs, "truncated": truncated},
 	}, nil
 }
 
@@ -208,7 +207,6 @@ func (FsRead) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	return Result{
 		Content: string(body),
 		Summary: fmt.Sprintf("Read %s (%s%s)", quoteShort(args.Path), humanBytes(int64(len(buf))), truncMark(truncated)),
-		Data:    map[string]any{"path": args.Path, "bytes": len(buf), "truncated": truncated},
 	}, nil
 }
 
@@ -340,7 +338,6 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	return Result{
 		Content: fmt.Sprintf(`{"path":%s,"bytes_written":%d}`, mustJSON(rel), n),
 		Summary: fmt.Sprintf("Wrote %s (%s)", quoteShort(rel), humanBytes(int64(n))),
-		Data:    map[string]any{"path": rel, "bytes": n},
 	}, nil
 }
 
@@ -500,7 +497,6 @@ func (FsDelete) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	return Result{
 		Content: fmt.Sprintf(`{"deleted":%s}`, mustJSON(rel)),
 		Summary: "Deleted " + quoteShort(rel),
-		Data:    map[string]any{"path": rel, "deleted": true},
 	}, nil
 }
 
@@ -549,10 +545,7 @@ func (FilesShare) Parameters() map[string]any {
 	}
 }
 
-// shareResult builds the tool answer: Content is the JSON persisted in the
-// tool_calls audit row — the frontend rebuilds download cards from it and
-// gates on "path", so the audit trail alone reproduces the card — and Data
-// feeds the live tool_end SSE event.
+// shareResult keeps the model answer separate from the download-card payload.
 func shareResult(dstRel, name string, bytes int64, note string) Result {
 	url := "/api/v1/files/download?path=" + urlEncode(dstRel)
 	body, _ := json.Marshal(map[string]any{
@@ -564,7 +557,7 @@ func shareResult(dstRel, name string, bytes int64, note string) Result {
 		Data: map[string]any{
 			"file": map[string]any{
 				"path": dstRel, "name": name, "bytes": bytes,
-				"media_type": scratch.MediaTypeForPath(dstRel), "url": url, "note": note,
+				"url": url, "note": note,
 			},
 		},
 	}

@@ -100,6 +100,11 @@ type Server struct {
 	// windowProbe is the seam for the /models lookup; tests substitute
 	// canned answers.
 	windowProbe func(context.Context) (map[string]int, bool)
+	// probeMu guards probeDone, the single-flight marker (R5): overlapping
+	// refresh intent joins the probe already running instead of starting
+	// another GET /models. probeDone is non-nil exactly while one runs.
+	probeMu   sync.Mutex
+	probeDone chan struct{}
 }
 
 // hashQueue is how many callers may wait behind the hash gate before new

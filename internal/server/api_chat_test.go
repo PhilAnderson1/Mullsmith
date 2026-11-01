@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -246,7 +247,7 @@ func TestChatSendStreamsAndPersists(t *testing.T) {
 	if ev != "done" {
 		t.Fatalf("last event = %q, want done", ev)
 	}
-	if done["status"] != "complete" || done["message_id"] != msgID {
+	if done["status"] != "complete" || lastRoundID(t, done) != msgID {
 		t.Errorf("done = %v", done)
 	}
 
@@ -289,11 +290,11 @@ func TestChatDoneReportsUsageAndTiming(t *testing.T) {
 	if done["usage_tokens"] != float64(1203) {
 		t.Errorf("done usage_tokens = %v, want 1203", done["usage_tokens"])
 	}
-	if done["completion_tokens"] != float64(3) {
-		t.Errorf("done completion_tokens = %v, want 3", done["completion_tokens"])
+	if roundsOf(t, done)[0]["completion_tokens"] != float64(3) {
+		t.Errorf("done completion_tokens = %v, want 3", roundsOf(t, done)[0]["completion_tokens"])
 	}
-	if ms, _ := done["duration_ms"].(float64); ms <= 0 {
-		t.Errorf("done duration_ms = %v, want > 0", done["duration_ms"])
+	if ms, _ := roundsOf(t, done)[0]["duration_ms"].(float64); ms <= 0 {
+		t.Errorf("done duration_ms = %v, want > 0", roundsOf(t, done)[0]["duration_ms"])
 	}
 
 	var page struct {
@@ -894,5 +895,195 @@ func TestChatToolResultPersistFailureEndsGeneration(t *testing.T) {
 	// The second model round must not have run.
 	if _, dup := es.data["token"]; dup {
 		t.Errorf("post-fault round produced tokens despite the break: %v", es.events)
+	}
+}
+
+// --- C2: send acceptance is ONE atomic operation --------------------------------
+
+// Every statement of BeginSend gets an injected failure in turn; each must
+// answer as a plain HTTP error with NOTHING committed. The defect this
+// pins: the user row used to be durable under such an error, the client
+// rolled its optimistic bubble back over it, and the retry duplicated the
+// message.
+func TestBeginSendIsAllOrNothing(t *testing.T) {
+	fake := newFakeLLM(t, scriptReply("ok"))
+	cfg := chatCfg(t, fake.URL)
+	a := signedInChat(t, cfg)
+	u := ownerOf(t, a)
+
+	cases := []struct {
+		name    string
+		trigger string
+		drop    string
+		withAtt bool
+	}{
+		{"user row",
+			`CREATE TRIGGER inj_row BEFORE INSERT ON messages WHEN NEW.role='user'
+			 BEGIN SELECT RAISE(ABORT, 'injected user-row failure'); END`,
+			`DROP TRIGGER inj_row`, false},
+		{"attachment link",
+			`CREATE TRIGGER inj_att BEFORE INSERT ON attachments
+			 BEGIN SELECT RAISE(ABORT, 'injected attach failure'); END`,
+			`DROP TRIGGER inj_att`, true},
+		{"assistant draft",
+			`CREATE TRIGGER inj_draft BEFORE INSERT ON messages WHEN NEW.role='assistant'
+			 BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`,
+			`DROP TRIGGER inj_draft`, false},
+		{"activity bump",
+			`CREATE TRIGGER inj_bump BEFORE UPDATE ON conversations
+			 BEGIN SELECT RAISE(ABORT, 'injected bump failure'); END`,
+			`DROP TRIGGER inj_bump`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := createConv(t, a, map[string]any{"title": "atomic " + tc.name})
+			body := map[string]any{"content": "question"}
+			if tc.withAtt {
+				seedFile(t, cfg, u.ID, "uploads/report.csv", []byte("a,b\n"))
+				body["attachment_paths"] = []string{"uploads/report.csv"}
+			}
+			if err := a.db.ExecForTest(tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			resp := a.do(http.MethodPost, "/api/v1/conversations/"+c.ID+"/messages", body)
+			if resp.StatusCode != http.StatusInternalServerError || apiErrCode(t, resp) != "internal" {
+				t.Fatalf("injected %s: %d, want 500", tc.name, resp.StatusCode)
+			}
+			// No partial turn: the whole begin-send rolled back.
+			items, _, err := a.db.ListMessages(context.Background(), u.ID, c.ID, "", 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 0 {
+				t.Fatalf("injected %s left %d rows: %+v", tc.name, len(items), items)
+			}
+			// With the fault gone, the same send commits and streams whole.
+			if err := a.db.ExecForTest(tc.drop); err != nil {
+				t.Fatal(err)
+			}
+			r := sendChat(t, a, c.ID, "question")
+			rd := newSSEReader(t, r)
+			rd.untilDone()
+			r.Body.Close()
+			items, _, err = a.db.ListMessages(context.Background(), u.ID, c.ID, "", 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 2 || items[0].Role != "user" || items[0].Status != "complete" ||
+				items[1].Role != "assistant" || items[1].Status != "complete" {
+				t.Fatalf("retry after rolled-back send = %+v, want user+assistant complete", items)
+			}
+		})
+	}
+}
+
+// The regeneration swap gets the same treatment: with the placeholder insert
+// rejected, the retired reply must survive untouched — never a conversation
+// one turn short.
+func TestRegenerationSwapRollsBackOnDraftFailure(t *testing.T) {
+	var n int32
+	fake := newFakeLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		i := atomic.AddInt32(&n, 1)
+		scriptReply(fmt.Sprintf("reply-%d", i))(w, r)
+	})
+	a := signedInChat(t, chatCfg(t, fake.URL))
+	c := createConv(t, a, map[string]any{"title": "SwapRB"})
+	u := ownerOf(t, a)
+
+	resp := sendChat(t, a, c.ID, "ask")
+	rd := newSSEReader(t, resp)
+	_, start := rd.next()
+	firstID, _ := start["message_id"].(string)
+	rd.untilDone()
+	resp.Body.Close()
+
+	if err := a.db.ExecForTest(`CREATE TRIGGER inj_draft BEFORE INSERT ON messages
+		WHEN NEW.role='assistant'
+		BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	r := a.do(http.MethodPost, "/api/v1/messages/"+firstID+"/regenerate", nil)
+	if r.StatusCode != http.StatusInternalServerError || apiErrCode(t, r) != "internal" {
+		t.Fatalf("injected regeneration: %d, want 500", r.StatusCode)
+	}
+	m, err := a.db.GetMessageForUser(context.Background(), u.ID, firstID)
+	if err != nil || m == nil || m.Content != "reply-1" || m.Status != "complete" {
+		t.Errorf("previous reply damaged by the rolled-back swap: %+v err=%v", m, err)
+	}
+	items, _, err := a.db.ListMessages(context.Background(), u.ID, c.ID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Errorf("rows after rolled-back swap = %+v, want the original pair", items)
+	}
+	if err := a.db.ExecForTest(`DROP TRIGGER inj_draft`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- C1: admission happens under the generation's reservation ------------------
+
+// One generation is held at a controlled boundary (inside the upstream
+// call) while a second request arrives for the same conversation: it is
+// refused busy, never admitted over a snapshot the running generation is
+// about to invalidate. After the first answer is durable, the NEXT send is
+// admitted against fresh history — its upstream request quotes the
+// completed predecessor.
+func TestSendAdmittedUnderReservation(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		requests []string
+	)
+	release, openRelease := gate()
+	arrived := make(chan struct{}, 4)
+	fake := newFakeLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		requests = append(requests, string(b))
+		first := len(requests) == 1
+		mu.Unlock()
+		arrived <- struct{}{}
+		if first {
+			<-release // generation A halts mid-upstream
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		sseUp(w, deltaJSON(map[string]any{"content": "the finished answer"}))
+		sseUp(w, "[DONE]")
+	})
+	a := signedInChat(t, chatCfg(t, fake.URL))
+	c := createConv(t, a, map[string]any{"title": "Snap"})
+
+	respA := sendChat(t, a, c.ID, "question one")
+	<-arrived // A is now inside the upstream call; the answer is not back
+
+	// B cannot be admitted at all while A holds the conversation.
+	respB := a.do(http.MethodPost, "/api/v1/conversations/"+c.ID+"/messages",
+		map[string]any{"content": "question two"})
+	if respB.StatusCode != http.StatusConflict || apiErrCode(t, respB) != "generation_in_progress" {
+		t.Fatalf("concurrent send = %d, want 409 generation_in_progress", respB.StatusCode)
+	}
+
+	openRelease()
+	rd := newSSEReader(t, respA)
+	rd.untilDone()
+	respA.Body.Close()
+
+	respC := sendChat(t, a, c.ID, "question three")
+	rd = newSSEReader(t, respC)
+	rd.untilDone()
+	respC.Body.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("upstream requests = %d, want 2 (B never reached the endpoint)", len(requests))
+	}
+	last := requests[1]
+	for _, want := range []string{"question one", "the finished answer", "question three"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("the admitted request omits %q; body = %s", want, last)
+		}
 	}
 }

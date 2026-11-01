@@ -284,6 +284,19 @@ type LLM struct {
 	// per entry (llm.models[].vision).
 	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"`
 
+	// Upstream progress budgets (C8) — PROGRESS budgets, never total
+	// timeouts: a long reasoning run that keeps sending data is legitimate
+	// and must never be cut short. upstream_header_timeout caps the wait
+	// for the endpoint's response headers; upstream_stall_timeout caps the
+	// SILENCE between bytes once the stream has started. Any byte counts as
+	// transport progress, SSE comment heartbeats included — an endpoint
+	// that keeps the pipe talking is alive as far as the transport is
+	// concerned, whether it has model progress to show is its business.
+	// House off-syntax (§2.2): absent → default, -1 → off, 0 or any other
+	// negative → startup error.
+	UpstreamHeaderTimeout Duration `yaml:"upstream_header_timeout"`
+	UpstreamStallTimeout  Duration `yaml:"upstream_stall_timeout"`
+
 	// Thinking control (thinking-control-specification.md §2). All three
 	// are optional: with none spelled, the existing transport is kept
 	// and no thinking selector appears. The choice LIST lives on the
@@ -935,6 +948,14 @@ func (c *Config) setDefaults() {
 	if c.LLM.VisionMaxImageBytes == 0 {
 		c.LLM.VisionMaxImageBytes = 4 << 20
 	}
+	// Upstream progress budgets (C8): absent takes the shipped default;
+	// the off sentinel (-1) survives to mean "no cap" for the client.
+	if c.LLM.UpstreamHeaderTimeout == 0 {
+		c.LLM.UpstreamHeaderTimeout = Duration(90 * time.Second)
+	}
+	if c.LLM.UpstreamStallTimeout == 0 {
+		c.LLM.UpstreamStallTimeout = Duration(120 * time.Second)
+	}
 	if c.Tools.WebSearch.Provider == "" {
 		c.Tools.WebSearch.Provider = "brave"
 	}
@@ -1060,6 +1081,23 @@ func (c *Config) Validate() error {
 	}
 	if c.spelledZeroDur("server", "write_timeout") {
 		f.bad("server.write_timeout: 0 is not the off spelling — write -1 for no write cap")
+	}
+	// The two upstream progress budgets (C8) are off-switches too and
+	// follow the same house syntax: a positive duration, or the bare -1
+	// for no cap; 0 spelled out and every other negative are errors.
+	for _, k := range []struct {
+		key string
+		v   Duration
+	}{
+		{"upstream_header_timeout", c.LLM.UpstreamHeaderTimeout},
+		{"upstream_stall_timeout", c.LLM.UpstreamStallTimeout},
+	} {
+		if k.v < 0 && k.v != offDuration {
+			f.bad("llm.%s: must be a positive duration like 30s, or -1 for no cap", k.key)
+		}
+		if c.spelledZeroDur("llm", k.key) {
+			f.bad("llm.%s: 0 is not the off spelling — write -1 for no cap", k.key)
+		}
 	}
 	c.TrustedNets = nil
 	for _, p := range c.Server.TrustedProxies {

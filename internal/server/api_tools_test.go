@@ -26,6 +26,7 @@ type fakeTool struct {
 	name     string
 	content  string
 	summary  string
+	data     any // card payload override; nil keeps the sample below
 	execErr  error
 	mu       sync.Mutex
 	calls    int
@@ -45,7 +46,11 @@ func (f *fakeTool) Execute(ctx context.Context, inv tools.Invocation) (tools.Res
 	if f.execErr != nil {
 		return tools.Result{}, f.execErr
 	}
-	return tools.Result{Content: f.content, Summary: f.summary, Data: []string{"https://example.com/a"}}, nil
+	data := f.data
+	if data == nil {
+		data = []string{"https://example.com/a"}
+	}
+	return tools.Result{Content: f.content, Summary: f.summary, Data: data}, nil
 }
 
 func (f *fakeTool) callCount() int {
@@ -230,7 +235,11 @@ func TestChatToolLoopEndToEnd(t *testing.T) {
 	defer resp.Body.Close()
 	es := drainSSE(t, newSSEReader(t, resp))
 
-	want := []string{"start", "tool_start", "tool_args", "tool_args", "tool_end", "token", "token", "done"}
+	// `round` between the tool round and the answer is the C7 identity
+	// contract: the server creates a fresh assistant row per model round, and
+	// now says so, so the client's bubbles match the rows a reload shows.
+	want := []string{"start", "tool_start", "tool_args", "tool_args", "tool_end",
+		"round", "token", "token", "done"}
 	if strings.Join(es.events, ",") != strings.Join(want, ",") {
 		t.Fatalf("events = %v, want %v", es.events, want)
 	}
@@ -619,5 +628,113 @@ func TestHistoryToLLMPairing(t *testing.T) {
 	}
 	if len(plain) != 2 || plain[0].Content != "q1" || plain[1].Content != "done" {
 		t.Fatalf("plain = %+v, want [q1, done]", plain)
+	}
+}
+
+// --- C3: side effects require their durable predecessors --------------------------
+
+// The proposing assistant turn is a PREREQUISITE of the tool calls inside
+// it: when completing that turn fails, the proposed side effect must not
+// execute and no further model round may run. The old loop recorded the
+// failure "for eventual reporting" and executed anyway — the terminal
+// error came after the side effect had already happened.
+func TestProposingTurnSaveFailureStopsToolExecution(t *testing.T) {
+	search := &fakeTool{name: "web_search", content: `{}`, summary: "ran"}
+	reg := registryFor(map[string]string{"web_search": "auto"}, search)
+	cfg := toolChatCfg(t, 4, map[string]string{"web_search": "auto"})
+	a, script := newToolServer(t, cfg, reg, [][]string{
+		{toolCallChunk(0, "call_p", "web_search", `{"query":"x"}`), finishChunk("tool_calls")},
+		{answerChunk("must not run"), finishChunk("stop")},
+	})
+	c := createConv(t, a, map[string]any{"title": "C3a"})
+
+	// Fail exactly the proposing turn's completing write (streaming →
+	// complete on the draft row).
+	if err := a.db.ExecForTest(`CREATE TRIGGER no_complete BEFORE UPDATE ON messages
+		WHEN OLD.status='streaming' AND NEW.status='complete'
+		BEGIN SELECT RAISE(ABORT, 'injected finalize failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	resp := sendChat(t, a, c.ID, "search x")
+	defer resp.Body.Close()
+	rd := newSSEReader(t, resp)
+	es := drainSSE(t, rd)
+	if code, _ := es.data["error"]["code"].(string); code != "storage_error" {
+		t.Fatalf("error event = %v, want storage_error", es.data["error"])
+	}
+	ev, done := rd.next()
+	if ev != "done" || done["status"] != "error" {
+		t.Errorf("final event = %q %v, want done with status error", ev, done)
+	}
+	if search.callCount() != 0 {
+		t.Errorf("tool ran %d times after the proposing turn failed to become replayable", search.callCount())
+	}
+	if script.roundCount() != 1 {
+		t.Errorf("model rounds = %d, want 1 (no continuation on undurable memory)", script.roundCount())
+	}
+}
+
+// An audit-insert failure stops the loop as a typed persistence error too:
+// the refusal answer exists only in session memory, so continuing (or
+// answering) over it would replay as silence.
+func TestAuditInsertFailureStopsAsStorageError(t *testing.T) {
+	risky := &fakeTool{name: "code_run", content: `{"exit":0}`, summary: "ran"}
+	reg := registryFor(map[string]string{"code_run": "auto"}, risky)
+	cfg := toolChatCfg(t, 4, map[string]string{"code_run": "auto"})
+	a, script := newToolServer(t, cfg, reg, [][]string{
+		{toolCallChunk(0, "call_a", "code_run", `{"script":"ls"}`), finishChunk("tool_calls")},
+		{answerChunk("must not continue"), finishChunk("stop")},
+	})
+	c := createConv(t, a, map[string]any{"title": "C3c"})
+	if err := a.db.ExecForTest(`CREATE TRIGGER no_audit BEFORE INSERT ON tool_calls
+		BEGIN SELECT RAISE(ABORT, 'injected audit insert failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	resp := sendChat(t, a, c.ID, "run it")
+	defer resp.Body.Close()
+	rd := newSSEReader(t, resp)
+	es := drainSSE(t, rd)
+	if risky.callCount() != 0 {
+		t.Errorf("unaudited tool executed %d times", risky.callCount())
+	}
+	if es.data["tool_end"]["status"] != "error" {
+		t.Errorf("tool_end = %v, want the not-executed error", es.data["tool_end"])
+	}
+	if code, _ := es.data["error"]["code"].(string); code != "storage_error" {
+		t.Errorf("error event = %v, want storage_error (a typed persistence failure, not a shrug)", es.data["error"])
+	}
+	if script.roundCount() != 1 {
+		t.Errorf("model rounds = %d, want 1", script.roundCount())
+	}
+}
+
+// The approval verdict must be durable BEFORE the side effect runs and
+// before "always allow" is remembered: an approved call whose record
+// cannot be written is refused as such, and the loop stops there.
+func TestApprovalAuditFailureBlocksExecution(t *testing.T) {
+	risky := &fakeTool{name: "code_run", content: `{"exit":0}`, summary: "ran"}
+	ac := startApprovalFlow(t, risky)
+	defer ac.resp.Body.Close()
+
+	if err := ac.a.db.ExecForTest(`CREATE TRIGGER no_status_update BEFORE UPDATE ON tool_calls
+		BEGIN SELECT RAISE(ABORT, 'injected audit update failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if r := ac.a.do(http.MethodPost, "/api/v1/generations/"+ac.genID+"/approvals",
+		map[string]any{"approval_id": ac.approvalID, "approve": true, "remember": true}); r.StatusCode != 204 {
+		t.Fatalf("approve: %d %s", r.StatusCode, dumpBody(r))
+	}
+	es := drainSSE(t, ac.rd)
+	if risky.callCount() != 0 {
+		t.Errorf("approved tool ran %d times although its verdict never landed", risky.callCount())
+	}
+	if es.data["tool_end"]["status"] != "error" {
+		t.Errorf("tool_end = %v, want error", es.data["tool_end"])
+	}
+	if code, _ := es.data["error"]["code"].(string); code != "storage_error" {
+		t.Errorf("error event = %v, want storage_error", es.data["error"])
+	}
+	if ac.script.roundCount() != 1 {
+		t.Errorf("model rounds = %d, want 1 (no continuation over an undurable verdict)", ac.script.roundCount())
 	}
 }

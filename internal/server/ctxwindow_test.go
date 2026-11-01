@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,7 +80,7 @@ func TestContextWindowUnknownIsNull(t *testing.T) {
 	if got := s.contextWindow("m1"); got != 0 {
 		t.Errorf("window = %d, want 0 while unresolved", got)
 	}
-	if full, _, _ := s.conversationFull(&store.Conversation{ID: "whatever", Model: "m1"}, "", "plenty of content", nil, ""); full {
+	if adm, err := s.admitSend(context.Background(), &store.Conversation{ID: "whatever", Model: "m1"}, "", "plenty of content", nil, nil); err != nil || adm.full {
 		t.Error("gate must be open while the window is unknown")
 	}
 }
@@ -170,22 +172,22 @@ func TestConversationFullGate(t *testing.T) {
 
 	// ~100 tokens of history against 300 tokens of room: gate open.
 	seed(strings.Repeat("y", 400))
-	if full, why, hist := s.conversationFull(conv, u.ID, "hi", nil, ""); full {
-		t.Errorf("gate closed with room to spare (why=%q)", why)
-	} else if len(hist) != 2 {
+	if adm, err := s.admitSend(context.Background(), conv, u.ID, "hi", nil, nil); err != nil || adm.full {
+		t.Errorf("gate closed with room to spare (err=%v adm=%+v)", err, adm)
+	} else if len(adm.hist) != 2 {
 		// The gate's history is the prompt the send WOULD build: one
 		// seeded row plus the incoming turn, decided from ONE read.
-		t.Errorf("gate history = %d rows, want 2 (seeded + incoming)", len(hist))
+		t.Errorf("gate history = %d rows, want 2 (seeded + incoming)", len(adm.hist))
 	}
 	// Cross the line with one big turn (~750 tokens): the gate answers
 	// before the send pays for it.
 	seed(strings.Repeat("x", 3000))
-	if full, why, _ := s.conversationFull(conv, u.ID, "hi", nil, ""); !full || why != "context_full" {
-		t.Errorf("gate open with history past the window (full=%v why=%q)", full, why)
+	if adm, err := s.admitSend(context.Background(), conv, u.ID, "hi", nil, nil); err != nil || !adm.full || adm.reason != "context_full" {
+		t.Errorf("gate open with history past the window (adm=%+v err=%v)", adm, err)
 	}
 	// A conversation the store cannot read never reads as full.
 	ghost := &store.Conversation{ID: "00NOTAREALID00", Model: "m1"}
-	if full, _, _ := s.conversationFull(ghost, u.ID, "hi", nil, ""); full {
+	if adm, err := s.admitSend(context.Background(), ghost, u.ID, "hi", nil, nil); err != nil || adm.full {
 		t.Error("unknown conversation must not read as full")
 	}
 }
@@ -228,24 +230,24 @@ func TestHistoryCapBindsWithoutWindow(t *testing.T) {
 	// the cap allows — refusing here would be the early-refusal bug.
 	seed("user", "one")
 	last := seed("assistant", "two")
-	if full, why, hist := s.conversationFull(conv, u.ID, "third", nil, ""); full {
-		t.Errorf("send landing exactly ON the cap refused (why=%q)", why)
-	} else if len(hist) != 3 {
-		t.Errorf("gate history = %d rows, want 3", len(hist))
+	if adm, err := s.admitSend(context.Background(), conv, u.ID, "third", nil, nil); err != nil || adm.full {
+		t.Errorf("send landing exactly ON the cap refused (adm=%+v err=%v)", adm, err)
+	} else if len(adm.hist) != 3 {
+		t.Errorf("gate history = %d rows, want 3", len(adm.hist))
 	}
 	// A third stored row brings history TO the cap: readable, but the
 	// incoming turn would make cap+1 — the next read would fail
 	// ErrHistoryLimit, so the send is refused BEFORE anything persists.
 	seed("user", "three")
-	if full, why, _ := s.conversationFull(conv, u.ID, "fourth", nil, ""); !full || why != "history_limit" {
-		t.Errorf("past-cap send accepted (full=%v why=%q)", full, why)
+	if adm, err := s.admitSend(context.Background(), conv, u.ID, "fourth", nil, nil); err != nil || !adm.full || adm.reason != "history_limit" {
+		t.Errorf("past-cap send accepted (adm=%+v err=%v)", adm, err)
 	}
 	// Regenerate excludes the retired reply: with the excluded row the
 	// replayable history is back at the cap, so the same conversation
 	// accepts a replacement — the cap counts what would remain, not
 	// what is stored.
-	if full, why, _ := s.conversationFull(conv, u.ID, "", nil, last); full {
-		t.Errorf("regenerate at the cap refused (why=%q)", why)
+	if adm, err := s.admitSend(context.Background(), conv, u.ID, "", nil, []string{last}); err != nil || adm.full {
+		t.Errorf("regenerate at the cap refused (adm=%+v err=%v)", adm, err)
 	}
 }
 
@@ -271,8 +273,8 @@ func TestReserveAgainstDiscoveredWindow(t *testing.T) {
 	if !known || line != 0 {
 		t.Fatalf("window %d < reserve %d: line = %d (known=%v), want 0/true", 100, reserve, line, known)
 	}
-	if full, why, _ := s.conversationFull(conv, "", "hi", nil, ""); !full || why != "context_full" {
-		t.Errorf("send against reserve-sized window = (full=%v why=%q), want refusal", full, why)
+	if adm, err := s.admitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || !adm.full || adm.reason != "context_full" {
+		t.Errorf("send against reserve-sized window = (adm=%+v err=%v), want refusal", adm, err)
 	}
 
 	// Equal to the reserve: nothing is left for the prompt — refused too.
@@ -280,8 +282,8 @@ func TestReserveAgainstDiscoveredWindow(t *testing.T) {
 	if line, _ := s.overflowLine("m1"); line != 0 {
 		t.Fatalf("window == reserve: line = %d, want 0", line)
 	}
-	if full, why, _ := s.conversationFull(conv, "", "hi", nil, ""); !full || why != "context_full" {
-		t.Errorf("window == reserve = (full=%v why=%q), want refusal", full, why)
+	if adm, err := s.admitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || !adm.full || adm.reason != "context_full" {
+		t.Errorf("window == reserve = (adm=%+v err=%v), want refusal", adm, err)
 	}
 
 	// Larger than the reserve: the normal arithmetic — window minus
@@ -291,7 +293,64 @@ func TestReserveAgainstDiscoveredWindow(t *testing.T) {
 	if line != 50_000 {
 		t.Fatalf("window > reserve: line = %d, want 50000", line)
 	}
-	if full, why, _ := s.conversationFull(conv, "", "hi", nil, ""); full {
-		t.Errorf("empty request against a 50k line refused (why=%q)", why)
+	if adm, err := s.admitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || adm.full {
+		t.Errorf("empty request against a 50k line refused (adm=%+v err=%v)", adm, err)
+	}
+}
+
+// C1's typed contract: a failed history read is an ERROR, never an open
+// gate with a nil history the generation would re-read (or build a partial
+// prompt from). Refusals carry a verdict; failures carry an error.
+func TestAdmitSendReadFailureIsTyped(t *testing.T) {
+	_, s, db := newWindowTest(t,
+		func(context.Context) (map[string]int, bool) { return nil, false },
+		config.LLMModel{ID: "m1", Default: true})
+	db.Close() // every store read fails from here
+	adm, err := s.admitSend(context.Background(),
+		&store.Conversation{ID: "c-absent", Model: "m1"}, "u1", "hi", nil, nil)
+	if err == nil || adm != nil {
+		t.Fatalf("admission over a failed read = (%+v, %v), want (nil, error)", adm, err)
+	}
+}
+
+// R5: overlapping refresh intent shares ONE GET /models. Opening ten chats
+// against an unprobed endpoint used to launch ten probes; now the first
+// starts the flight and the rest join it.
+func TestContextWindowProbesCoalesce(t *testing.T) {
+	gate, open := gate()
+	var probes int32
+	_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
+		atomic.AddInt32(&probes, 1)
+		<-gate // slow endpoint: every other refresh lands mid-flight
+		return map[string]int{"m1": 9999}, true
+	}, config.LLMModel{ID: "m1", Default: true})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.refreshContextWindowFor("m1")
+		}()
+	}
+	time.Sleep(100 * time.Millisecond) // all waiters have joined the flight
+	open()
+	wg.Wait()
+	if n := atomic.LoadInt32(&probes); n != 1 {
+		t.Errorf("probes = %d, want the ten refreshes to share one", n)
+	}
+	if got := s.contextWindow("m1"); got != 9999 {
+		t.Errorf("contextWindow(m1) = %d, want 9999 after the shared probe", got)
+	}
+
+	// The marker resets with the flight: a later refresh probes again.
+	// The probe runs in its goroutine — give it a moment to land.
+	s.refreshContextWindowFor("m1")
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&probes) != 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := atomic.LoadInt32(&probes); n != 2 {
+		t.Errorf("probes after completion = %d, want a fresh probe (marker reset)", n)
 	}
 }

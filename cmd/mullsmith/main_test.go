@@ -205,3 +205,40 @@ func TestAdminDisableEnableUser(t *testing.T) {
 		t.Errorf("unknown target = %d, want 1", code)
 	}
 }
+
+// Every shutdown stage must live inside ONE shared grace deadline (review
+// follow-up to issue 5): sequential WithTimeout(grace) calls gave each
+// stage the full grace again, so the total could stretch to a multiple of
+// the setting.
+func TestShutdownStagesShareOneDeadline(t *testing.T) {
+	const grace = 200 * time.Millisecond
+	var (
+		deadlines []time.Time
+		expired   []bool
+	)
+	stage := func(burn time.Duration) func(context.Context) {
+		return func(ctx context.Context) {
+			dl, _ := ctx.Deadline()
+			deadlines = append(deadlines, dl)
+			time.Sleep(burn)
+			expired = append(expired, ctx.Err() != nil)
+		}
+	}
+	start := time.Now()
+	shutdownWithin(grace,
+		stage(grace+100*time.Millisecond), // overruns the shared budget
+		stage(time.Millisecond),
+		stage(time.Millisecond),
+	)
+	if d := time.Since(start); d > 2*grace {
+		t.Errorf("total shutdown %v exceeded the shared grace %v", d, grace)
+	}
+	for i, dl := range deadlines {
+		if !dl.Equal(deadlines[0]) {
+			t.Errorf("stage %d saw deadline %v, want the shared %v", i, dl, deadlines[0])
+		}
+	}
+	if !expired[1] || !expired[2] {
+		t.Error("a stage starting after the shared deadline must inherit the expiry, not a fresh grace period")
+	}
+}

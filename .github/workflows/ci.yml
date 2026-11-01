@@ -21,3 +21,24 @@ jobs:
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: make test-js
       - run: make check
+
+  # C7 Stage 6: the real-browser equivalence suite in its own job — the only
+  # step that needs a browser. Dev-only Playwright (web/test/browser), never
+  # a runtime dependency (spec §10).
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: make build
+      - name: Install Playwright + Chromium (dev-only test toolchain)
+        working-directory: web/test/browser
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - run: make test-browser

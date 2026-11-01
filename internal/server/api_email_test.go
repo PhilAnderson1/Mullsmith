@@ -22,7 +22,7 @@ type fakeMailer struct {
 	ch chan mail.Job
 }
 
-func (f *fakeMailer) Deliver(to, subject, body string) error {
+func (f *fakeMailer) Deliver(_ context.Context, to, subject, body string) error {
 	select {
 	case f.ch <- mail.Job{To: to, Subject: subject, Body: body}:
 	default:

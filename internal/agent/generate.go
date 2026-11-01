@@ -28,7 +28,8 @@ type Result struct {
 	Status     string // complete | aborted | error
 	Usage      int64  // upstream total_tokens, else an estimate
 	Completion int64  // upstream completion_tokens, else an estimate
-	Err        error  // non-nil only when Status == "error"
+	Err        error  // upstream transport/protocol failure; expected stops use Note
+	Note       string // durable explanation when upstream stops an incomplete reply
 	// ToolCalls holds the complete calls the model proposed this round
 	// (empty when it just answered), ordered by stream index.
 	ToolCalls []llm.ChatToolCall
@@ -57,11 +58,15 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		reasoning  strings.Builder
 		usage      int64
 		completion int64
+		finish     string
 	)
 	acc := map[int]*callAccumulator{}
 	var order []int
 
 	err := g.LLM.StreamTools(ctx, model, msgs, tools, thinking, func(d llm.Delta) error {
+		if d.Finish != "" {
+			finish = d.Finish
+		}
 		if d.Usage > 0 {
 			usage = d.Usage
 		}
@@ -123,6 +128,19 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	switch {
 	case err == nil:
 		res.Status = "complete"
+		switch finish {
+		case "", "stop", "tool_calls":
+			// Some endpoints omit finish_reason; retain the streamed answer.
+		case "length":
+			res.Status = "error"
+			res.Note = "The model reached its output limit before finishing this reply."
+		case "content_filter":
+			res.Status = "error"
+			res.Note = "The model stopped this reply because of its content filter."
+		default:
+			res.Status = "error"
+			res.Note = "The model stopped this reply for an unexpected reason."
+		}
 	case errors.Is(err, ErrClientGone), errors.Is(err, llm.ErrAborted), ctx.Err() != nil:
 		res.Status = "aborted"
 	default:

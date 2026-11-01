@@ -50,55 +50,31 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Overflow gate (spec §6.1): with a known window, a send that would
-	// cross it is refused before anything is persisted or paid for — the
-	// conversation is append-only until the end. The estimate now covers
-	// the actual built request (finding 7), including this turn's content
-	// and attachment manifests, and the row cap binds with or without a
-	// discovered window (review2 finding 1). The history the gate read
-	// rides into the generation: the decision and the prompt are built
-	// from ONE read, so no second read can 409 AFTER the turn was
-	// committed. Unknown window: the token gate is open and the
-	// endpoint's own error stands.
-	full, reason, gateHist := s.conversationFull(conv, user.ID, content, attPaths, "")
-	if full {
-		s.fullRefusal(w, r, reason)
-		return
-	}
-	// A thinking choice shipped with the message is validated against the
-	// backend's effective list and persisted BEFORE anything is streamed:
-	// an invalid one is a plain 400 that never reaches the endpoint, and
-	// a valid one is this generation's snapshot — later tool rounds of the
-	// same reply speak it even if the selector moves mid-flight.
-	if body.Thinking != nil {
-		choice, fp, ok := s.validateThinkingChoice(s.thinkingModel(conv.Model), *body.Thinking)
-		if !ok {
-			writeAPIError(w, r, http.StatusBadRequest, "invalid_thinking_choice",
-				"unknown thinking choice for this endpoint and profile")
-			return
-		}
-		if choice != conv.Thinking || fp != conv.ThinkingCtx {
-			updated, err := s.store.UpdateConversation(r.Context(), user.ID, conv.ID,
-				store.ConversationPatch{Thinking: &choice, ThinkingCtx: &fp})
-			if err != nil {
-				s.writeConvErr(w, r, err)
-				return
-			}
-			conv = updated
-		}
-	}
-
-	// Persist the user turn first (spec §6.1 step 1), then stream. The user
-	// text also seeds auto-titling when the conversation is still unnamed.
-	s.streamAssistant(w, r, conv, content, gateHist, func(bg context.Context) (*store.Message, error) {
-		msg := &store.Message{
-			ConversationID: conv.ID, Role: "user", Content: content,
-			TokenCount: int64ptr(int64(agent.EstimateTokens(content))),
-		}
-		// ONE transaction (finding 4): the turn and its attachment links
-		// commit together — a failed attach can no longer leave a durable
-		// message behind the failure the client rolled its bubble back on.
-		return nil, s.store.AddMessageWithFiles(bg, user.ID, msg, attPaths)
+	// Everything beyond request-shape validation runs inside ONE operation
+	// boundary (C1): runGeneration reserves the conversation, reads the
+	// authoritative snapshot under that reservation, admits the request and
+	// commits it — in that order, with no second history read. The hourly
+	// bucket, the busy refusals and the overflow gate all answer BEFORE
+	// anything is persisted; a thinking choice shipped with the body is
+	// validated and stored there too, so a capacity refusal can never
+	// leave it applied (C1).
+	s.runGeneration(w, r, genCommand{
+		convID:    conv.ID,
+		autoTitle: content, // may name a still-unnamed conversation (§12)
+		extra:     content,
+		attPaths:  attPaths,
+		thinking:  body.Thinking,
+		accept: func(bg context.Context, genID string) (*store.Message, error) {
+			// ONE transaction (C2): the user turn, its attachment links,
+			// the assistant draft and the activity bump commit together —
+			// a failed send leaves NO turn behind the error the client
+			// rolls its optimistic bubble back to, so a retry cannot
+			// duplicate the message (the old split left the user row
+			// durable under a plain HTTP failure).
+			_, draft, err := s.store.BeginSend(bg, user.ID, conv.ID, content, attPaths,
+				int64(agent.EstimateTokens(content)), genID)
+			return draft, err
+		},
 	})
 }
 
@@ -258,28 +234,31 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		s.writeConvErr(w, r, err)
 		return
 	}
-	// streamAssistant secures the per-conversation slot BEFORE prepare runs,
-	// so a refusal leaves the existing reply untouched. Regeneration never
-	// retitles: the conversation already has its name. The overflow gate
-	// applies here too — retrying a reply is still a send — and it measures
-	// the request the REPLACEMENT would make: the old reply is excluded,
-	// because it is retired by the swap and never rides the regenerated
+	// runGeneration secures the per-conversation slot BEFORE admission or
+	// acceptance, so a refusal leaves the existing reply untouched.
+	// Regeneration never retitles: the conversation already has its name.
+	// The overflow gate applies here too — retrying a reply is still a
+	// send — and it measures the request the REPLACEMENT would make: the
+	// retired turn is excluded, because it never rides the regenerated
 	// prompt (finding 7's other half — refusing over content that will not
-	// be sent). "Newest" is deliberately NOT pre-checked here: another send
-	// could change the history between check and mutation (finding 4), so
-	// BeginRegeneration re-checks it INSIDE the swap and answers
+	// be sent). "Newest" is deliberately NOT pre-checked here:
+	// BeginTurnRegeneration re-checks it INSIDE the swap and answers
 	// not_last_message via writeConvErr.
-	full, reason, gateHist := s.conversationFull(conv, user.ID, "", nil, m.ID)
-	if full {
-		s.fullRefusal(w, r, reason)
-		return
-	}
-	s.streamAssistant(w, r, conv, "", gateHist, func(bg context.Context) (*store.Message, error) {
-		// Atomic retire-and-replace (finding 4): newest-check, delete and
-		// placeholder insert share ONE transaction — there is no window
-		// where the old reply is gone without a replacement standing in.
-		ph, err := s.store.BeginRegeneration(bg, user.ID, conv.ID, m.ID)
-		return ph, err
+	s.runGeneration(w, r, genCommand{
+		convID:     conv.ID,
+		regenMsgID: m.ID,
+		accept: func(bg context.Context, genID string) (*store.Message, error) {
+			// Atomic retire-and-replace (finding 4): newest-check, delete
+			// and placeholder insert share ONE transaction — there is no
+			// window where the old reply is gone without a replacement
+			// standing in. The whole turn goes, not just the row this
+			// button named (C7): a multi-round reply's earlier rounds and
+			// their tool results are part of the answer being retired, and
+			// leaving them behind made the retry quote the previous
+			// attempt's own tool work.
+			ph, err := s.store.BeginTurnRegeneration(bg, user.ID, conv.ID, m.ID, genID)
+			return ph, err
+		},
 	})
 }
 
@@ -329,26 +308,81 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 // (spec §6.1 step 5, middle-elided).
 const toolResultBudgetRunes = 8 * 1024
 
-// streamAssistant runs the §6.1 flow end to end: reserve the slot, apply
-// the prepare mutation, then loop model-round → tool-calls → tool-results
-// until the model answers (or the round/approval rules cut it short),
-// pumping SSE the whole way.
+// --- shared operation boundary (R1/C1) -------------------------------------------
+
+// genCommand describes one generation the shared boundary is about to
+// reserve, admit and run: the conversation, the material the admission gate
+// measures (the incoming turn and its attachments for a send; the excluded
+// retired reply for a regenerate), the thinking choice shipped with a send,
+// and the accept operation that makes the turn durable once admission has
+// passed.
+type genCommand struct {
+	convID    string
+	autoTitle string // user text that may name a still-unnamed conversation (§12)
+	extra     string // send: the incoming user text; regenerate: ""
+	attPaths  []string
+	// regenMsgID is the reply a regeneration replaces (send: ""). The rows it
+	// retires — the whole TURN, not the clicked row (C7) — are resolved under
+	// the reservation and excluded from admission AND from the prompt, so the
+	// retry never quotes the retired attempt's earlier rounds or tool results
+	// from rows the swap is about to delete.
+	regenMsgID string
+	thinking   *string
+	// accept makes the turn durable once admission has passed, and is handed
+	// the generation identity (C7) to stamp on the rows it inserts: the
+	// reservation mints it before anything is written, so every round row of
+	// one operation carries the same id and "the rows of this turn" is a
+	// query (regenerate retires a turn, not a row).
+	accept func(bg context.Context, genID string) (*store.Message, error)
+}
+
+// roundOutcome is one round's DURABLE result as the generation-wide `done`
+// event reports it (C7): the row's own id, the status that row actually
+// reached, its speed figures and any note stored against it. The client
+// applies each entry to the bubble that id names, which is what stops a
+// generation-wide event from relabelling a bubble holding a different
+// stored message.
+type roundOutcome struct {
+	MsgID      string `json:"message_id"`
+	Status     string `json:"status"`
+	Completion int64  `json:"completion_tokens,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Note       string `json:"note,omitempty"`
+}
+
+// Terminal notes (C7). The reason a transcript whose rows all saved cleanly
+// still has no answer must be DURABLE, or a reload quietly disagrees with
+// what the live stream said — and these exact strings are what the client
+// renders, live and on reload, from messages.status_note.
+const (
+	noteStoppedShort   = "Stopped before the answer finished."
+	noteSaveIncomplete = "The reply could not be fully saved; reload this conversation."
+	noteWindowMidLoop  = "This conversation reached its context window during tool rounds — start a new chat."
+)
+
+// runGeneration is the ONE boundary every §6.1 send passes through: hourly
+// bucket → conversation reservation → authoritative snapshot read →
+// admission → accept (the atomic begin-send or regeneration swap) → the
+// streaming loop, model-round → tool-calls → tool-results until the model
+// answers (or the round/approval rules cut it short), pumping SSE the whole
+// way.
 //
-// autoTitle is the user text that may name an still-unnamed conversation
-// (empty from regenerate; see nameConversation).
-//
-// prepare returns the assistant draft row the generation will complete —
-// regeneration commits its placeholder as part of the atomic swap (finding
-// 4) and hands it back; a send returns nil and the first draft row is
-// created here like every later tool-round row.
+// The order is the contract (C1): the history is read only AFTER the
+// conversation is reserved, so the admission snapshot belongs to the
+// reserved operation — a second request that races a running generation is
+// refused generation_in_progress, it can never be admitted against history
+// the running generation is about to invalidate. Admission is typed: a
+// refusal carries a reason, a failed store read carries an error, and a nil
+// history is never an error signal. Before accept nothing is persisted;
+// after accept the turn belongs to the generation and every failure
+// reconciles through the SSE terminal events (C2). A thinking choice
+// shipped with a send is validated and persisted only once capacity has
+// admitted it — a refusal leaves the stored setting untouched.
 //
 // All persistence happens on a context detached from the browser request so
 // that disconnect-triggered aborts can still save the partial answer
 // (spec §6.2).
-func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
-	conv *store.Conversation, autoTitle string, gateHist []store.Message,
-	prepare func(bg context.Context) (*store.Message, error),
-) {
+func (s *Server) runGeneration(w http.ResponseWriter, r *http.Request, cmd genCommand) {
 	user := UserFrom(r.Context())
 
 	// Hourly chat bucket (§9.11 limits.chat_messages_per_hour — was
@@ -365,7 +399,7 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	// genCtx lives independent of r.Context(); a watcher cancels it when the
 	// browser goes away.
 	genCtx, cancel := context.WithCancel(context.Background())
-	g, err := s.gens.Start(conv.ID, user.ID,
+	g, err := s.gens.Start(cmd.convID, user.ID,
 		s.cfg.Limits.ConcurrentStreamsPerUser,
 		s.cfg.Limits.ConcurrentStreamsTotal, cancel)
 	if err != nil {
@@ -397,22 +431,81 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
-	// The history the admission gate decided on (review2 finding 1):
-	// decision and prompt come from ONE read, so no second read can 409
-	// AFTER prepare committed the turn. Nil reaches here only when the
-	// gate's store read failed — re-read BEFORE prepare, so even that
-	// fallback refuses (e.g. history_limit) without persisting first.
-	hist := gateHist
-	if hist == nil {
-		var err error
-		hist, err = s.store.ContextHistory(genCtx, conv.ID, "")
+	// The conversation row re-read UNDER the reservation: a settings PATCH
+	// that landed between the handler's lookup and this point is visible
+	// here, and the conversation is append-only until this slot is
+	// released — admission, acceptance and streaming all see this state.
+	conv, err := s.store.ConversationForUser(genCtx, user.ID, cmd.convID)
+	if err != nil {
+		s.writeConvErr(w, r, err)
+		return
+	}
+
+	// Overflow gate (spec §6.1): with a known window, a send that would
+	// cross it is refused before anything is persisted or paid for. The
+	// estimate covers the actual built request (finding 7) including this
+	// turn's content and attachment manifests, and the row cap binds with
+	// or without a discovered window (review2 finding 1). The history the
+	// verdict was measured against rides into the prompt: decision and
+	// request come from ONE read under ONE reservation. Unknown window:
+	// the token gate is open and the endpoint's own error stands.
+	// A regeneration's retire set is read HERE, under the reservation and
+	// before admission (C7): the same rows BeginTurnRegeneration will delete,
+	// so what the gate measured and the prompt built both describe the
+	// history the swap actually leaves behind.
+	var excludeIDs []string
+	if cmd.regenMsgID != "" {
+		ids, err := s.store.TurnRetireIDs(genCtx, conv.ID, cmd.regenMsgID)
 		if err != nil {
 			s.writeConvErr(w, r, err)
 			return
 		}
+		excludeIDs = ids
 	}
 
-	ph, err := prepare(genCtx)
+	adm, err := s.admitSend(genCtx, conv, user.ID, cmd.extra, cmd.attPaths, excludeIDs)
+	if err != nil {
+		// Typed store failure (C1): refuse without persisting — never a
+		// silently re-read second opinion over a half-built snapshot.
+		s.writeConvErr(w, r, err)
+		return
+	}
+	if adm.full {
+		s.fullRefusal(w, r, adm.reason)
+		return
+	}
+
+	// A thinking choice shipped with the message is validated against the
+	// backend's effective list and persisted once capacity admitted (C1):
+	// an invalid one is a plain 400 that never reaches the endpoint, a
+	// capacity refusal never leaves it applied, and a valid one is this
+	// generation's snapshot — later tool rounds of the same reply speak it
+	// even if the selector moves mid-flight.
+	if cmd.thinking != nil {
+		choice, fp, ok := s.validateThinkingChoice(s.thinkingModel(conv.Model), *cmd.thinking)
+		if !ok {
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_thinking_choice",
+				"unknown thinking choice for this endpoint and profile")
+			return
+		}
+		if choice != conv.Thinking || fp != conv.ThinkingCtx {
+			updated, err := s.store.UpdateConversation(genCtx, user.ID, conv.ID,
+				store.ConversationPatch{Thinking: &choice, ThinkingCtx: &fp})
+			if err != nil {
+				s.writeConvErr(w, r, err)
+				return
+			}
+			conv = updated
+		}
+	}
+
+	// Acceptance (C2): ONE store call makes the turn durable — BeginSend
+	// commits user row, attachment links, draft and activity bump
+	// together; BeginTurnRegeneration swaps the retired turn for its
+	// placeholder atomically. A failure here is a plain HTTP error with
+	// nothing committed; past this point the turn belongs to the accepted
+	// generation.
+	am, err := cmd.accept(genCtx, g.ID)
 	if err != nil {
 		s.writeConvErr(w, r, err)
 		return
@@ -421,38 +514,33 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	// From here on, errors travel as SSE events.
 
 	// ONE prompt builder for this loop and the admission gate (finding 7):
-	// what the gate measures is what is sent — conversation system prompt,
+	// what the gate measured is what is sent — conversation system prompt,
 	// tool guidance, the vision-filtered tool list and attachment
-	// manifests, and (for a send) the incoming user turn as the last row.
-	// The regeneration placeholder is status='streaming', so it never
-	// replays and hist correctly stops at the rows before it.
-	msgs, toolSpecs := s.buildRequest(conv, user.ID, hist)
+	// manifests, with the incoming turn as the last row. The draft row is
+	// status='streaming', so the admitted history never quotes it, and the
+	// regeneration placeholder likewise.
+	msgs, toolSpecs := s.buildRequest(conv, user.ID, adm.hist)
 	visionOn := s.cfg.LLM.VisionFor(s.thinkingModel(conv.Model))
-
-	// The first draft row: regeneration's prepare already committed one as
-	// part of the swap (finding 4); a send creates it here, like every
-	// later tool-round row.
-	am := ph
-	if am == nil {
-		am = &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
-		if err := s.store.AddMessage(genCtx, user.ID, am); err != nil {
-			s.writeConvErr(w, r, err)
-			return
-		}
-	}
 
 	conn, err := newSSE(w)
 	if err != nil {
-		s.finishMessage(genCtx, am.ID, "", "aborted", 0, 0, 0)
+		// Best-effort: a failure here leaves the draft 'streaming', and the
+		// startup sweep stamps it (C6) — nothing actionable mid-failure.
+		_ = s.finishMessage(am.ID, "", "aborted", "", 0, 0, 0)
 		return
 	}
+	// `start` is the acceptance signal AND round 1's identity (C7): its
+	// message_id is the row this round streams into and the bubble key the
+	// client keeps. Later rounds are announced by `round` events, so the
+	// client renders the same row boundaries a reload will show.
 	if err := conn.Event("start", map[string]any{
 		"generation_id":   g.ID,
 		"message_id":      am.ID,
 		"conversation_id": conv.ID,
+		"round":           0,
 	}); err != nil {
 		conn.Close()
-		s.finishMessage(genCtx, am.ID, "", "aborted", 0, 0, 0)
+		_ = s.finishMessage(am.ID, "", "aborted", "", 0, 0, 0) // swept if it fails too
 		return
 	}
 
@@ -487,8 +575,8 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	// round-trip lands before the first token). It runs on its own
 	// context so a browser disconnect cannot strand the rename, and the
 	// store write is guarded so a user's manual rename always wins.
-	if autoTitle != "" && (conv.Title == "" || conv.Title == store.DefaultTitle) {
-		s.nameConversation(conv, autoTitle, conn)
+	if cmd.autoTitle != "" && (conv.Title == "" || conv.Title == store.DefaultTitle) {
+		s.nameConversation(conv, cmd.autoTitle, conn)
 	}
 
 	// --- the agentic loop (spec §6.1 steps 3–5) --------------------------------
@@ -502,7 +590,6 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		maxRounds = 0
 	}
 	var res agent.Result
-	var lastMS int64 // model-round wall time behind the final message row
 	// storeErr records a persistence failure the terminal events must
 	// surface (finding 4): success may only be announced when the final
 	// state is actually durable — a storage error is not an endpoint error.
@@ -510,6 +597,50 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	// midFull marks the loop stopping on its own overflow recheck
 	// (finding 7) rather than on model or storage trouble.
 	var midFull bool
+	// cancelledOut marks the stop that PREVENTED the final answer (review3
+	// issue 3): a completed tool-proposing round is not a completed
+	// generation, so "was the user's request finished" is recorded where
+	// cancellation ends the loop — never inferred from whether the last
+	// round's status string happens to be empty. A disconnect AFTER a
+	// persisted final answer sets nothing and relabels nothing.
+	var cancelledOut bool
+	// rounds records each round's outcome IN ROW ORDER (C7). Every entry
+	// exists because its row was really finalised (C6's rule, unchanged): a
+	// write the database refused is not a round the client is told about.
+	rounds := []roundOutcome{}
+	// finRound finalises one round row and records what was persisted, so
+	// the terminal event describes the writes rather than intentions.
+	finRound := func(msgID, content, status, note string, usage, completion, durMS int64) error {
+		ferr := s.finishMessage(msgID, content, status, note, usage, completion, durMS)
+		if ferr == nil {
+			rounds = append(rounds, roundOutcome{
+				MsgID: msgID, Status: status, Note: note, Completion: completion, DurationMS: durMS,
+			})
+		}
+		return ferr
+	}
+	// noteStranded attaches a terminal reason to the LAST durable row when
+	// the failure has no row of its own: the last round saved cleanly and
+	// THEN the loop died (failed next-round placeholder, unwritable tool
+	// result, window filled mid-loop). Live, `done` explained it; on reload
+	// nothing did — the transcript read as a finished answer. Written
+	// detached, because this is exactly the final write a disconnect must
+	// not lose.
+	noteStranded := func(text string) {
+		if len(rounds) == 0 {
+			return // nothing durable to annotate; `done` still tells the truth
+		}
+		ctx, cancel := detachedCtx()
+		defer cancel()
+		if err := s.store.SetStatusNote(ctx, rounds[len(rounds)-1].MsgID, text); err != nil {
+			if !isCancellation(err, genCtx) {
+				s.logger.Error("terminal status note failed", "error", err,
+					"conversation", conv.ID, "rid", RequestIDFrom(r.Context()))
+			}
+			return
+		}
+		rounds[len(rounds)-1].Note = text
+	}
 	round := 0
 	for {
 		roundTools := toolSpecs
@@ -523,25 +654,24 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			// stays durable, this still-empty draft row is the only
 			// casualty.
 			midFull = true
-			if ferr := s.finishMessage(genCtx, am.ID, "", "aborted", 0, 0, 0); ferr != nil {
+			if ferr := finRound(am.ID, "", "aborted", "", 0, 0, 0); ferr != nil {
 				storeErr = ferr
 			}
 			break
 		}
 		roundStart := time.Now() // model time only: tool runs land on tool cards
-		res = s.runModelRound(genCtx, conn, s.thinkingModel(conv.Model), msgs, roundTools, thinkFrag)
+		res = s.runModelRound(genCtx, conn, s.thinkingModel(conv.Model), msgs, roundTools,
+			thinkFrag, am.ID)
 		roundMS := time.Since(roundStart).Milliseconds()
 
-		if res.Err != nil || res.Status == "aborted" {
-			lastMS = roundMS
-			if ferr := s.finishMessage(genCtx, am.ID, res.Content, res.Status, res.Usage, res.Completion, roundMS); ferr != nil {
+		if res.Status != "complete" {
+			if ferr := finRound(am.ID, res.Content, res.Status, res.Note, res.Usage, res.Completion, roundMS); ferr != nil {
 				storeErr = ferr
 			}
 			break
 		}
 		if len(res.ToolCalls) == 0 || round >= maxRounds {
-			lastMS = roundMS
-			if ferr := s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS); ferr != nil {
+			if ferr := finRound(am.ID, res.Content, "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
 				storeErr = ferr
 			}
 			break
@@ -550,48 +680,101 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		// Persist the answered assistant turn, then execute every call
 		// (the protocol requires one answer per call) and continue with a
 		// fresh placeholder row. runToolCall owns the audit rows.
-		if ferr := s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS); ferr != nil {
-			storeErr = ferr
+		if ferr := finRound(am.ID, res.Content, "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
+			if isCancellation(ferr, genCtx) {
+				cancelledOut = true // deletion/abort ended it, not storage
+			} else {
+				storeErr = ferr
+			}
+			// C3: the proposing turn is a PREREQUISITE of every side
+			// effect it suggested. If the answer cannot become replayable,
+			// the calls it proposed must not run — the old code recorded
+			// the failure and executed anyway, and the terminal error
+			// event came far too late to prevent the side effect.
+			break
 		}
 
 		msgs = append(msgs, llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls})
+		var perr error
 		for _, call := range res.ToolCalls {
-			result, attach, perr := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call, visionOn)
+			if genCtx.Err() != nil {
+				// The stop landed between calls (review3 issue 3): the
+				// remaining side effects of this round do NOT happen, and
+				// the generation ends as cancelled — not as the "complete"
+				// the proposing round's status would have announced.
+				cancelledOut = true
+				break
+			}
+			result, attach, terr := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call, visionOn)
+			perr = terr
 			msgs = append(msgs, llm.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 			if attach != "" {
-				if im, ok := s.attachImageView(user.ID, conv.ID, attach); ok {
+				im, ok, aerr := s.attachImageView(user.ID, conv.ID, attach, g.ID)
+				if aerr != nil {
+					// C3: the picture the model was promised must be
+					// durable before the continuation speaks it — a
+					// synthetic-turn write failure is a persistence
+					// error, not a picture-less shrug.
+					perr = aerr
+				} else if ok {
 					msgs = append(msgs, im)
 				}
 			}
 			if perr != nil {
 				// The transcript is NOT durable (review2 finding 2): the
 				// model saw a result later history cannot replay. Stop
-				// here rather than continue (and answer) on memory alone
-				// — done.status must not claim a success the storage
-				// refused. An abort that killed the write is not a
-				// storage failure.
-				if genCtx.Err() == nil {
+				// here — and stop MEANS stop (C3): no later call of this
+				// turn runs past a recorded failure, and the loop below
+				// will not start another round on memory alone.
+				// Deletion or abort explains the write: that is
+				// cancellation, not a storage failure to announce.
+				if isCancellation(perr, genCtx) {
+					cancelledOut = true
+				} else {
 					storeErr = perr
-					break
 				}
+				break
 			}
 		}
-		if storeErr != nil {
+		if cancelledOut || storeErr != nil || perr != nil {
 			break
 		}
 
 		round++
-		am = &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
-		if err := s.store.AddMessage(genCtx, user.ID, am); err != nil {
-			if genCtx.Err() != nil {
-				break // abort/shutdown: not a storage failure, finalize below
+		// The next draft row advances the generation's identity ONLY when
+		// the insert really landed (C6): a failed placeholder must never
+		// leave the terminal event naming a row that does not exist. am
+		// keeps the last row that is durably there — already finalised
+		// above — and done describes THAT state, nothing imagined.
+		next := &store.Message{ConversationID: conv.ID, Role: "assistant",
+			Status: "streaming", GenerationID: g.ID}
+		if err := s.store.AddMessage(genCtx, user.ID, next); err != nil {
+			if isCancellation(err, genCtx) {
+				cancelledOut = true // stopped before the next round, C6
+			} else {
+				s.logger.Error("placeholder for tool round failed", "error", err)
+				// The loop ends WITHOUT an answer (finding 4): there is no
+				// row to stream the next round into, and done must not
+				// claim a success the database never got.
+				storeErr = err
 			}
-			s.logger.Error("placeholder for tool round failed", "error", err)
-			// The loop ends WITHOUT an answer (finding 4): there is no row
-			// to stream the next round into, and done must not claim a
-			// success the database never got.
-			storeErr = err
 			break
+		}
+		am = next
+		// The round's identity is announced with its row (C7): the client
+		// opens a fresh bubble keyed by this message id, so the live view's
+		// bubble boundaries are the stored row boundaries. Emitted only
+		// after the insert landed — a round that was never created is never
+		// named, and a client that misses the event has lost a round that
+		// does not exist rather than inventing one.
+		if err := conn.Event("round", map[string]any{
+			"generation_id": g.ID, "message_id": next.ID, "round": round + 1,
+		}); err != nil {
+			// A dead link mid-loop is the ordinary disconnect path: the next
+			// round's writes still happen (the transcript stays durable) and
+			// the round's own streaming failure ends the loop below.
+			s.logger.Debug("round event write failed", "error", err,
+				"conversation", conv.ID)
 		}
 	}
 
@@ -627,22 +810,45 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			"message": "the reply could not be fully saved; reload this conversation",
 		})
 	}
+	// One terminal-outcome calculation with explicit precedence (C6, and
+	// review3 issue 3): a context refusal or a storage failure describe a
+	// state the client must act on or reload; a cancellation that STOPPED
+	// the operation (cancelledOut) is the outcome even when the last
+	// model round completed — a round that finished proposing tools is not
+	// a generation that finished answering; else the round's own verdict
+	// stands. A disconnect after a durably completed answer relabels
+	// nothing: only the recorded stop transitions decide. The identity
+	// named below always exists — am advances only onto inserted rows.
 	doneStatus := res.Status
-	if midFull {
+	switch {
+	case midFull:
 		doneStatus = "error"
-	}
-	if storeErr != nil && (doneStatus == "" || doneStatus == "complete") {
+	case storeErr != nil && (doneStatus == "" || doneStatus == "complete"):
 		doneStatus = "error" // never announce a success the database refused
+	case cancelledOut:
+		doneStatus = "aborted"
+	case genCtx.Err() != nil && doneStatus == "":
+		doneStatus = "aborted"
+	}
+	// A reason the LAST saved row does not itself carry becomes that row's
+	// durable note (C7), with the same precedence as the status above: a
+	// round that reached 'error'/'aborted' already says what happened, so
+	// only an outcome resting on an otherwise-complete row needs the extra
+	// sentence. This is what makes the live explanation survive a reload.
+	if midFull {
+		noteStranded(noteWindowMidLoop)
+	} else if storeErr != nil {
+		noteStranded(noteSaveIncomplete)
+	} else if doneStatus == "aborted" {
+		noteStranded(noteStoppedShort)
 	}
 	_ = conn.Event("done", map[string]any{
-		"message_id":   am.ID,
-		"status":       doneStatus,
+		"generation_id": g.ID,
+		"status":        doneStatus,
+		// Per-round outcomes in row order (C7): the client applies each one
+		// to the bubble its own message_id names.
+		"rounds":       rounds,
 		"usage_tokens": res.Usage,
-		// The numbers behind the UI's per-message tok/s readout: what the
-		// model produced and the model-round wall time it took (tool runs
-		// excluded — they show on their cards).
-		"completion_tokens": res.Completion,
-		"duration_ms":       lastMS,
 	})
 	conn.Close()
 }
@@ -650,15 +856,24 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 // runModelRound streams one model round; tool deltas surface as
 // tool_start/tool_args SSE events with stable call ids (§6.1 taxonomy).
 // thinking is the generation's snapshotted request fragment (nil = no
-// thinking override).
+// thinking override). msgID is the round's own row (C7): every event this
+// round causes names it, so the client attaches cards to the bubble that
+// matches the row the audit rows point at — not to "whatever bubble is
+// last", which is what made a multi-round live view diverge from history.
 func (s *Server) runModelRound(ctx context.Context, conn *sseConn, model string,
-	msgs []llm.ChatMessage, toolSpecs []llm.ToolSpec, thinking map[string]any,
+	msgs []llm.ChatMessage, toolSpecs []llm.ToolSpec, thinking map[string]any, msgID string,
 ) agent.Result {
 	type card struct {
 		callID  string
 		started bool
 	}
 	cards := map[int]*card{}
+	// announced freezes each slot's card id once (mirrors the accumulator's
+	// "id freezes once published" rule, agent generate.go). A slot whose id
+	// arrives late must NOT republish tool_start under a fresh mint: the
+	// first card would hang as a phantom, then the accumulator's canonical
+	// id would open a second card for the same call.
+	announced := map[string]bool{}
 
 	toolDelta := func(idx int, d llm.ToolCallDelta) {
 		c := cards[idx]
@@ -674,10 +889,15 @@ func (s *Server) runModelRound(ctx context.Context, conn *sseConn, model string,
 			if c.callID == "" {
 				c.callID = id.New() // endpoints may omit ids; the UI needs one
 			}
-			_ = conn.Event("tool_start", map[string]any{"call_id": c.callID, "tool": d.Name})
+			announced[c.callID] = true
+			_ = conn.Event("tool_start", map[string]any{
+				"call_id": c.callID, "tool": d.Name, "message_id": msgID,
+			})
 		}
 		if c.started && d.Arguments != "" {
-			_ = conn.Event("tool_args", map[string]any{"call_id": c.callID, "t": d.Arguments})
+			_ = conn.Event("tool_args", map[string]any{
+				"call_id": c.callID, "t": d.Arguments, "message_id": msgID,
+			})
 		}
 	}
 
@@ -705,19 +925,29 @@ func (s *Server) runModelRound(ctx context.Context, conn *sseConn, model string,
 			res.ToolCalls[i].ID = id.New()
 		}
 	}
-	// A model-produced call may outlive a partial start (e.g. name arrived
-	// without any delta we saw); make sure a card exists either way.
-	for _, call := range res.ToolCalls {
-		found := false
+	// Backstop for calls the stream never announced (e.g. a name arriving
+	// with no delta we saw). An already-announced card keeps its id even if
+	// the completed call carries a different one: the card was published
+	// under the frozen id and the arguments streamed into it — republishing
+	// under the canonical id would leave the first card as a phantom.
+	announcedID := func() (string, bool) {
 		for _, c := range cards {
-			if c.callID == call.ID {
-				found = true
-				break
+			if c.started && c.callID != "" {
+				return c.callID, true
 			}
 		}
-		if !found {
-			_ = conn.Event("tool_start", map[string]any{"call_id": call.ID, "tool": call.Function.Name})
+		return "", false
+	}
+	for _, call := range res.ToolCalls {
+		if announced[call.ID] {
+			continue
 		}
+		if _, dup := announcedID(); call.ID == "" || dup {
+			continue // card exists under a frozen id; the views keep it
+		}
+		_ = conn.Event("tool_start", map[string]any{
+			"call_id": call.ID, "tool": call.Function.Name, "message_id": msgID,
+		})
 	}
 	return res
 }
@@ -751,23 +981,31 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	// storage error instead of announcing success (review2 finding 2).
 	var persistErr error
 
-	emitEnd := func(status, summary string, data any) {
+	// One clamped card, emitted live AND stored (C7): the identical
+	// {summary,data,truncated} goes into the tool_end event and into
+	// tool_calls.display, so no card can be built one way live and another
+	// way from history — and neither view re-parses the middle-elided
+	// model-facing text. Over the display budget the DATA drops and the
+	// SUMMARY stays with a flag; a JSON structure is never cut in half.
+	card := tools.ClampCard
+	emitEnd := func(status string, c tools.Card) {
 		_ = conn.Event("tool_end", map[string]any{
 			"call_id": callID, "tool": name, "status": status,
-			"summary": summary, "data": data,
+			"summary": c.Summary, "data": c.Data, "truncated": c.Truncated,
+			"message_id": assistantMsgID,
 		})
 	}
 
 	tool, known := s.tools.Get(name)
 	if !known {
-		emitEnd("error", "unknown tool", nil)
+		emitEnd("error", card("unknown tool", nil))
 		return `{"error":"unknown tool ` + jsonQuote(name) + `"}`, "", nil
 	}
 	// Belt to the spec filter: a model whose entry left vision off was
 	// never offered view_image, so a call for it can only be a
 	// hallucination — answered as such, never executed (§7.2).
 	if name == "view_image" && !visionOn {
-		emitEnd("error", "model cannot see images", nil)
+		emitEnd("error", card("model cannot see images", nil))
 		return `{"error":"this model cannot see images"}`, "", nil
 	}
 
@@ -790,30 +1028,44 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 		// model gets an ordinary tool error, so the protocol stays intact.
 		s.logger.Error("tool audit insert failed; call not executed", "error", err, "tool", name)
 		msg := "tool call could not be audited; it was not executed"
-		emitEnd("error", msg, nil)
-		// The audit gap itself is already a visible refusal; the loop may
-		// continue — the transcript (error answer included) stays durable.
-		return `{"error":` + jsonQuote(msg) + `}`, "", nil
+		emitEnd("error", card(msg, nil))
+		// C3: this failure IS a persistence error and travels as one. The
+		// refusal answer lives only in this session's memory — no row
+		// makes it durable — so continuing (or answering) over it would
+		// replay as silence; the loop must end, not sample later calls.
+		return `{"error":` + jsonQuote(msg) + `}`, "", err
 	}
 
 	if status == "pending_approval" {
-		decision := s.awaitApproval(ctx, g, conn, callID, name, call.Function.Arguments)
+		decision := s.awaitApproval(ctx, g, conn, callID, name, call.Function.Arguments, assistantMsgID)
 		newStatus, uctx := "approved", ctx
 		if !decision.Approve {
 			newStatus, uctx = "denied", context.Background() // abort may have killed ctx
 		}
 		// The approval verdict IS the audit trail for a side-effecting
-		// run (review2 finding 2): if that update fails, the loop must
-		// not carry on as though the call's history were durable.
-		if uerr := s.store.UpdateToolCallStatus(uctx, tc.ID, newStatus); uerr != nil {
+		// run (review2 finding 2), and C3 makes it a PREREQUISITE: an
+		// approved call whose verdict could not be recorded is neither
+		// executed nor remembered — the durable record first, the side
+		// effect after.
+		// The denial's card is durable too (C7): "user denied this action"
+		// was live-only, so a reload showed a bare state label. The clamped
+		// card below is what both the stored row and the event carry.
+		verdict := card("user denied this action", nil)
+		verdictDisplay := verdict.JSON()
+		if uerr := s.store.UpdateToolCallStatus(uctx, tc.ID, newStatus, verdictDisplay); uerr != nil {
 			s.logger.Error("tool approval audit update failed", "error", uerr, "tool", name)
 			persistErr = uerr
+			if decision.Approve {
+				msg := "tool call approval could not be recorded; it was not executed"
+				emitEnd("error", card(msg, nil))
+				return `{"error":` + jsonQuote(msg) + `}`, "", persistErr
+			}
 		}
 		if decision.Approve && decision.Remember && name == "code_run" {
-			s.remembered.remember(convID, name) // "always allow" for this chat only (§9.9)
+			s.remembered.remember(convID, name) // only after the approval is durable (C3, §9.9)
 		}
 		if !decision.Approve {
-			emitEnd("denied", "user denied this action", nil)
+			emitEnd("denied", verdict)
 			// Deliberately no tool-result row: historyToLLM only replays
 			// answered calls, so a denied call simply vanishes from later
 			// prompts; the in-session msgs get the denial answer below.
@@ -834,18 +1086,22 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	if err != nil {
 		msg := tools.Elide(err.Error(), 200) // tool errors are pre-sanitized
 		content := `{"error":` + jsonQuote(msg) + `}`
-		if ferr := s.finalizeToolCall(tc.ID, "error", content, dur, userID, convID, callID); ferr != nil {
+		c := card(msg, nil)
+		if ferr := s.finalizeToolCall(tc.ID, "error", content, c.JSON(),
+			dur, userID, convID, callID); ferr != nil {
 			persistErr = ferr
 		}
-		emitEnd("error", msg, nil)
+		emitEnd("error", c)
 		return content, "", persistErr
 	}
 
 	content := tools.TruncateMiddle(tres.Content, toolResultBudgetRunes)
-	if ferr := s.finalizeToolCall(tc.ID, "ok", content, dur, userID, convID, callID); ferr != nil {
+	c := card(tres.Summary, tres.Data)
+	if ferr := s.finalizeToolCall(tc.ID, "ok", content, c.JSON(),
+		dur, userID, convID, callID); ferr != nil {
 		persistErr = ferr
 	}
-	emitEnd("ok", tres.Summary, tres.Data)
+	emitEnd("ok", c)
 	return content, tres.AttachPath, persistErr
 }
 
@@ -853,35 +1109,52 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 // call: the audit row's final state and the role='tool' answer row. Both
 // errors surface — a call whose answer never landed must not be replayed
 // from memory as though it had (review2 finding 2).
-func (s *Server) finalizeToolCall(tcID, status, content string, dur int64,
+func (s *Server) finalizeToolCall(tcID, status, content, display string, dur int64,
 	userID, convID, callID string,
 ) error {
-	if err := s.store.FinishToolCall(detachedCtx(), tcID, status, content, dur); err != nil {
+	ctx, cancel := detachedCtx()
+	defer cancel()
+	if err := s.store.FinishToolCall(ctx, tcID, status, content, display, dur); err != nil {
 		s.logger.Error("tool audit finalize failed", "error", err, "call", callID)
+		if errors.Is(err, store.ErrRowGone) {
+			// The audit row went with its conversation (C6): the answer
+			// has nothing to be recorded against, and the caller reads
+			// this as cancellation.
+			return err
+		}
 		// The result row still goes in: an answer the model acted on
 		// should at least be replayable even if its audit tail is thin.
-		_ = s.appendToolResult(detachedCtx(), userID, convID, callID, content)
+		_ = s.appendToolResult(ctx, userID, convID, callID, content)
 		return err
 	}
-	return s.appendToolResult(detachedCtx(), userID, convID, callID, content)
+	return s.appendToolResult(ctx, userID, convID, callID, content)
 }
 
 // detachedCtx gives a final persistence write 5 s of independence from the
-// browser request.
-func detachedCtx() context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	go func() { // release once the write completes or times out
-		<-ctx.Done()
-		cancel()
-	}()
-	return ctx
+// browser request. The returned cancel releases it as soon as the write
+// returns (C6) — no goroutine spawned per write just to wait out the
+// timeout.
+func detachedCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+// isCancellation classifies the write failures that deletion or abort
+// explain (C6): the subject row is gone because the user deleted the
+// conversation (or account), or the generation's own context is done.
+// Neither is a storage failure to announce — the operation that removed
+// the subject is the reason the write cannot land, and the honest terminal
+// outcome is the cancellation already recorded, not a storage error.
+func isCancellation(err error, genCtx context.Context) bool {
+	return errors.Is(err, store.ErrRowGone) ||
+		errors.Is(err, store.ErrConversationNotFound) ||
+		genCtx.Err() != nil
 }
 
 // awaitApproval parks the loop on the user's decision; abort or the
 // 10-minute timeout deny (spec §6.1 step 5). code_run approvals advertise
 // rememberable so the UI can offer "always allow in this conversation".
 func (s *Server) awaitApproval(ctx context.Context, g *generation, conn *sseConn,
-	callID, name, args string,
+	callID, name, args, msgID string,
 ) approvalDecision {
 	apID, decCh, ok := s.gens.AddApproval(g.ID)
 	if !ok {
@@ -890,7 +1163,7 @@ func (s *Server) awaitApproval(ctx context.Context, g *generation, conn *sseConn
 	defer s.gens.RemoveApproval(g.ID, apID)
 	_ = conn.Event("awaiting_approval", map[string]any{
 		"approval_id": apID, "call_id": callID, "tool": name, "arguments": args,
-		"rememberable": name == "code_run",
+		"rememberable": name == "code_run", "message_id": msgID,
 	})
 	timer := time.NewTimer(approvalTimeout)
 	defer timer.Stop()
@@ -950,34 +1223,41 @@ func (s *Server) visionMaxBytes() int64 {
 // replay, exactly like a real user message. Detached context, as for
 // tool results: a browser vanishing must not strand the conversation
 // with an "attached" answer and a hole where the picture should be. If
-// the bytes vanished between validation and here, nothing embeds: false,
-// logged, and this round proceeds picture-less.
-func (s *Server) attachImageView(userID, convID, rel string) (llm.ChatMessage, bool) {
+// the bytes vanished between validation and here, nothing embeds: false
+// with no error, logged, and this round proceeds picture-less. A write
+// that refuses the row is a typed persistence error (C3): the model was
+// promised a picture, and continuing as though nothing happened would
+// diverge live memory from replayable history.
+func (s *Server) attachImageView(userID, convID, rel, genID string) (llm.ChatMessage, bool, error) {
 	att := store.Attachment{Path: rel}
 	manifest, urls := attachmentManifest(s.cfg.Scratchpad.Root, userID,
 		[]store.Attachment{att}, manifestOpts{visionOn: true, embed: true, maxBytes: s.visionMaxBytes()})
 	if len(urls) == 0 {
 		s.logger.Warn("view_image embedded nothing (file gone or unreadable?)",
 			"path", rel, "user", userID)
-		return llm.ChatMessage{}, false
+		return llm.ChatMessage{}, false, nil
 	}
 	note := viewTurnMarker + jsonQuote(att.Name()) +
 		" so you can see it; it stays in this conversation for later turns]"
-	ctx := detachedCtx()
+	ctx, cancel := detachedCtx()
+	defer cancel()
 	m := &store.Message{
 		ConversationID: convID, Role: "user", Content: note,
 		Status:     "complete",
 		Synthetic:  true, // the browser hides it: the model's copy, not your words
 		TokenCount: int64ptr(int64(agent.EstimateTokens(note + manifest))),
+		// Part of THIS turn (C7), so retiring the turn retires the picture
+		// the model was shown along with the rounds that asked for it.
+		GenerationID: genID,
 	}
 	// ONE transaction (finding 4): the note row and its file link land
 	// together — a half-attached synthetic turn would replay as prose
 	// promising a picture that never embeds.
 	if err := s.store.AddMessageWithFiles(ctx, userID, m, []string{rel}); err != nil {
 		s.logger.Error("view_image attach persist failed", "error", err, "path", rel)
-		return llm.ChatMessage{}, false
+		return llm.ChatMessage{}, false, err
 	}
-	return llm.ChatMessage{Role: "user", Content: note + manifest, Images: urls}, true
+	return llm.ChatMessage{Role: "user", Content: note + manifest, Images: urls}, true, nil
 }
 
 // nameConversation asks the model for a topic title for conv, stores it if
@@ -1014,10 +1294,10 @@ func (s *Server) nameConversation(conv *store.Conversation, firstUser string, co
 // browser may already be gone (and genCtx already cancelled) when we save.
 // The error reaches the orchestrator (finding 4) so terminal events can
 // distinguish "saved" from "announced but not durable".
-func (s *Server) finishMessage(_ context.Context, msgID, content, status string, usage, completion, durationMS int64) error {
+func (s *Server) finishMessage(msgID, content, status, note string, usage, completion, durationMS int64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.store.FinalizeMessage(ctx, msgID, content, status, usage, completion, durationMS); err != nil {
+	if err := s.store.FinalizeMessage(ctx, msgID, content, status, note, usage, completion, durationMS); err != nil {
 		s.logger.Error("failed to persist message final state", "error", err, "message", msgID)
 		return err
 	}

@@ -120,8 +120,7 @@ func TestChatViewImageAttachesPictureTurn(t *testing.T) {
 		t.Errorf("replayed tool rows = %d, want 1", len(n))
 	}
 
-	// The API projects the row's synthetic flag so the browser hides it
-	// without sniffing content; genuine rows carry no flag at all.
+	// Browser history excludes model-only image turns and tool results.
 	pageResp := a.do(http.MethodGet, "/api/v1/conversations/"+c.ID+"/messages", nil)
 	page := decodedBody(t, pageResp)
 	raws, _ := page["items"].([]any)
@@ -142,8 +141,8 @@ func TestChatViewImageAttachesPictureTurn(t *testing.T) {
 			seenGenuine++
 		}
 	}
-	if seenFlagged != 1 || seenGenuine != 2 { // both typed messages of the test
-		t.Errorf("projected rows: flagged = %d, genuine = %d, want 1 and 2", seenFlagged, seenGenuine)
+	if seenFlagged != 0 || seenGenuine != 2 { // both typed messages of the test
+		t.Errorf("projected rows: flagged = %d, genuine = %d, want 0 and 2", seenFlagged, seenGenuine)
 	}
 }
 

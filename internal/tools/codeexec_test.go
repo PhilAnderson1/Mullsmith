@@ -150,9 +150,8 @@ func TestCodeRunResolvesRuntimeFromConfig(t *testing.T) {
 	if res.Summary != "exit 0" {
 		t.Errorf("summary = %q", res.Summary)
 	}
-	data, ok := res.Data.(map[string]any)
-	if !ok || data["exit_code"] != 0 { // Data carries native types pre-serialization
-		t.Errorf("Data = %#v", res.Data)
+	if res.Data != nil {
+		t.Errorf("code output should only travel in the model result: %#v", res.Data)
 	}
 }
 
@@ -170,7 +169,7 @@ func TestCodeRunTimeoutAndTruncationFlags(t *testing.T) {
 	if payload["timed_out"] != true || payload["truncated"] != true {
 		t.Errorf("flags missing: %v", payload)
 	}
-	if res.Summary != "timed out (killed)" {
+	if res.Summary != "timed out (killed) · output truncated" {
 		t.Errorf("summary = %q", res.Summary)
 	}
 }

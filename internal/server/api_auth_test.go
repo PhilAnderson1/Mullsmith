@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -442,14 +443,14 @@ func TestRegisterFullFlow(t *testing.T) {
 		}
 	}
 
-	// Session works immediately; /me reports the user + quota shape.
+	// Session works immediately; /me reports identity without scanning storage.
 	resp = a.do(http.MethodGet, "/api/v1/auth/me", nil)
 	m = decodeBody(t, resp)
 	if resp.StatusCode != 200 || m["id"] != userID {
 		t.Fatalf("/me = %d %v", resp.StatusCode, m)
 	}
-	if _, ok := m["quota"].(map[string]any); !ok {
-		t.Errorf("/me missing quota: %v", m)
+	if _, ok := m["quota"]; ok {
+		t.Errorf("/me returned unused quota data: %v", m)
 	}
 	if _, ok := m["password_hash"]; ok {
 		t.Error("/me leaks password_hash")
@@ -833,6 +834,106 @@ func TestPasswordChangeRevokesAndRotates(t *testing.T) {
 		"email": "pw@b.io", "password": "brand-new-password-1",
 	}); resp.StatusCode != 200 {
 		t.Errorf("new password rejected: %d %s", resp.StatusCode, dumpBody(resp))
+	}
+}
+
+// C4 regression: when the rotation half of the password change fails, the
+// WHOLE transition must roll back — the earlier stepwise code logged a
+// warning and answered 204 with a partially applied security change. The
+// trigger below makes the final INSERT INTO sessions fail inside the
+// transaction; afterwards nothing may have moved: same hash, both sessions
+// alive.
+func TestPasswordChangeRollsBackOnRotationFailure(t *testing.T) {
+	a := newAuthTest(t, authCfg(t))
+	a.invite("gk-code-1")
+	resp := a.register("rb@b.io", "uncommon-password-9", false)
+	sessA := sessionCookieFrom(t, resp).Value
+	resp.Body.Close()
+	// Second login: jar holds session B, A remains a live second device.
+	if resp = a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email": "rb@b.io", "password": "uncommon-password-9",
+	}); resp.StatusCode != 200 {
+		t.Fatalf("second login: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if err := a.db.ExecForTest(`CREATE TRIGGER no_new_sessions BEFORE INSERT ON sessions
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+	resp = a.do(http.MethodPost, "/api/v1/auth/password", map[string]any{
+		"current": "uncommon-password-9", "new": "brand-new-password-1",
+	})
+	if resp.StatusCode != http.StatusInternalServerError || apiErrCode(t, resp) != "internal" {
+		t.Fatalf("rotation failure = %d, want 500", resp.StatusCode)
+	}
+	got, err := a.db.UserByEmail(context.Background(), "rb@b.io")
+	if err != nil || got == nil {
+		t.Fatal(err)
+	}
+	hashAfterFail := got.PasswordHash
+	// The other device survived: revocation rolled back with the insert.
+	if resp = a.raw(http.MethodGet, "/api/v1/auth/me", nil, sessA); resp.StatusCode != 200 {
+		t.Errorf("other session revoked by a rolled-back change: %d", resp.StatusCode)
+	}
+	// With the trigger gone the same request succeeds end to end, and the
+	// login proves the pre-failure hash was never replaced in isolation.
+	if err := a.db.ExecForTest(`DROP TRIGGER no_new_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	if resp = a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email": "rb@b.io", "password": "uncommon-password-9",
+	}); resp.StatusCode != 200 {
+		t.Errorf("old password dead after failed rotation: %d %s", resp.StatusCode, dumpBody(resp))
+	}
+	if resp = a.do(http.MethodPost, "/api/v1/auth/password", map[string]any{
+		"current": "uncommon-password-9", "new": "brand-new-password-1",
+	}); resp.StatusCode != 204 {
+		t.Fatalf("retry after failure = %d %s", resp.StatusCode, dumpBody(resp))
+	}
+	if got, err = a.db.UserByEmail(context.Background(), "rb@b.io"); err != nil ||
+		got.PasswordHash == hashAfterFail {
+		t.Errorf("retry did not apply the new hash: %v", err)
+	}
+}
+
+// C4 regression: the stale guard. When the stored hash no longer matches the
+// one the handler verified (a concurrent Settings tab, admin reset or spent
+// mail link beat this request), the store op must refuse with
+// ErrStalePassword and change NOTHING — never silently overwrite the fresher
+// credential.
+func TestPasswordChangeStaleGuard(t *testing.T) {
+	a := newAuthTest(t, authCfg(t))
+	ctx := context.Background()
+	now := time.Now()
+	u := &store.User{Email: "stale@b.io", Name: "S", PasswordHash: "hash-first",
+		Status: "enabled", CreatedAt: now, UpdatedAt: now}
+	if err := a.db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	_, hashA, _ := auth.NewSessionToken()
+	_, hashB, _ := auth.NewSessionToken()
+	for _, h := range [][]byte{hashA, hashB} {
+		if err := a.db.CreateSession(ctx, &store.Session{IDHash: h, UserID: u.ID,
+			CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// verifiedHash is the PRE-rotation value; the row already moved on.
+	_, err := a.db.ChangePasswordAndRotate(ctx, u.ID, "hash-second", "hash-old",
+		hashA, false, now.Add(time.Hour), now, "test")
+	if !errors.Is(err, store.ErrStalePassword) {
+		t.Fatalf("stale rotate = %v, want ErrStalePassword", err)
+	}
+	got, err := a.db.UserByID(ctx, u.ID)
+	if err != nil || got == nil || got.PasswordHash != "hash-first" {
+		t.Errorf("stale rotate changed the hash: %+v err=%v", got, err)
+	}
+	for _, h := range [][]byte{hashA, hashB} {
+		s, err := a.db.SessionByHash(ctx, h)
+		if err != nil || s == nil {
+			t.Errorf("stale rotate killed session %x: %v", h[:4], err)
+		}
 	}
 }
 

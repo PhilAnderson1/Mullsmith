@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -273,7 +275,7 @@ func TestAuthRefusedWithoutSTARTTLS(t *testing.T) {
 	s := newFakeServer(t, &fakeServer{authUser: "gk", authPass: "hunter2"})
 	c := &smtpClient{cfg: clientCfg(s, true)}
 	c.cfg.Username, c.cfg.Password = "gk", "hunter2"
-	err := c.Deliver("user@dest.io", "s", "body")
+	err := c.Deliver(context.Background(), "user@dest.io", "s", "body")
 	if err == nil || !strings.Contains(err.Error(), "in the clear") {
 		t.Fatalf("expected cleartext refusal, got %v", err)
 	}
@@ -290,7 +292,7 @@ func TestAuthenticatedSendOverSTARTTLS(t *testing.T) {
 	c := &smtpClient{cfg: clientCfg(s, true), tlsConfig: &tls.Config{RootCAs: pool}}
 	c.cfg.Username, c.cfg.Password = "gk", "pw"
 	body := "line one\n.dot stuffed\nlast\r\nmiddle\n"
-	if err := c.Deliver("user@dest.io", "Hello there", body); err != nil {
+	if err := c.Deliver(context.Background(), "user@dest.io", "Hello there", body); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	msgs := s.msgs()
@@ -320,7 +322,7 @@ func TestImplicitTLSSend(t *testing.T) {
 	s := newFakeServer(t, &fakeServer{implicitTLS: true, cert: cert, authUser: "gk", authPass: "pw"})
 	c := &smtpClient{cfg: clientCfg(s, true), implicit: true, tlsConfig: &tls.Config{RootCAs: pool}}
 	c.cfg.Username, c.cfg.Password = "gk", "pw"
-	if err := c.Deliver("u@d.io", "s", "b"); err != nil {
+	if err := c.Deliver(context.Background(), "u@d.io", "s", "b"); err != nil {
 		t.Fatalf("implicit-TLS Deliver: %v", err)
 	}
 	if len(s.msgs()) != 1 {
@@ -331,7 +333,7 @@ func TestImplicitTLSSend(t *testing.T) {
 func TestUnauthenticatedPlainSendAllowed(t *testing.T) {
 	s := newFakeServer(t, &fakeServer{}) // no TLS, no AUTH — the LAN relay
 	c := &smtpClient{cfg: clientCfg(s, false)}
-	if err := c.Deliver("u@d.io", "relay me", "body"); err != nil {
+	if err := c.Deliver(context.Background(), "u@d.io", "relay me", "body"); err != nil {
 		t.Fatalf("unauthenticated relay send: %v", err)
 	}
 	if len(s.msgs()) != 1 || s.msgs()[0].subject != "relay me" {
@@ -342,11 +344,11 @@ func TestUnauthenticatedPlainSendAllowed(t *testing.T) {
 func TestInjectionRejected(t *testing.T) {
 	s := newFakeServer(t, &fakeServer{})
 	c := &smtpClient{cfg: clientCfg(s, false)}
-	if err := c.Deliver("u@d.io\r\nRCPT TO:<evil@x.io>", "s", "b"); err == nil {
+	if err := c.Deliver(context.Background(), "u@d.io\r\nRCPT TO:<evil@x.io>", "s", "b"); err == nil {
 		t.Error("CRLF-injecting recipient accepted")
 	}
 	c2 := &smtpClient{cfg: config.SMTP{Host: "127.0.0.1", Port: s.port(), From: "a@b\r\nX: y"}}
-	if err := c2.Deliver("u@d.io", "s", "b"); err == nil {
+	if err := c2.Deliver(context.Background(), "u@d.io", "s", "b"); err == nil {
 		t.Error("CRLF-injecting From accepted")
 	}
 }
@@ -360,7 +362,7 @@ type countingDeliverer struct {
 	delivered chan struct{}
 }
 
-func (d *countingDeliverer) Deliver(string, string, string) error {
+func (d *countingDeliverer) Deliver(context.Context, string, string, string) error {
 	d.mu.Lock()
 	d.attempt++
 	n := d.attempt
@@ -409,6 +411,179 @@ func TestOutboxRetriesThenDrops(t *testing.T) {
 	// 3 attempts for the first message + 3 for the doomed one + 1 success.
 	if got := del.attempts(); got != 7 {
 		t.Errorf("attempts = %d, want 7 (3 + 3 + 1)", got)
+	}
+}
+
+// R5: Close joins the worker inside a blink even mid-backoff — the retry
+// ladder is abandoned, queued jobs are dropped with a log, and Send after
+// Close drops instead of panicking. Shutdown must never wait on a sleep.
+func TestOutboxCloseStopsWithoutWaitingForBackoff(t *testing.T) {
+	del := &countingDeliverer{failFor: 1 << 30, delivered: make(chan struct{}, 1)}
+	o := NewOutbox(del, testLogger())
+	o.backoff = []time.Duration{time.Hour} // unreachable once Close can interrupt
+
+	o.Send("a@b.io", "stuck in retries", "x")
+	deadline := time.Now().Add(2 * time.Second)
+	for del.attempts() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond) // let attempt #1 fail into the sleep
+	}
+	if del.attempts() == 0 {
+		t.Fatal("first attempt never ran")
+	}
+	o.Send("q@b.io", "still queued", "x")
+
+	start := time.Now()
+	if err := o.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Close took %v, want a return well inside one backoff step", d)
+	}
+	if got := del.attempts(); got != 1 {
+		t.Errorf("attempts after Close = %d, want the retry ladder abandoned", got)
+	}
+	if err := o.Close(context.Background()); err != nil { // idempotent
+		t.Errorf("second Close: %v", err)
+	}
+	o.Send("z@b.io", "after close", "x") // must not panic
+	if got := del.attempts(); got != 1 {
+		t.Errorf("attempts after post-Close Send = %d, want no work after join", got)
+	}
+}
+
+// blockedDeliverer parks inside Deliver — the review3-issue-5 shape: a
+// delivery in flight when shutdown starts. It either honours the worker
+// context (production SMTP behaviour) or ignores it entirely (the worst
+// case Close must still survive on its budget).
+type blockedDeliverer struct {
+	entered   chan struct{} // one signal per Deliver that parks
+	cancelled chan struct{} // closed when a parked delivery sees ctx done
+	ignoreCtx bool
+}
+
+func (d *blockedDeliverer) Deliver(ctx context.Context, _, _, _ string) error {
+	select {
+	case d.entered <- struct{}{}:
+	default:
+	}
+	if d.ignoreCtx {
+		select {} // never comes back: Close must return on its budget alone
+	}
+	<-ctx.Done()
+	if d.cancelled != nil {
+		close(d.cancelled)
+	}
+	return ctx.Err()
+}
+
+// Close during an ACTIVE delivery: the worker context cuts the delivery
+// short and Close JOINS the worker (returns nil) — not merely abandons it
+// while it leaks.
+func TestOutboxCloseCancelsActiveDelivery(t *testing.T) {
+	del := &blockedDeliverer{entered: make(chan struct{}, 1), cancelled: make(chan struct{})}
+	o := NewOutbox(del, testLogger())
+	o.Send("a@b.io", "parked mid-smtp", "x")
+	<-del.entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := o.Close(ctx); err != nil {
+		t.Fatalf("Close = %v, want the cancelled delivery to let the worker exit", err)
+	}
+	select {
+	case <-del.cancelled: // the exit REASON: cancellation reached the wire work
+	default:
+		t.Error("worker exited without the active delivery observing cancellation")
+	}
+	o.Send("z@b.io", "after close", "x") // dropped, harmless
+}
+
+// A deliverer that IGNORES cancellation (a pathological double) must not
+// make shutdown unbounded: Close returns on the injected budget.
+func TestOutboxCloseBoundedDespiteStuckDelivery(t *testing.T) {
+	del := &blockedDeliverer{entered: make(chan struct{}, 1), ignoreCtx: true}
+	o := NewOutbox(del, testLogger())
+	o.Send("a@b.io", "stuck forever", "x")
+	<-del.entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := o.Close(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Close = %v, want the shutdown budget to expire", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Close took %v; the join must respect its deadline", d)
+	}
+}
+
+// The production transport, not just doubles: an expiring delivery context
+// reaches the SMTP socket reads (the greeting here), so an active send is
+// cut within the shutdown budget instead of the per-op 30 s.
+func TestSMTPDeliverHonoursContextMidRead(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() { // accept and stay silent: a 220 greeting never arrives
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+		}
+	}()
+	c := &smtpClient{cfg: config.SMTP{Host: "127.0.0.1",
+		Port: ln.Addr().(*net.TCPAddr).Port, From: "m@t.io"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := c.Deliver(ctx, "u@d.io", "s", "b"); err == nil {
+		t.Fatal("a silent server with an expiring context must fail the delivery")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("the context did not bound the greeting read: %v", d)
+	}
+}
+
+// Cancellation must interrupt a read that is ALREADY parked (review
+// follow-up to issue 5). TestSMTPDeliverHonoursContextMidRead arms a
+// DEADLINE before reading, which opDeadline honours by construction; with
+// a plain cancellable context and a silent server, cancel() alone has to
+// end the greeting read - promptly, not after the per-op 30 s.
+func TestSMTPDeliverCancellationInterruptsParkedRead(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() { // accept and stay silent: a 220 greeting never arrives
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+		}
+	}()
+	c := &smtpClient{cfg: config.SMTP{Host: "127.0.0.1",
+		Port: ln.Addr().(*net.TCPAddr).Port, From: "m@t.io"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.Deliver(ctx, "u@d.io", "s", "b") }()
+	time.Sleep(100 * time.Millisecond) // by now the greeting read is parked
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Deliver = %v, want the cancellation itself", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancellation never reached the parked socket read")
 	}
 }
 

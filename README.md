@@ -240,9 +240,15 @@ rate limiting, logging, secrets, dependency policy) with a §9.16 OWASP Top-10
 map. Release gates and what we actually ran:
 
 ```sh
-make check            # go vet + go test -race + gosec + govulncheck
+make check            # go vet + go test -race + gosec + govulncheck + node JS suite
+make test-browser     # real-Chromium live-vs-history equivalence (dev-only Playwright)
 make fuzz-short       # 60 s of coverage-guided fuzzing on the path sandbox
 ```
+
+`make test-browser` boots the built binary against a scripted LLM endpoint and
+drives the shipped client in Chromium (web/test/browser/). Playwright is a
+test-only dependency — the runtime stays dependency-free — so it is a separate
+target and a separate CI job rather than part of `make check`.
 
 Artifacts for the current release (gosec, govulncheck, OWASP ZAP baseline)
 and the §9.16 re-audit with evidence per line — false-positive justifications

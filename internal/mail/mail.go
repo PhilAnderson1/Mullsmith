@@ -9,6 +9,7 @@ package mail
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
@@ -30,8 +31,26 @@ const (
 
 // Deliverer hands one fully-composed message to a transport. The SMTP
 // implementation below; server tests substitute a recording fake.
+// Deliver must honour ctx: it bounds the dial, the TLS handshake and every
+// read/write, so shutdown can cut an ACTIVE delivery, not just a retry
+// wait (review3 issue 5) — a delivery already parked on the socket is
+// interrupted by cancellation alone, not left to age out its deadline.
 type Deliverer interface {
-	Deliver(to, subject, body string) error
+	Deliver(ctx context.Context, to, subject, body string) error
+}
+
+// opDeadline is the deadline for one wire operation: the per-op 30 s,
+// cut short by the delivery context's own deadline when that lands first.
+// A done ctx is an error before the connection is even touched.
+func opDeadline(ctx context.Context) (time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	dl := time.Now().Add(deadlineEvery)
+	if x, ok := ctx.Deadline(); ok && x.Before(dl) {
+		dl = x
+	}
+	return dl, nil
 }
 
 // smtpClient speaks just enough SMTP: EHLO, optional STARTTLS, optional
@@ -50,7 +69,7 @@ func NewSMTP(cfg config.SMTP) Deliverer {
 	return &smtpClient{cfg: cfg, implicit: cfg.Port == 465}
 }
 
-func (c *smtpClient) Deliver(to, subject, body string) error {
+func (c *smtpClient) Deliver(ctx context.Context, to, subject, body string) error {
 	if err := safeAddr(to); err != nil {
 		return err
 	}
@@ -58,39 +77,73 @@ func (c *smtpClient) Deliver(to, subject, body string) error {
 		return fmt.Errorf("email.smtp.from: %w", err)
 	}
 	d := net.Dialer{Timeout: dialTimeout}
-	conn, err := d.Dial("tcp", net.JoinHostPort(c.cfg.Host, strconv.Itoa(c.cfg.Port)))
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(c.cfg.Host, strconv.Itoa(c.cfg.Port)))
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
 	defer conn.Close()
 	c.conn = conn
 	c.r = bufio.NewReader(conn)
+	// opDeadline can only bound operations that START after the context is
+	// done; a read or write ALREADY parked would otherwise wait out the
+	// per-op 30 s (reproduced against this client and a silent server,
+	// review follow-up to issue 5). The watcher expires the raw socket the
+	// instant ctx is cancelled, interrupting the TLS record layer above it.
+	unarm := interruptOnCancel(ctx, conn)
+	defer unarm()
+	err = c.converse(ctx, to, subject, body)
+	if err != nil && ctx.Err() != nil {
+		// The interrupted socket reports an i/o timeout; shutdown cancelled
+		// this delivery, and the caller (the outbox retry policy included)
+		// should read the failure as the cancellation it is.
+		return ctx.Err()
+	}
+	return err
+}
+
+// interruptOnCancel expires conn's deadline as soon as ctx is done, so a
+// parked read or write returns immediately instead of waiting out the
+// deadline opDeadline armed for it. The returned func retires the watcher.
+func interruptOnCancel(ctx context.Context, conn net.Conn) func() {
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-stop:
+		}
+	}()
+	return func() { close(stop) }
+}
+
+// converse runs the SMTP conversation on the dialed, watched connection.
+func (c *smtpClient) converse(ctx context.Context, to, subject, body string) error {
 	// Implicit TLS (465): the handshake precedes the 220 greeting, so the
 	// connection is upgraded before anything is read.
 	secure := false
 	if c.implicit {
-		if err := c.upgradeTLS(); err != nil {
+		if err := c.upgradeTLS(ctx); err != nil {
 			return err
 		}
 		secure = true
 	}
-	if _, _, err := c.reply(); err != nil { // greeting
+	if _, _, err := c.reply(ctx); err != nil { // greeting
 		return fmt.Errorf("smtp greeting: %w", err)
 	}
-	if err := c.ehlo(); err != nil {
+	if err := c.ehlo(ctx); err != nil {
 		return err
 	}
 	if !secure && c.ext["STARTTLS"] {
-		if code, txt, err := c.cmd("STARTTLS"); err != nil {
+		if code, txt, err := c.cmd(ctx, "STARTTLS"); err != nil {
 			return err
 		} else if code != 220 {
 			return fmt.Errorf("STARTTLS refused: %s", txt)
 		}
-		if err := c.upgradeTLS(); err != nil {
+		if err := c.upgradeTLS(ctx); err != nil {
 			return err
 		}
 		secure = true
-		if err := c.ehlo(); err != nil { // capabilities change post-TLS
+		if err := c.ehlo(ctx); err != nil { // capabilities change post-TLS
 			return err
 		}
 	}
@@ -100,40 +153,40 @@ func (c *smtpClient) Deliver(to, subject, body string) error {
 		return errors.New("smtp: server does not offer STARTTLS — refusing to send credentials in the clear")
 	}
 	if c.cfg.AuthenticatedSMTP {
-		if err := c.authLogin(); err != nil {
+		if err := c.authLogin(ctx); err != nil {
 			return err
 		}
 	}
-	if code, txt, err := c.cmd("MAIL FROM:<" + c.cfg.From + ">"); err != nil {
+	if code, txt, err := c.cmd(ctx, "MAIL FROM:<"+c.cfg.From+">"); err != nil {
 		return err
 	} else if code != 250 {
 		return fmt.Errorf("MAIL FROM: %s", txt)
 	}
-	if code, txt, err := c.cmd("RCPT TO:<" + to + ">"); err != nil {
+	if code, txt, err := c.cmd(ctx, "RCPT TO:<"+to+">"); err != nil {
 		return err
 	} else if code != 250 && code != 251 {
 		return fmt.Errorf("RCPT TO: %s", txt)
 	}
-	if code, txt, err := c.cmd("DATA"); err != nil {
+	if code, txt, err := c.cmd(ctx, "DATA"); err != nil {
 		return err
 	} else if code != 354 {
 		return fmt.Errorf("DATA: %s", txt)
 	}
-	if err := c.writeMessage(to, subject, body); err != nil {
+	if err := c.writeMessage(ctx, to, subject, body); err != nil {
 		return err
 	}
-	if code, txt, err := c.reply(); err != nil {
+	if code, txt, err := c.reply(ctx); err != nil {
 		return err
 	} else if code != 250 {
 		return fmt.Errorf("message rejected: %s", txt)
 	}
 	// Polite goodbye; nobody waits on its failure.
-	_, _, _ = c.cmd("QUIT")
+	_, _, _ = c.cmd(ctx, "QUIT")
 	return nil
 }
 
-func (c *smtpClient) ehlo() error {
-	code, txt, err := c.cmd("EHLO mullsmith")
+func (c *smtpClient) ehlo(ctx context.Context) error {
+	code, txt, err := c.cmd(ctx, "EHLO mullsmith")
 	if err != nil {
 		return err
 	}
@@ -143,7 +196,7 @@ func (c *smtpClient) ehlo() error {
 	}
 	// Servers without EHLO get the (unauthenticated-era only) legacy HELO;
 	// no STARTTLS/AUTH can exist, which the fail-closed checks above catch.
-	code, txt, err = c.cmd("HELO mullsmith")
+	code, txt, err = c.cmd(ctx, "HELO mullsmith")
 	if err != nil {
 		return err
 	}
@@ -154,23 +207,23 @@ func (c *smtpClient) ehlo() error {
 	return nil
 }
 
-func (c *smtpClient) authLogin() error {
+func (c *smtpClient) authLogin(ctx context.Context) error {
 	if !c.ext["AUTH-LOGIN"] {
 		return errors.New("smtp: server does not advertise AUTH LOGIN")
 	}
-	if code, txt, err := c.cmd("AUTH LOGIN"); err != nil {
+	if code, txt, err := c.cmd(ctx, "AUTH LOGIN"); err != nil {
 		return err
 	} else if code != 334 {
 		return fmt.Errorf("AUTH LOGIN: %s", txt)
 	}
 	// The 334 continuations are prompts, not secrets; the responses are,
 	// so errors here must never echo user or password.
-	if code, _, err := c.cmd(b64(c.cfg.Username)); err != nil {
+	if code, _, err := c.cmd(ctx, b64(c.cfg.Username)); err != nil {
 		return err
 	} else if code != 334 {
 		return fmt.Errorf("smtp AUTH: username rejected (code %d)", code)
 	}
-	if code, _, err := c.cmd(b64(c.cfg.Password)); err != nil {
+	if code, _, err := c.cmd(ctx, b64(c.cfg.Password)); err != nil {
 		return err
 	} else if code != 235 {
 		return errors.New("smtp AUTH failed (check email.smtp username/password)")
@@ -178,14 +231,14 @@ func (c *smtpClient) authLogin() error {
 	return nil
 }
 
-func (c *smtpClient) upgradeTLS() error {
+func (c *smtpClient) upgradeTLS(ctx context.Context) error {
 	conf := cloneTLSConfig(c.tlsConfig)
 	// ServerName doubles as the verification hostname; Go's crypto/tls
 	// never sends an IP literal as SNI but does verify it against IP SANs.
 	conf.ServerName = c.cfg.Host
 	conf.MinVersion = tls.VersionTLS12
 	tconn := tls.Client(c.conn, conf)
-	if err := tconn.Handshake(); err != nil {
+	if err := tconn.HandshakeContext(ctx); err != nil {
 		return fmt.Errorf("smtp TLS: %w", err)
 	}
 	c.conn = tconn
@@ -196,7 +249,7 @@ func (c *smtpClient) upgradeTLS() error {
 // writeMessage emits headers plus the dot-stuffed body, ending the DATA
 // block. Lines are normalized to CRLF and a leading dot is doubled, so a
 // body line of "." can never fake the terminator.
-func (c *smtpClient) writeMessage(to, subject, body string) error {
+func (c *smtpClient) writeMessage(ctx context.Context, to, subject, body string) error {
 	mid := make([]byte, 16)
 	if _, err := rand.Read(mid); err != nil {
 		return err
@@ -224,29 +277,37 @@ func (c *smtpClient) writeMessage(to, subject, body string) error {
 		b.WriteString("\r\n")
 	}
 	b.WriteString(".\r\n")
-	return c.write(b.String())
+	return c.write(ctx, b.String())
 }
 
 // --- wire plumbing --------------------------------------------------------
 
-func (c *smtpClient) cmd(line string) (code int, text string, err error) {
-	if err := c.write(line + "\r\n"); err != nil {
+func (c *smtpClient) cmd(ctx context.Context, line string) (code int, text string, err error) {
+	if err := c.write(ctx, line+"\r\n"); err != nil {
 		return 0, "", err
 	}
-	return c.reply()
+	return c.reply(ctx)
 }
 
-func (c *smtpClient) write(s string) error {
-	if err := c.conn.SetDeadline(time.Now().Add(deadlineEvery)); err != nil {
+func (c *smtpClient) write(ctx context.Context, s string) error {
+	dl, err := opDeadline(ctx)
+	if err != nil {
 		return err
 	}
-	_, err := c.conn.Write([]byte(s))
+	if err := c.conn.SetDeadline(dl); err != nil {
+		return err
+	}
+	_, err = c.conn.Write([]byte(s))
 	return err
 }
 
 // reply reads one (possibly multi-line) SMTP response.
-func (c *smtpClient) reply() (int, string, error) {
-	if err := c.conn.SetDeadline(time.Now().Add(deadlineEvery)); err != nil {
+func (c *smtpClient) reply(ctx context.Context) (int, string, error) {
+	dl, err := opDeadline(ctx)
+	if err != nil {
+		return 0, "", err
+	}
+	if err := c.conn.SetDeadline(dl); err != nil {
 		return 0, "", err
 	}
 	var (

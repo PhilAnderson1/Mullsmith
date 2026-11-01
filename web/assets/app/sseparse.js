@@ -27,6 +27,10 @@ export function handleFrame(frame, h) {
     case "start":
       h.onStart && h.onStart(data);
       break;
+    case "round":
+      // C7: the server announces each model round's own row.
+      h.onRound && h.onRound(data);
+      break;
     case "token":
       h.onToken && h.onToken(data.t || "");
       break;
@@ -60,17 +64,34 @@ export function handleFrame(frame, h) {
   return true;
 }
 
-// splitFrames consumes whatever "\n\n"-terminated frames have accumulated
-// in `buf` and returns { rest, frames }: the unconsumed tail plus the
-// complete frame texts. EOF flushing (the trailing frame without a blank
-// line) is the CALLER's decision — streamChat applies handleFrame to the
-// remainder only when it is not whitespace.
+// splitFrames consumes whatever complete frames have accumulated in `buf`
+// and returns { rest, frames }: the unconsumed tail plus the frame texts.
+// Frames are separated by a blank line (spec §6.1): LF on the wire today,
+// and CRLF is accepted too, because the SSE spec treats it as an equivalent
+// terminator and silently dropping CRLF peers would hang the reader on a
+// buffer that never splits. A lone \r is NOT a terminator — the server
+// never writes one, and accepting it would split on the "\r" that a chunk
+// boundary can leave behind. A boundary split across chunks ("\r" at a
+// chunk's end) waits in `rest` and resolves when the next chunk arrives.
+// EOF flushing (the trailing frame without a blank line) is the CALLER's
+// decision — streamChat applies handleFrame to the remainder only when it
+// is not whitespace.
 export function splitFrames(buf) {
   const frames = [];
-  let idx;
-  while ((idx = buf.indexOf("\n\n")) >= 0) {
-    frames.push(buf.slice(0, idx));
-    buf = buf.slice(idx + 2);
+  for (;;) {
+    const lf = buf.indexOf("\n\n");
+    const crlf = buf.indexOf("\r\n\r\n");
+    if (lf < 0 && crlf < 0) break;
+    // Take whichever boundary comes first. (A "\n\n" can never start
+    // inside a "\r\n\r\n" — its first byte is "\r" — so the two scans
+    // simply race.)
+    if (crlf >= 0 && (lf < 0 || crlf < lf)) {
+      frames.push(buf.slice(0, crlf));
+      buf = buf.slice(crlf + 4);
+    } else {
+      frames.push(buf.slice(0, lf));
+      buf = buf.slice(lf + 2);
+    }
   }
   return { rest: buf, frames };
 }

@@ -165,9 +165,13 @@ func (b *BraveSearch) Execute(ctx context.Context, inv Invocation) (Result, erro
 	if err != nil {
 		return Result{}, errors.New("web_search: internal serialization failure")
 	}
+	links := make([]map[string]string, len(results))
+	for i, result := range results {
+		links[i] = map[string]string{"title": result.Title, "url": result.URL}
+	}
 	return Result{
 		Content: string(content),
 		Summary: fmt.Sprintf("Searched the web for %q — %d result(s)", Elide(q, 80), len(results)),
-		Data:    results,
+		Data:    links,
 	}, nil
 }

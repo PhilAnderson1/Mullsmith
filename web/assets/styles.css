@@ -682,28 +682,28 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 
 /* ---------- markdown in message bodies (spec §9.4) ---------- */
 
-.msg-body.md { white-space: normal; }
-.msg-body.md > :first-child { margin-top: 0; }
-.msg-body.md > :last-child { margin-bottom: 0; }
-.msg-body.md p { margin: 0.45em 0; overflow-wrap: anywhere; }
-.msg-body.md .md-h { margin: 0.9em 0 0.4em; line-height: 1.3; }
-.msg-body.md ul,
-.msg-body.md ol { margin: 0.4em 0; padding-inline-start: 1.5em; }
-.msg-body.md li { margin: 0.15em 0; }
-.msg-body.md blockquote {
+.stream-text.md { white-space: normal; }
+.stream-text.md > :first-child { margin-top: 0; }
+.stream-text.md > :last-child { margin-bottom: 0; }
+.stream-text.md p { margin: 0.45em 0; overflow-wrap: anywhere; }
+.stream-text.md .md-h { margin: 0.9em 0 0.4em; line-height: 1.3; }
+.stream-text.md ul,
+.stream-text.md ol { margin: 0.4em 0; padding-inline-start: 1.5em; }
+.stream-text.md li { margin: 0.15em 0; }
+.stream-text.md blockquote {
   margin: 0.5em 0;
   padding: 0.15em 0.9em;
   border-inline-start: 3px solid var(--border);
   color: var(--fg-muted);
 }
-.msg-body.md code {
+.stream-text.md code {
   background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 0.08em 0.35em;
   font: 0.9em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-.msg-body.md a { color: var(--accent); text-underline-offset: 2px; }
+.stream-text.md a { color: var(--accent); text-underline-offset: 2px; }
 
 /* fenced code block with language tag + copy button */
 
@@ -845,6 +845,7 @@ details.tool-card summary::-webkit-details-marker { display: none; }
 .tool-card.st-awaiting { border-left-color: #b8860b; }
 .tool-card.st-awaiting .tool-state { color: #b8860b; font-weight: 600; }
 .tool-card.st-denied { border-left-color: var(--fg-muted); }
+.tool-card.st-lost { border-left-color: var(--fg-muted); } /* retired without an outcome */
 .tool-card.st-error { border-left-color: var(--danger); }
 .tool-card.st-error .tool-state { color: var(--danger); }
 

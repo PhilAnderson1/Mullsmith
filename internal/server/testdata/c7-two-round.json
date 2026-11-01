@@ -1,0 +1,63 @@
+{
+  "events": [
+    "start",
+    "tool_start",
+    "tool_args",
+    "tool_end",
+    "round",
+    "token",
+    "token",
+    "done"
+  ],
+  "frames": "event: start\ndata: {\"conversation_id\":\"06GSG4T2898YSKB6X6QWNB4KBC\",\"generation_id\":\"06GSG4T28H6W78JXJTVXJA04T4\",\"message_id\":\"06GSG4T28H6W78JXJTVXJA04TC\",\"round\":0}\n\nevent: tool_start\ndata: {\"call_id\":\"call_f1\",\"message_id\":\"06GSG4T28H6W78JXJTVXJA04TC\",\"tool\":\"web_search\"}\n\nevent: tool_args\ndata: {\"call_id\":\"call_f1\",\"message_id\":\"06GSG4T28H6W78JXJTVXJA04TC\",\"t\":\"{\\\"query\\\":\\\"kyoto\\\"}\"}\n\nevent: tool_end\ndata: {\"call_id\":\"call_f1\",\"data\":[\"https://example.com/a\"],\"message_id\":\"06GSG4T28H6W78JXJTVXJA04TC\",\"status\":\"ok\",\"summary\":\"Searched — 3 result(s)\",\"tool\":\"web_search\",\"truncated\":false}\n\nevent: round\ndata: {\"generation_id\":\"06GSG4T28H6W78JXJTVXJA04T4\",\"message_id\":\"06GSG4T28H6W78JXJTVXJA04TR\",\"round\":2}\n\nevent: token\ndata: {\"t\":\"Kyoto \"}\n\nevent: token\ndata: {\"t\":\"in autumn.\"}\n\nevent: done\ndata: {\"generation_id\":\"06GSG4T28H6W78JXJTVXJA04T4\",\"rounds\":[{\"message_id\":\"06GSG4T28H6W78JXJTVXJA04TC\",\"status\":\"complete\"},{\"message_id\":\"06GSG4T28H6W78JXJTVXJA04TR\",\"status\":\"complete\",\"completion_tokens\":4}],\"status\":\"complete\",\"usage_tokens\":4}\n\n",
+  "messages": {
+    "items": [
+      {
+        "id": "06GSG4T28H6W78JXJTVXJA04T8",
+        "role": "user",
+        "content": "search kyoto",
+        "status": "complete",
+        "status_note": "",
+        "generation_id": "",
+        "tool_calls": null
+      },
+      {
+        "id": "06GSG4T28H6W78JXJTVXJA04TC",
+        "role": "assistant",
+        "content": "",
+        "status": "complete",
+        "status_note": "",
+        "generation_id": "06GSG4T28H6W78JXJTVXJA04T4",
+        "tool_calls": [
+          {
+            "id": "call_f1",
+            "tool": "web_search",
+            "status": "ok",
+            "display": "{\"summary\":\"Searched — 3 result(s)\",\"data\":[\"https://example.com/a\"]}"
+          }
+        ]
+      },
+      {
+        "id": "06GSG4T28H6W78JXJTVXJA04TR",
+        "role": "assistant",
+        "content": "Kyoto in autumn.",
+        "status": "complete",
+        "status_note": "",
+        "generation_id": "06GSG4T28H6W78JXJTVXJA04T4",
+        "tool_calls": null
+      }
+    ]
+  },
+  "generation_id": "06GSG4T28H6W78JXJTVXJA04T4",
+  "rounds": [
+    {
+      "message_id": "06GSG4T28H6W78JXJTVXJA04TC",
+      "status": "complete"
+    },
+    {
+      "completion_tokens": 4,
+      "message_id": "06GSG4T28H6W78JXJTVXJA04TR",
+      "status": "complete"
+    }
+  ]
+}

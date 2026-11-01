@@ -314,7 +314,7 @@ func (s *Server) handleCancelEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("pending email change cancelled", "user", user.ID)
-	writeJSON(w, http.StatusOK, s.mePayload(fresh))
+	writeJSON(w, http.StatusOK, mePayload(fresh))
 }
 
 // invalidToken is the single generic answer for every dead-link flavour

@@ -1,0 +1,14 @@
+{
+  "//": [
+    "Dev-only marker for the real-browser equivalence suite (C7 Stage 6).",
+    "The RUNTIME stays dependency-free (spec §10): this package exists for the",
+    "test toolchain only, run via `make test-browser`. Playwright resolves from",
+    "this folder's node_modules or a global install (the Makefile exports",
+    "NODE_PATH from `npm root -g`)."
+  ],
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "playwright": "^1.58.0"
+  }
+}

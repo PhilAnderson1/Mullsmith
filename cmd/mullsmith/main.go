@@ -163,13 +163,10 @@ func run(args []string) int {
 	// Code execution (§9.9): opt-in and always bubblewrap-jailed; a missing
 	// or non-functional bwrap is a startup error, never a degradation.
 	// (NewForConfig also runs the jail probe here.)
-	codeRunner, codeWarns, err := runner.NewForConfig(cfg)
+	codeRunner, err := runner.NewForConfig(cfg)
 	if err != nil {
 		logger.Error("code execution setup failed", "error", err)
 		return 1
-	}
-	for _, w := range codeWarns {
-		logger.Warn("code execution", "msg", w)
 	}
 	if codeRunner != nil && cfg.Tools.Agent.Approval["code_run"] == "auto" &&
 		cfg.Auth.Registration == "open" {
@@ -221,19 +218,48 @@ func run(args []string) int {
 		if n := srv.AbortGenerations(); n > 0 {
 			logger.Info("cancelling in-flight generations", "count", n)
 		}
-		sctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.D())
-		defer cancel()
-		if err := srv.Shutdown(sctx); err != nil {
-			logger.Warn("shutdown incomplete within grace period", "error", err)
-		}
-		// Let in-flight generations save their partial state before the DB
-		// closes (streams detached from browser requests outlive Shutdown).
-		wctx, wcancel := context.WithTimeout(context.Background(),
-			cfg.Server.ShutdownGrace.D())
-		srv.WaitIdle(wctx)
-		wcancel()
+		// ONE grace deadline is shared by every stage (review follow-up to
+		// issue 5): three sequential WithTimeout(grace) calls gave each
+		// stage the FULL grace again, so the worst-case wait was a multiple
+		// of the setting. shutdownWithin derives each stage's context from
+		// the SAME deadline: what a stage leaves unspent is all its
+		// successor gets.
+		shutdownWithin(cfg.Server.ShutdownGrace.D(),
+			func(sctx context.Context) {
+				if err := srv.Shutdown(sctx); err != nil {
+					logger.Warn("shutdown incomplete within grace period", "error", err)
+				}
+			},
+			// Let in-flight generations save their partial state before
+			// the DB closes (streams detached from browser requests
+			// outlive Shutdown).
+			func(wctx context.Context) { srv.WaitIdle(wctx) },
+			// The mail worker goes last: its enqueuers died with the HTTP
+			// server. Close is BOUNDED (review3 issue 5) — the worker
+			// context cancels an active delivery and the join respects the
+			// shared budget. Anything still pending is abandoned and
+			// logged, per the best-effort policy.
+			func(mctx context.Context) {
+				if err := mailer.Close(mctx); err != nil {
+					logger.Warn("mail worker shutdown incomplete", "error", err)
+				}
+			},
+		)
 		logger.Info("bye")
 		return 0
+	}
+}
+
+// shutdownWithin runs the shutdown stages against ONE deadline shared by
+// all of them: every stage receives the budget that REMAINS when its turn
+// comes, so one hung stage cannot multiply the total by handing each
+// successor a fresh grace period.
+func shutdownWithin(grace time.Duration, stages ...func(context.Context)) {
+	deadline := time.Now().Add(grace)
+	for _, stage := range stages {
+		sctx, cancel := context.WithDeadline(context.Background(), deadline)
+		stage(sctx)
+		cancel()
 	}
 }
 
@@ -492,7 +518,7 @@ func adminMailReset(ctx context.Context, cfg *config.Config, db *store.DB, u *st
 		return false
 	}
 	subject, body := mail.ResetMail(cfg.Email.BaseURL, raw)
-	if err := mail.NewSMTP(cfg.Email.SMTP).Deliver(u.Email, subject, body); err != nil {
+	if err := mail.NewSMTP(cfg.Email.SMTP).Deliver(ctx, u.Email, subject, body); err != nil {
 		fmt.Fprintf(os.Stderr, "mullsmith: mail failed (%v) — falling back to password prompt\n", err)
 		return false
 	}

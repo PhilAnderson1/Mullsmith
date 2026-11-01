@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"mullsmith/internal/auth"
 	"mullsmith/internal/id"
 )
 
@@ -150,6 +151,89 @@ func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time
 		return err
 	}
 	return tx.Commit()
+}
+
+// ErrStalePassword surfaces from ChangePasswordAndRotate when the stored hash
+// no longer matches the one the caller verified: a concurrent change (another
+// Settings tab, an admin reset, a completed mail link) beat this rotation,
+// and applying it now would silently overwrite the fresher credential.
+var ErrStalePassword = errors.New("password changed since it was verified")
+
+// PasswordRotation is the durable half of a rotated session: the raw token
+// belongs ONLY to the response cookie, which the handler may publish after
+// the transaction commits.
+type PasswordRotation struct {
+	Raw       string
+	ExpiresAt time.Time
+}
+
+// ChangePasswordAndRotate commits the whole security transition of a
+// password change in ONE transaction (C4): the new hash — guarded by the
+// exact hash the handler verified, so a simultaneous change cannot be
+// silently overwritten — the revocation of outstanding reset links
+// (SetPassword's established policy, made explicit here), the revocation of
+// every OTHER session, the deletion of the current one, and the insertion of
+// its replacement. Before commit, any failure leaves nothing changed; after
+// commit, no old session and no mailbox-derived link survives the fresh
+// credential. The handler prepares the hash and expiry before entering and
+// publishes the cookie only once this returns.
+func (d *DB) ChangePasswordAndRotate(ctx context.Context, userID, newHash, verifiedHash string,
+	currentSessionHash []byte, remembered bool, expiresAt, now time.Time, userAgent string,
+) (*PasswordRotation, error) {
+	raw, hash, err := auth.NewSessionToken()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?`,
+		newHash, now.Unix(), userID, verifiedHash)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Distinguish the vanished account from a raced change: one
+		// reads as 401-worthy, the other as "try again", never both.
+		var one int
+		if qerr := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one); errors.Is(qerr, ErrNoRows) {
+			return nil, ErrUserNotFound
+		} else if qerr != nil {
+			return nil, qerr
+		}
+		return nil, ErrStalePassword
+	}
+	// Policy (astra2, kept from SetPassword): a password change cuts every
+	// mailbox-derived path that could overwrite the fresh credential.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`,
+		TokenResetPassword, userID); err != nil {
+		return nil, err
+	}
+	// Every other device is out (spec §9.1)…
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?`, userID, currentSessionHash); err != nil {
+		return nil, err
+	}
+	// …and the caller's own session is rotated, never kept: it predates
+	// the credential the request just proved.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, currentSessionHash); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO sessions(id_hash, user_id, created_at, expires_at, remembered, last_seen_at, user_agent)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		hash, userID, now.Unix(), expiresAt.Unix(), remembered, now.Unix(), userAgent); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &PasswordRotation{Raw: raw, ExpiresAt: expiresAt}, nil
 }
 
 // UpdateProfile changes the account's display details in one statement.

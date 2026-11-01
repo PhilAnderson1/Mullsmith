@@ -105,6 +105,36 @@ test("CRLF-terminated lines parse", () => {
   assert.deepEqual(seen, [["token", "crlf"]]);
 });
 
+// The reader accepts CRLF frame boundaries too (c7.md D5): the server
+// writes LF (spec §6.1), but an SSE intermediary that re-terminates lines
+// must not leave this client staring at a buffer that never splits.
+test("splitFrames accepts CRLF and mixed blank-line boundaries", () => {
+  const a = frame("token", { t: "a" });
+  const b = frame("token", { t: "b" });
+  const r = splitFrames(`${a}\r\n\r\n${b}\n\n`);
+  assert.deepEqual(r.frames, [a, b]);
+  assert.equal(r.rest, "");
+});
+
+test("a CRLF boundary split across chunks resolves on the next chunk", () => {
+  const a = frame("token", { t: "a" });
+  const b = frame("done", { status: "complete" });
+  const whole = `${a}\r\n\r\n${b}\r\n\r\n`;
+  // Cut inside the boundary itself: a chunk ending mid "\r\n\r\n".
+  const cut = whole.indexOf("\r\n\r\n") + 2;
+  const first = splitFrames(whole.slice(0, cut));
+  assert.deepEqual(first.frames, [], "no boundary has completed yet");
+  const second = splitFrames(first.rest + whole.slice(cut));
+  assert.deepEqual(second.frames, [a, b]);
+  assert.equal(second.rest, "");
+});
+
+test("a lone CR is not a frame boundary (server never writes one)", () => {
+  const r = splitFrames(`event: token\rdata: {"t":"x"}\n\n`);
+  assert.equal(r.frames.length, 1, "the \\r alone must not split the frame");
+  assert.ok(r.frames[0].includes('data: {"t":"x"}'));
+});
+
 test("terminal error events reach the handler (context_full, storage_error, upstream_error)", () => {
   const { h, seen } = recorder();
   for (const code of ["context_full", "storage_error", "upstream_error"]) {

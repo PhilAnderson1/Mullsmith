@@ -181,6 +181,8 @@ llm:
   default_temperature: 0.7
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
   vision_max_image_bytes: 4MiB           # per-picture cap for view_image (all vision models)
+  upstream_header_timeout: "90s"         # wait for response headers; -1 = no cap (§6.2)
+  upstream_stall_timeout: "120s"         # max silence between bytes mid-stream; -1 = no cap (§6.2)
   # Thinking control (thinking-control-specification.md, §6.3). All three
   # optional: omitted together, no selector appears and requests keep the
   # plain transport. The choice LIVES on the model entries above;
@@ -351,6 +353,7 @@ tool_calls (
   arguments   TEXT NOT NULL,             -- JSON as proposed by model
   status      TEXT NOT NULL,             -- pending_approval|approved|denied|running|ok|error
   result      TEXT,                      -- truncated result sent back to model
+  display     TEXT NOT NULL DEFAULT '',  -- bounded UI card payload: summary/data/truncated
   duration_ms INTEGER,
   created_at  INTEGER NOT NULL,
   finished_at INTEGER
@@ -422,7 +425,7 @@ with no internals leaked (§9.12).
 | POST | `/api/v1/auth/register` | `{email, name, password, remember_me}` → creates user, session (checkbox honored, §9.1), and scratchpad dirs (§8). The account opens carrying one placeholder `New chat` conversation (same transaction), so the first login lands ready for typing (§8). Answers the same identity payload as `GET /auth/me`. 409 on duplicate email. Respects `registration` mode. With `email.enabled` (§9.17): the address waits in `unconfirmed_email`, the row is `unconfirmed`, no session cookie, and the answer is `201 {email, email_confirmation_required}` + a confirmation mail. |
 | POST | `/api/v1/auth/login` | `{email, password, remember_me}` → sets session cookie; `remember_me` (from the login checkbox) selects persistent vs browser-session cookie (§9.1). Answers the same identity payload as `GET /auth/me` — one WHO-YOU-ARE shape on every door, the SPA seeds its client-side user from it. Rate limited + lockout. Never matches a pending (unconfirmed) account. |
 | POST | `/api/v1/auth/logout` | Destroys session. |
-| GET  | `/api/v1/auth/me` | `{id, email, unconfirmed_email, name, created_at, default_system_prompt, quota: {used_bytes, total_bytes}}` |
+| GET  | `/api/v1/auth/me` | `{id, email, unconfirmed_email, name, created_at, default_system_prompt}` |
 | PATCH | `/api/v1/auth/me` | Settings page: any subset of `{name, email, default_system_prompt}`; email rules mirror registration; taken email → 409. With `email.enabled` a changed address is never written directly: it becomes `unconfirmed_email` + a bound confirm mail (old mailbox gets a notice); the confirmed address keeps working until the click (§9.17). |
 | POST | `/api/v1/auth/password` | `{current, new}` change password; revokes other sessions and every outstanding reset link — a leaked link must not overwrite the fresh credential (§9.17). |
 | POST | `/api/v1/auth/forgot-password` | `{email}` — public, `email.enabled` only (404 otherwise). Mails a one-shot reset link (30 min) to a confirmed, enabled account. Answers one byte-identical generic 200 for every outcome (§9.17). Rate limited per IP and per address. |
@@ -444,7 +447,7 @@ Password policy: ≥ 10 characters, checked against a small embedded common-pass
 | GET | `/api/v1/conversations/{id}` | Metadata + pinned files. Carries `thinking`: the **effective** choice (`default`, or a saved one still valid under the current endpoint/model/type/profile — §6.3). Carries `max_context_tokens`: the context window of the model the conversation runs on — the meter's denominator, a model property that travels with the conversation (`§6.1`; absent when auto-detection has nothing). Opening a conversation is that window's refresh point. |
 | PATCH | `/api/v1/conversations/{id}` | Rename, model change, system prompt, thinking choice (`{thinking}`; §6.3). |
 | DELETE | `/api/v1/conversations/{id}` | Hard delete; FK cascades to messages → tool calls & attachment links. |
-| GET | `/api/v1/conversations/{id}/messages?cursor=` | Full history (incl. tool-call cards). |
+| GET | `/api/v1/conversations/{id}/messages?cursor=` | Displayable user/assistant history, including tool-call display payloads. Tool-result and synthetic image rows remain server-side for model replay; they do not consume browser page slots. |
 | POST | `/api/v1/conversations/{id}/messages` | **The core endpoint.** Body `{content, attachment_paths?, thinking?}`. Responds with an **SSE stream** (§6). Disconnecting aborts generation server-side. |
 | POST | `/api/v1/toolcalls/{id}/approval` | `{decision: "allow" | "deny", remember?: "conversation"}` for tools in `confirm` mode. |
 | POST | `/api/v1/messages/{id}/regenerate` | Re-run last assistant turn (streams like above). |
@@ -544,9 +547,21 @@ everything else behind auth.
    the sidebar updates live. Strictly best-effort: any failure leaves the placeholder
    and retries on the next message; regenerate never retitles.
 
-Event taxonomy (SSE `event:` field): `start`, `token`, `reasoning`, `title`,
-`tool_start`, `tool_args`, `tool_end`, `awaiting_approval`, `artifact`, `error`,
-`done`.
+Event taxonomy (SSE `event:` field): `start`, `round`, `token`, `reasoning`, `title`,
+`tool_start`, `tool_args`, `tool_end`, `awaiting_approval`, `error`, `done`.
+
+`start` and `round` identify each assistant row. Tool events name their owning
+`message_id`. `done` carries `status`, `usage_tokens`, and `rounds[]`, where
+per-round entries carry `message_id`, `status`, optional `note`, and optional
+`completion_tokens`/`duration_ms`. Row identity and timing have no duplicate
+generation-wide fields. Stored tool cards render exclusively from `display`;
+there is no reconstruction from historical model-facing results.
+
+A model stop with `finish_reason=length` or `content_filter` preserves partial
+content with `status=error` and a durable explanation, shown live and after
+reload. Unknown finish reasons also stop with an explanation. Incomplete rounds
+never execute their tool proposals. Normal `stop`/`tool_calls`, and endpoints
+omitting a finish reason, use the ordinary completion/tool loop.
 
 ### 6.2 LLM client requirements
 
@@ -561,6 +576,13 @@ Event taxonomy (SSE `event:` field): `start`, `token`, `reasoning`, `title`,
   call arguments are accumulated by `index` per OpenAI chunk format (verified against this
   server), and `[DONE]`-less stream close is tolerated.
 - Retries: none mid-stream; one retry on connection-refused before first token.
+- **Upstream progress budgets** (not total timeouts, which would punish long
+  reasoning): `llm.upstream_header_timeout` bounds the wait for response headers,
+  `llm.upstream_stall_timeout` bounds the silence between bytes once the stream has
+  started — any byte counts as transport progress, SSE comment heartbeats included.
+  A trip cancels the attempt and travels the ordinary endpoint-failure path: partial
+  content persisted, `upstream_error`, done `status='error'`, slot released. `-1`
+  turns either cap off; 0 or any other negative is a startup error.
 - One in-flight generation per conversation; a second POST returns 409.
 - Abort: client disconnect or `POST /api/v1/generations/{id}/abort` cancels the upstream
   request (`context.Cancel`), message saved with `status='aborted'` + partial content —
@@ -886,8 +908,9 @@ files) produce markdown rendered in the victim's browser.
   and a name collision bumps to `name (1).ext`; an upload never overwrites bytes. The
   disk name IS the display name: there is no metadata layer to keep in sync (and no
   ULID-mangled name to explain in the UI).
-- Chat and tool-result content rendered in tool cards (search snippets, fetch text, code
-  output) goes through the same sanitizer; search result URLs are display-truncated so a
+- Assistant markdown is built with DOM text nodes; tool cards show summaries,
+  result links and shared-file downloads. Model-facing search snippets, fetched text
+  and code output are not copied into the display payload. Search result URLs are display-truncated so a
   long URL can't masquerade as another domain (punycode/homoglyph display kept simple:
   non-ASCII hosts shown with their punycode form next to Unicode).
 
@@ -1365,7 +1388,7 @@ Cross-cutting touch/responsive behavior:
 | View | Contents |
 |---|---|
 | **Login / Register** | Email, name, password; **"Stay logged in on this computer" checkbox** (unchecked by default, hidden when `auth.remember_login: false`, and on the register form hidden whenever `email.enabled` — sign-up creates no session until the address is confirmed, §9.17); shows invite field when invite-only. With `email.enabled`: a "Forgot password?" link (§5.1 `forgot-password`), a check-inbox panel after sign-up with a resend link (§5.1 `resend-confirm`), and a set-new-password panel reached from a reset mail. Mail links opened on a live session confirm the pending address in place (toast, no re-login); a reset link hands off to the auth view. |
-| **Chat (main)** | Left sidebar: conversation list (search, "New chat"; rename and delete hide behind a **"…"** on the row — revealed on hover, always visible where hover doesn't exist — and the same menu opens on right-click or mobile long press via `contextmenu`) with a muted **"Delete older than…"** command dropdown under it (1 day / 1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code run with expandable stdout, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), a **"+" add-menu button** (a vertical popover holding the muted **Thinking** dropdown — Default first, then the choices
+| **Chat (main)** | Left sidebar: conversation list (search, "New chat"; rename and delete hide behind a **"…"** on the row — revealed on hover, always visible where hover doesn't exist — and the same menu opens on right-click or mobile long press via `contextmenu`) with a muted **"Delete older than…"** command dropdown under it (1 day / 1 week / 1 month / 1 year / All — confirm, bulk-delete by `updated_at`, the select resets to its prompt); center: message thread — user bubbles, assistant markdown with code blocks + copy buttons + syntax highlight, collapsible **tool cards** (search results with links, code-run exit/timeout/truncation summaries, approval buttons with script preview), **artifact download cards**; bottom composer: multiline input (Enter send, Shift+Enter newline on hardware keyboards; plain send button on touch), a **"+" add-menu button** (a vertical popover holding the muted **Thinking** dropdown — Default first, then the choices
 listed for the conversation's active model in `meta.thinking`; disabled with a switch-model
 tooltip when the current model has nothing to choose, hidden only when the deployment has
 no thinking anywhere (§6.3) — above the **Attach files** command — uploads to scratchpad, chip shown before send; any outside click or Escape closes it), model picker, stop button while streaming. A new chat

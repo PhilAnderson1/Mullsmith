@@ -16,13 +16,19 @@ import (
 // they exist for DB-level auditing, deliberately kept out of the history
 // API projection and the live tool-end events.
 type ToolCall struct {
-	ID         string
-	MessageID  string
-	LLMCallID  string // id string assigned by the model endpoint
-	Tool       string
-	Arguments  string // JSON as proposed
-	Status     string // pending_approval | approved | denied | running | ok | error
-	Result     string
+	ID        string
+	MessageID string
+	LLMCallID string // id string assigned by the model endpoint
+	Tool      string
+	Arguments string // JSON as proposed
+	Status    string // pending_approval | approved | denied | running | ok | error
+	Result    string
+	// Display is the card payload (C7): the bounded JSON
+	// {"summary","data","truncated"} the live tool_end event carried, kept
+	// separate from Result, which is the middle-elided text the MODEL saw.
+	// Rebuilding a card out of that string could cut its JSON in half —
+	// links and download cards vanished on reload.
+	Display    string
 	DurationMS int64
 	CreatedAt  time.Time
 	FinishedAt time.Time
@@ -44,21 +50,37 @@ func (d *DB) AddToolCall(ctx context.Context, tc *ToolCall) error {
 }
 
 // UpdateToolCallStatus moves a call between lifecycle statuses before the
-// final FinishToolCall (e.g. pending_approval → approved/denied, → running).
-func (d *DB) UpdateToolCallStatus(ctx context.Context, id, status string) error {
-	_, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE tool_calls SET status = ? WHERE id = ?`, status, id)
-	return err
+// final FinishToolCall (e.g. pending_approval → approved/denied). display
+// carries the card payload for a verdict that IS terminal for the card —
+// a denial never reaches FinishToolCall, so without it the reload lost the
+// reason the live view showed. The supplied display replaces the stored
+// payload; FinishToolCall replaces it again when an approved call finishes.
+func (d *DB) UpdateToolCallStatus(ctx context.Context, id, status, display string) error {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE tool_calls SET status = ?, display = ? WHERE id = ?`, status, display, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrRowGone // audit row deleted (conversation removal) — C6
+	}
+	return nil
 }
 
-// FinishToolCall stores the terminal status plus the truncated result and
-// duration.
-func (d *DB) FinishToolCall(ctx context.Context, id, status, result string, durationMS int64) error {
-	_, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE tool_calls SET status = ?, result = ?, duration_ms = ?, finished_at = ?
+// FinishToolCall stores the terminal status plus the truncated model-facing
+// result, the display payload the UI reloads from (C7) and the duration.
+func (d *DB) FinishToolCall(ctx context.Context, id, status, result, display string, durationMS int64) error {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE tool_calls SET status = ?, result = ?, display = ?, duration_ms = ?, finished_at = ?
 		 WHERE id = ?`,
-		status, result, durationMS, time.Now().Unix(), id)
-	return err
+		status, result, display, durationMS, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrRowGone // audit row deleted (conversation removal) — C6
+	}
+	return nil
 }
 
 // ToolCallsForMessages returns audit rows grouped by assistant message id,
@@ -71,7 +93,8 @@ func (d *DB) ToolCallsForMessages(ctx context.Context, msgIDs []string) (map[str
 	// #nosec G202 -- placeholders() emits only "?, ?, ..." literals; every
 	// value is bound as a parameter.
 	q := `SELECT id, message_id, llm_call_id, tool, arguments, status,
-	             COALESCE(result, ''), COALESCE(duration_ms, 0), created_at, COALESCE(finished_at, 0)
+	             COALESCE(result, ''), COALESCE(display, ''), COALESCE(duration_ms, 0),
+	             created_at, COALESCE(finished_at, 0)
 	      FROM tool_calls WHERE message_id IN (` + placeholders(len(msgIDs)) + `)
 	      ORDER BY created_at ASC, id ASC`
 	args := make([]any, len(msgIDs))
@@ -89,7 +112,7 @@ func (d *DB) ToolCallsForMessages(ctx context.Context, msgIDs []string) (map[str
 			created, fin int64
 		)
 		if err := rows.Scan(&tc.ID, &tc.MessageID, &tc.LLMCallID, &tc.Tool, &tc.Arguments,
-			&tc.Status, &tc.Result, &tc.DurationMS, &created, &fin); err != nil {
+			&tc.Status, &tc.Result, &tc.Display, &tc.DurationMS, &created, &fin); err != nil {
 			return nil, err
 		}
 		tc.CreatedAt = time.Unix(created, 0)

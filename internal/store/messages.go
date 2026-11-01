@@ -27,10 +27,22 @@ type Message struct {
 	CreatedAt        time.Time
 	// Synthetic marks rows the server inserted on its own behalf — today
 	// only the view_image turn (§7.2): role 'user' so its image replays,
-	// but never a "You" bubble. The client filters on this flag.
+	// but never a "You" bubble. Browser history excludes these rows.
 	Synthetic bool
 	// ToolCallID is set on role='tool' rows: the call this result answers.
 	ToolCallID string
+	// GenerationID names the generation that produced this row (C7). It is
+	// stamped on every assistant round row one operation writes, which makes
+	// "the rows of this turn" a query: what regenerate has to retire, and
+	// what the generation-wide done event summarises.
+	GenerationID string
+	// StatusNote is the server-authored terminal note a reload needs in
+	// order to reproduce what the live stream announced (C7): why a
+	// transcript whose rows all saved cleanly still stopped short of an
+	// answer (next-round placeholder failed, tool result could not be
+	// written, the context window filled mid-loop). "" means the row's own
+	// status already tells the whole story.
+	StatusNote string
 	// Calls holds the audit rows for assistant messages that proposed tool
 	// calls (context replay + reload rendering). Read-only projection.
 	Calls []ToolCall
@@ -71,6 +83,9 @@ func (d *DB) addMessage(ctx context.Context, userID string, m *Message, paths []
 	if m.ID == "" {
 		m.ID = id.New()
 	}
+	if m.Role == "assistant" && m.GenerationID == "" {
+		m.GenerationID = id.New()
+	}
 	if m.Status == "" {
 		m.Status = "complete"
 	}
@@ -99,9 +114,11 @@ func (d *DB) addMessage(ctx context.Context, userID string, m *Message, paths []
 		tok = *m.TokenCount
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ConversationID, m.Role, m.Content, m.Status, tok, m.CreatedAt.Unix(), m.ToolCallID, m.Synthetic); err != nil {
+		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at,
+		                     tool_call_id, synthetic, generation_id, status_note)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, m.Role, m.Content, m.Status, tok, m.CreatedAt.Unix(),
+		m.ToolCallID, m.Synthetic, m.GenerationID, m.StatusNote); err != nil {
 		return err
 	}
 	for _, p := range paths {
@@ -146,53 +163,156 @@ func (d *DB) GetMessageForUser(ctx context.Context, userID, msgID string) (*Mess
 	return &m, nil
 }
 
-// IsLastMessageInConversation reports whether msgID is the newest row.
-// Mutation decisions must NOT use it as a check-then-act guard: between
-// this read and any following write a send can append. Regeneration uses
-// BeginRegeneration, which re-checks newestness inside its own transaction
-// (finding 4). It remains for read-only projections.
-func (d *DB) IsLastMessageInConversation(ctx context.Context, convID, msgID string) (bool, error) {
-	var last string
-	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT id FROM messages WHERE conversation_id = ?
-		 ORDER BY created_at DESC, id DESC LIMIT 1`, convID).Scan(&last)
-	if errors.Is(err, ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return last == msgID, nil
-}
-
-func (d *DB) DeleteMessage(ctx context.Context, msgID string) error {
-	res, err := d.sqlDB.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, msgID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrConversationNotFound
-	}
-	return nil
-}
-
 // ErrNotLastMessage marks a mutation that must land on the conversation's
 // newest row and found it isn't — checkable only inside the transaction
 // that performs the swap, so no send can interleave (finding 4).
 var ErrNotLastMessage = errors.New("message is not the newest in its conversation")
 
-// BeginRegeneration atomically retires the newest assistant reply and puts a
-// fresh streaming placeholder in its place: newest-check, delete and insert
-// share ONE transaction (finding 4 — the old flow deleted the reply first
-// and created the replacement only later, so a failure in between could
-// leave the conversation a turn short, and a send that raced the check
-// turned "newest" into a stale verdict). The deleted row's tool_calls and
-// attachments disappear by cascade, exactly as with DeleteMessage. The
-// placeholder is status='streaming', so ContextHistory already ignores it
-// and the regenerated request never quotes its own draft; FinalizeMessage
-// completes it like any streamed reply. Ownership is enforced through the
-// conversation row.
-func (d *DB) BeginRegeneration(ctx context.Context, userID, convID, oldMsgID string) (*Message, error) {
+// ErrRowGone reports an UPDATE whose row no longer exists (C6): the
+// conversation or account was deleted underneath a live write. Zero-row
+// updates are NOT success — callers read this as cancellation of work whose
+// subject the user removed, never as a saved final state.
+var ErrRowGone = errors.New("row no longer exists (deleted)")
+
+// BeginSend commits an accepted send as ONE transaction (C2): the user row
+// with its attachment links, the initial assistant draft row, and the
+// conversation activity bump. Before commit a rejection leaves no turn at
+// all — the old split, where the user message was durable but the
+// placeholder insert failed, handed the client a plain HTTP error over a
+// committed turn and made a retry duplicate it. After commit the turn
+// belongs to the accepted generation: later failures are reconciled as
+// SSE terminal events on rows that exist. The real inserted rows come back
+// so the stream only ever names durable identities. No transaction is held
+// across network calls, approval waits or model execution — this commits
+// and returns.
+func (d *DB) BeginSend(ctx context.Context, userID, convID, content string,
+	paths []string, userTokens int64, genID string,
+) (userMsg, draft *Message, err error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+
+	var one int
+	err = tx.QueryRowContext(ctx,
+		`SELECT 1 FROM conversations WHERE id = ? AND user_id = ?`, convID, userID).Scan(&one)
+	if errors.Is(err, ErrNoRows) {
+		return nil, nil, ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	now := time.Now()
+	userMsg = &Message{ID: id.New(), ConversationID: convID, Role: "user",
+		Content: content, Status: "complete", TokenCount: &userTokens, CreatedAt: now}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		userMsg.ID, userMsg.ConversationID, userMsg.Role, userMsg.Content,
+		userMsg.Status, userTokens, userMsg.CreatedAt.Unix(), "", false); err != nil {
+		return nil, nil, err
+	}
+	for _, p := range paths {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO attachments(message_id, path) VALUES(?, ?)`, userMsg.ID, p); err != nil {
+			return nil, nil, err
+		}
+	}
+	// The draft is status='streaming', so ContextHistory already ignores
+	// it: the prompt built from this admission never quotes its own reply.
+	// It carries the generation identity (C7) that every later round row of
+	// this operation carries too.
+	draft = &Message{ID: id.New(), ConversationID: convID, Role: "assistant",
+		Status: "streaming", CreatedAt: now, GenerationID: genID}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at,
+		                     tool_call_id, synthetic, generation_id, status_note)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		draft.ID, draft.ConversationID, draft.Role, draft.Content, draft.Status,
+		nil, draft.CreatedAt.Unix(), "", false, genID, ""); err != nil {
+		return nil, nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE conversations SET updated_at = ? WHERE id = ?`,
+		now.Unix(), convID); err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return userMsg, draft, nil
+}
+
+// turnRowsWhere is the single definition of "the rows belonging to one
+// generation's turn" (C7): its assistant rounds, the role='tool' answers of
+// its calls (linked by the endpoint call id, which is what a tool row
+// carries) and the synthetic view_image turns it wrote on the model's behalf
+// (§7.2). Both the retire DELETE and the admission SELECT that predicts it
+// interpolate this, so a retry can never be prompted from rows the swap is
+// about to remove. Bind order: conv, gen, gen, conv, gen.
+const turnRowsWhere = `conversation_id = ? AND (
+       (generation_id = ? AND role = 'assistant')
+    OR (synthetic = 1 AND generation_id = ?)
+    OR (role = 'tool' AND tool_call_id IN (
+          SELECT llm_call_id FROM tool_calls WHERE message_id IN (
+            SELECT id FROM messages
+            WHERE conversation_id = ? AND generation_id = ? AND role = 'assistant')))
+	)`
+
+// TurnRetireIDs returns the ids a regeneration of msgID would retire — the
+// same set turnRowsWhere selects, read BEFORE the swap so admission can
+// measure and build the retry's prompt from the history that will actually
+// exist.
+func (d *DB) TurnRetireIDs(ctx context.Context, convID, msgID string) ([]string, error) {
+	var gen string
+	err := d.sqlDB.QueryRowContext(ctx,
+		`SELECT generation_id FROM messages WHERE id = ? AND conversation_id = ?`,
+		msgID, convID).Scan(&gen)
+	if errors.Is(err, ErrNoRows) {
+		return []string{msgID}, nil // gone: the caller's own newestness check decides
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.sqlDB.QueryContext(ctx,
+		`SELECT id FROM messages WHERE `+turnRowsWhere, convID, gen, gen, convID, gen)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// BeginTurnRegeneration retires the newest assistant TURN — every assistant
+// round row the retiring generation produced, the role='tool' answers of its
+// calls, and the synthetic view_image rows it inserted on its own behalf —
+// and puts a fresh streaming placeholder in its place, newest-check, delete
+// and insert all inside ONE transaction (finding 4: the old flow deleted the
+// reply first and created the replacement only later, so a failure in
+// between could leave the conversation a turn short, and a send that raced
+// the check turned "newest" into a stale verdict).
+//
+// The turn, not the row, is the unit (C7): one model exchange can span
+// several assistant rows, and retiring only the row the button named left
+// the retired attempt's own earlier rounds and tool results in history —
+// where historyToLLM replays them, so "answer that again" started from the
+// previous attempt's tool work and its own earlier prose.
+//
+// The deleted rows' tool_calls and attachments go by cascade. The placeholder is status='streaming', so ContextHistory
+// ignores it and the regenerated request never quotes its own draft;
+// FinalizeMessage completes it like any streamed reply. Ownership is
+// enforced through the conversation row.
+func (d *DB) BeginTurnRegeneration(ctx context.Context, userID, convID, oldMsgID, genID string) (*Message, error) {
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -209,42 +329,62 @@ func (d *DB) BeginRegeneration(ctx context.Context, userID, convID, oldMsgID str
 		return nil, err
 	}
 
-	var oldConv, oldRole string
+	var (
+		oldConv, oldRole string
+		oldGen           string
+		oldCreated       int64
+	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT conversation_id, role FROM messages WHERE id = ?`, oldMsgID).
-		Scan(&oldConv, &oldRole)
+		`SELECT conversation_id, role, generation_id, created_at FROM messages WHERE id = ?`, oldMsgID).
+		Scan(&oldConv, &oldRole, &oldGen, &oldCreated)
 	if errors.Is(err, ErrNoRows) {
 		return nil, ErrConversationNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	if oldConv != convID || oldRole != "assistant" {
+	if oldConv != convID || oldRole != "assistant" || oldGen == "" {
 		return nil, ErrConversationNotFound // indistinguishable (§9.2)
 	}
 
-	var last string
+	// Newestness, measured against OTHER turns (C7). created_at has second
+	// granularity and ids are not chronological, so within one multi-round
+	// turn the ORDER BY tie-break says nothing about which row came last —
+	// comparing against the raw newest row would refuse a legitimate
+	// regenerate of its own final answer. What must not exist is a newer row
+	// belonging to a DIFFERENT turn: that is the interleaved send this guard
+	// was always about.
+	var newer int
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
-		convID).Scan(&last)
+		`SELECT COUNT(*) FROM messages
+		 WHERE conversation_id = ? AND (generation_id <> ? OR generation_id = '')
+		   AND (created_at > ? OR (created_at = ? AND id > ?))`,
+		convID, oldGen, oldCreated, oldCreated, oldMsgID).Scan(&newer)
 	if err != nil {
 		return nil, err
 	}
-	if last != oldMsgID {
+	if newer > 0 {
 		return nil, ErrNotLastMessage
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, oldMsgID); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM messages WHERE `+turnRowsWhere,
+		convID, oldGen, oldGen, convID, oldGen); err != nil {
 		return nil, err
+	}
+	if genID == "" {
+		genID = id.New()
 	}
 	ph := &Message{
 		ID: id.New(), ConversationID: convID, Role: "assistant",
-		Status: "streaming", CreatedAt: time.Now(),
+		Status: "streaming", CreatedAt: time.Now(), GenerationID: genID,
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ph.ID, ph.ConversationID, ph.Role, ph.Content, ph.Status, nil, ph.CreatedAt.Unix(), "", false); err != nil {
+		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at,
+		                     tool_call_id, synthetic, generation_id, status_note)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ph.ID, ph.ConversationID, ph.Role, ph.Content, ph.Status, nil, ph.CreatedAt.Unix(),
+		"", false, genID, ""); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -258,7 +398,7 @@ func (d *DB) BeginRegeneration(ctx context.Context, userID, convID, oldMsgID str
 // FinalizeMessage writes the produced content and status once a generation
 // ends (complete | aborted | error). Non-positive completion/duration store
 // NULL: an absent statistic is never faked with a zero.
-func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, status string, tokens, completion, durationMS int64) error {
+func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, status, note string, tokens, completion, durationMS int64) error {
 	var comp, dur any
 	if completion > 0 {
 		comp = completion
@@ -266,10 +406,37 @@ func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, status string,
 	if durationMS > 0 {
 		dur = durationMS
 	}
-	_, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE messages SET content = ?, status = ?, token_count = ?, completion_tokens = ?, duration_ms = ? WHERE id = ?`,
-		content, status, tokens, comp, dur, msgID)
-	return err
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE messages SET content = ?, status = ?, status_note = ?, token_count = ?, completion_tokens = ?, duration_ms = ? WHERE id = ?`,
+		content, status, note, tokens, comp, dur, msgID)
+	if err != nil {
+		return err
+	}
+	// A zero-row update is not success (C6): the row was deleted while the
+	// reply streamed, and the caller must treat its finalisation as
+	// cancelled, not saved.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrRowGone
+	}
+	return nil
+}
+
+// SetStatusNote records the server-authored terminal note on a row (C7) and
+// is the durability half of "the live view survives a reload": a generation
+// that died AFTER its last round had saved cleanly has nothing else to
+// describe the failure with, so a refresh would show a plain complete answer
+// where the stream said why there was no answer. Zero rows is not success
+// (C6): the subject went with its conversation.
+func (d *DB) SetStatusNote(ctx context.Context, msgID, note string) error {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE messages SET status_note = ? WHERE id = ?`, note, msgID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrRowGone
+	}
+	return nil
 }
 
 // SweepStreaming marks rows orphaned by a crash as aborted; run at startup.
@@ -314,13 +481,31 @@ func (d *DB) ExecForTest(q string, args ...any) error {
 // runaway guard, not a history policy. Assistant rows carry
 // their Calls and tool rows their ToolCallID so the agent can replay the
 // OpenAI tool protocol faithfully.
-func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Message, error) {
-	rows, err := d.sqlDB.QueryContext(ctx,
-		`SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic
-		 FROM messages
-		 WHERE conversation_id = ? AND id <> ? AND status = 'complete'
-		 ORDER BY created_at ASC, id ASC LIMIT ?`,
-		convID, excludeID, contextHistoryCap+1) // sentinel row: cap+1 means OVER the cap
+func (d *DB) ContextHistory(ctx context.Context, convID string, excludeIDs ...string) ([]Message, error) {
+	// Empty ids are "nothing excluded" (the common case), so callers pass ""
+	// unchanged. A regeneration passes EVERY row its retire removes: the
+	// prompt must be built from the history the swap will actually leave
+	// behind, not from the pre-swap rows minus one.
+	var skip []string
+	for _, id := range excludeIDs {
+		if id != "" {
+			skip = append(skip, id)
+		}
+	}
+	q := `SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic
+	      FROM messages WHERE conversation_id = ? AND status = 'complete'`
+	args := []any{convID}
+	if len(skip) > 0 {
+		// #nosec G202 -- placeholders() emits only "?, ?, ..." literals.
+		q += ` AND id NOT IN (` + placeholders(len(skip)) + `)`
+		for _, id := range skip {
+			args = append(args, id)
+		}
+	}
+	// sentinel row: cap+1 means OVER the cap
+	q += ` ORDER BY created_at ASC, id ASC LIMIT ?`
+	args = append(args, contextHistoryCap+1)
+	rows, err := d.sqlDB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +588,7 @@ func (d *DB) attachFiles(ctx context.Context, msgs []Message) error {
 	return nil
 }
 
-// ListMessages returns one page of a conversation's history in chronological
+// ListMessages returns one page of displayable messages in chronological
 // order. The first page (cursor "") is the NEWEST limit messages; the next
 // cursor walks further back in time (ChatGPT-style "load earlier"). next is
 // "" when no older messages exist. Ownership is enforced.
@@ -419,8 +604,8 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 	}
 	sb := strings.Builder{}
 	sb.WriteString(`SELECT id, conversation_id, role, content, status, token_count,
-	                        completion_tokens, duration_ms, created_at, tool_call_id, synthetic
-	                 FROM messages WHERE conversation_id = ?`)
+	                        completion_tokens, duration_ms, created_at, generation_id, status_note
+	                 FROM messages WHERE conversation_id = ? AND role <> 'tool' AND synthetic = 0`)
 	args := []any{convID}
 	if cursor != "" {
 		ts, mid, ok := decodeCursor(cursor)
@@ -447,7 +632,7 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 			created int64
 		)
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status,
-			&tok, &comp, &dur, &created, &m.ToolCallID, &m.Synthetic); err != nil {
+			&tok, &comp, &dur, &created, &m.GenerationID, &m.StatusNote); err != nil {
 			return nil, "", err
 		}
 		if tok.Valid {

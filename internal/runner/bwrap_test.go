@@ -699,15 +699,15 @@ func codeExecConfig() *config.Config {
 func TestNewForConfigDisabled(t *testing.T) {
 	cfg := codeExecConfig()
 	cfg.Scratchpad.CodeExec.Enabled = false
-	r, warns, err := runner.NewForConfig(cfg)
-	if r != nil || err != nil || len(warns) != 0 {
-		t.Fatalf("disabled code exec must yield nothing, got r=%v warns=%v err=%v", r, warns, err)
+	r, err := runner.NewForConfig(cfg)
+	if r != nil || err != nil {
+		t.Fatalf("disabled code exec must yield nothing, got r=%v err=%v", r, err)
 	}
 }
 
 func TestNewForConfigEnabledBuildsJail(t *testing.T) {
 	requireBwrap(t)
-	r, _, err := runner.NewForConfig(codeExecConfig())
+	r, err := runner.NewForConfig(codeExecConfig())
 	if errors.Is(err, runner.ErrNoCgroup) {
 		if r != nil {
 			t.Fatal("refused startup must not yield a runner")

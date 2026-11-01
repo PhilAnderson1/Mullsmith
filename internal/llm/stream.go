@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -109,6 +110,33 @@ type Client struct {
 	maxTokens   int
 	temperature float64
 	http        *http.Client
+	// Progress budgets (C8), off when 0: headerTimeout bounds the wait
+	// for response headers, stallTimeout the silence between body bytes.
+	// Never total stream timeouts — a running stream is only cut when it
+	// stops moving.
+	headerTimeout time.Duration
+	stallTimeout  time.Duration
+}
+
+// Default upstream progress budgets (C8), used when a hand-built config
+// leaves the knobs unset; config.setDefaults spells the same values out
+// for loaded files.
+const (
+	DefaultHeaderTimeout = 90 * time.Second
+	DefaultStallTimeout  = 120 * time.Second
+)
+
+// budgetFor maps the knob onto a runtime duration: absent (0) takes the
+// code default, any negative is the house off-sentinel, positive stands.
+func budgetFor(d, def time.Duration) time.Duration {
+	switch {
+	case d == 0:
+		return def
+	case d < 0:
+		return 0 // off
+	default:
+		return d
+	}
 }
 
 // NewClient builds the streaming client. Transport may be nil for defaults
@@ -129,6 +157,10 @@ func NewClient(cfg *config.Config, transport http.RoundTripper) *Client {
 		maxTokens:   cfg.LLM.MaxTokensResponse,
 		temperature: cfg.LLM.DefaultTemperature,
 		http:        &http.Client{Transport: transport}, // no global timeout: streaming
+		// The C8 budgets bind inside streamOnce, not on the transport:
+		// an injected test transport gets them exactly like the real one.
+		headerTimeout: budgetFor(cfg.LLM.UpstreamHeaderTimeout.D(), DefaultHeaderTimeout),
+		stallTimeout:  budgetFor(cfg.LLM.UpstreamStallTimeout.D(), DefaultStallTimeout),
 	}
 }
 
@@ -142,6 +174,13 @@ var (
 	ErrUpstream = errors.New("llm upstream error")
 	// ErrAborted means the caller's context was cancelled mid-stream.
 	ErrAborted = errors.New("generation aborted")
+	// ErrStreamHeaderTimeout and ErrStreamStalled are the C8 progress
+	// budgets tripping: headers that never arrived, and a stream that went
+	// silent. Both wrap ErrUpstream, so the generation treats them like any
+	// other endpoint failure — partial output stays durable, the terminal
+	// outcome is upstream_error, the slot is released.
+	ErrStreamHeaderTimeout = fmt.Errorf("%w: response headers never arrived", ErrUpstream)
+	ErrStreamStalled       = fmt.Errorf("%w: the stream stopped sending data", ErrUpstream)
 )
 
 // StreamTools streams the chat route with stream:true and invokes onDelta
@@ -224,7 +263,15 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(),
+	// The C8 watchdog runs this attempt on a child context: one
+	// cancellation path for both budgets, with the trip reason read back
+	// on every exit below. A cancellation the CALLER issued stays
+	// ErrAborted — the budgets only ever add their own verdicts.
+	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	defer cancelAttempt()
+	w := newWatchdog(attemptCtx, cancelAttempt, c.headerTimeout, c.stallTimeout)
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, c.url(),
 		bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -237,12 +284,16 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if w.tripped.Load() == tripHeader {
+			return ErrStreamHeaderTimeout
+		}
 		if ctx.Err() != nil {
 			return ErrAborted
 		}
 		return fmt.Errorf("upstream request: %w", err)
 	}
 	defer resp.Body.Close()
+	w.startBody() // headers are here: the stall budget measures silence from now on
 	if resp.StatusCode != http.StatusOK {
 		// Drain a little for the log but never surface upstream bodies.
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
@@ -250,7 +301,110 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 		return fmt.Errorf("%w: HTTP %d", ErrUpstream, resp.StatusCode)
 	}
 
-	return parseSSE(resp.Body, onDelta, ctx.Err)
+	err = parseSSE(&touchReader{r: resp.Body, w: w}, onDelta, attemptCtx.Err)
+	if err != nil {
+		switch w.tripped.Load() {
+		case tripHeader:
+			return ErrStreamHeaderTimeout
+		case tripStall:
+			return ErrStreamStalled
+		}
+		if ctx.Err() != nil {
+			return ErrAborted
+		}
+		return err
+	}
+	return nil
+}
+
+// Trip reasons for the watchdog (0 = it never fired).
+const (
+	tripNone   int32 = 0
+	tripHeader int32 = 1
+	tripStall  int32 = 2
+)
+
+// watchdog enforces one attempt's C8 progress budgets. It starts in the
+// header phase; startBody() switches to stall timing where every byte
+// counts as transport progress — SSE comment heartbeats included, per the
+// documented policy (the budget measures whether the ENDPOINT is talking,
+// not whether it has model content to show). When a budget expires it
+// records the trip, cancels the attempt, and retires; the streamOnce
+// classification turns that into a typed error.
+type watchdog struct {
+	last    atomic.Int64 // unix nanos of the last transport progress
+	phase   atomic.Int32 // 0 = awaiting headers, 1 = streaming body
+	tripped atomic.Int32 // tripNone | tripHeader | tripStall
+	cancel  context.CancelFunc
+	header  time.Duration // 0 = off
+	stall   time.Duration // 0 = off
+}
+
+func newWatchdog(ctx context.Context, cancel context.CancelFunc, header, stall time.Duration) *watchdog {
+	w := &watchdog{cancel: cancel, header: header, stall: stall}
+	w.last.Store(time.Now().UnixNano())
+	go w.run(ctx)
+	return w
+}
+
+func (w *watchdog) run(ctx context.Context) {
+	// Poll quarterly on the tighter budget so a trip lands clearly inside
+	// it, with bounds for absurd configurations.
+	interval := 250 * time.Millisecond
+	if w.stall > 0 && w.stall/4 < interval {
+		interval = w.stall / 4
+	}
+	if w.header > 0 && w.header/4 < interval {
+		interval = w.header / 4
+	}
+	if interval < 20*time.Millisecond {
+		interval = 20 * time.Millisecond
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done(): // attempt over (success, failure or abort)
+			return
+		case <-t.C:
+		}
+		idle := time.Since(time.Unix(0, w.last.Load()))
+		if w.phase.Load() == 0 && w.header > 0 && idle >= w.header {
+			w.tripped.Store(tripHeader)
+			w.cancel()
+			return
+		}
+		if w.phase.Load() == 1 && w.stall > 0 && idle >= w.stall {
+			w.tripped.Store(tripStall)
+			w.cancel()
+			return
+		}
+	}
+}
+
+// touch records one transport progress event (called per read that moved).
+func (w *watchdog) touch() { w.last.Store(time.Now().UnixNano()) }
+
+// startBody marks headers received and restarts the idle clock.
+func (w *watchdog) startBody() {
+	w.phase.Store(1)
+	w.touch()
+}
+
+// touchReader feeds the watchdog: every byte that reaches the parser is
+// transport progress (C8 policy — silence trips the budget, content type
+// does not).
+type touchReader struct {
+	r io.Reader
+	w *watchdog
+}
+
+func (t *touchReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.w.touch()
+	}
+	return n, err
 }
 
 // mergeJSON deep-merges src into dst: nested objects merge key by key so

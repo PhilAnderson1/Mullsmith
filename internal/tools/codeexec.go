@@ -323,16 +323,12 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if out.TimedOut {
 		summary = "timed out (killed)"
 	}
+	if out.Truncated {
+		summary += " · output truncated"
+	}
 	return Result{
 		Content: string(b),
 		Summary: summary,
-		Data: map[string]any{
-			"exit_code": out.ExitCode,
-			"stdout":    out.Stdout,
-			"stderr":    out.Stderr,
-			"timed_out": out.TimedOut,
-			"truncated": out.Truncated,
-		},
 	}, nil
 }
 

@@ -148,7 +148,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 
 // isChatStreamRoute matches the two POST routes that start an SSE
 // generation (send / regenerate). They are exempt from the per-minute API
-// bucket by spec design; see the hourly bucket in streamAssistant.
+// bucket by spec design; see the hourly bucket in runGeneration.
 func isChatStreamRoute(r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		return false

@@ -127,9 +127,7 @@ func TestFsListTruncatedAfterFlood(t *testing.T) {
 	if !strings.Contains(res.Summary, "(more entries exist)") {
 		t.Errorf("summary = %q, want a truncation note", res.Summary)
 	}
-	if truncated, ok := res.Data.(map[string]any)["truncated"].(bool); !ok || !truncated {
-		t.Errorf("Data[truncated] = %v, want true", res.Data)
-	}
+
 	// A normal directory lists unchanged: no truncated key set true.
 	res, err = run(t, FsList{}, root, argsJSON(t, map[string]string{"path": "artifacts"}))
 	if err != nil {
