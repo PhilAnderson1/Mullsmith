@@ -9,7 +9,12 @@ import (
 
 // ToolCall is a tool_calls-table row (§4): the audit trail of one model
 // proposed tool invocation. Result holds the truncated JSON handed back to
-// the model, exactly as sent (§7.1).
+// the model, exactly as sent (§7.1). DurationMS and FinishedAt are the
+// execution timing of the call: written at FinishToolCall and selected
+// here because the §4 schema defines them as part of the audit record
+// (spec.md tool_calls). No application consumer reads them by design —
+// they exist for DB-level auditing, deliberately kept out of the history
+// API projection and the live tool-end events.
 type ToolCall struct {
 	ID         string
 	MessageID  string

@@ -31,7 +31,6 @@ type Result struct {
 	// ToolCalls holds the complete calls the model proposed this round
 	// (empty when it just answered), ordered by stream index.
 	ToolCalls []llm.ChatToolCall
-	Finish    string // upstream finish_reason ("stop", "tool_calls", …)
 }
 
 // Generator streams one assistant turn against the configured endpoint.
@@ -56,7 +55,6 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		reasoning  strings.Builder
 		usage      int64
 		completion int64
-		finish     string
 	)
 	acc := map[int]*callAccumulator{}
 	var order []int
@@ -67,9 +65,6 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		}
 		if d.Completion > 0 {
 			completion = d.Completion
-		}
-		if d.Finish != "" {
-			finish = d.Finish
 		}
 		for _, tc := range d.ToolCalls {
 			a := acc[tc.Index]
@@ -103,18 +98,12 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		Reasoning:  reasoning.String(),
 		Usage:      usage,
 		Completion: completion,
-		Finish:     finish,
 	}
 	sort.Ints(order) // fragments may arrive out of index order; calls follow it
 	for _, idx := range order {
 		if call, ok := acc[idx].result(); ok {
 			res.ToolCalls = append(res.ToolCalls, call)
 		}
-	}
-	if len(res.ToolCalls) > 0 && res.Finish == "" {
-		// Some endpoints omit an explicit tool_calls finish; the presence
-		// of a complete call implies it.
-		res.Finish = "tool_calls"
 	}
 	switch {
 	case err == nil:

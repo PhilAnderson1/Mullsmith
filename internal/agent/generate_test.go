@@ -55,9 +55,6 @@ func TestRoundAccumulatesToolCallsByIndex(t *testing.T) {
 	if res.Status != "complete" {
 		t.Fatalf("status = %s (err %v)", res.Status, res.Err)
 	}
-	if res.Finish != "tool_calls" {
-		t.Errorf("finish = %q, want tool_calls", res.Finish)
-	}
 	if len(res.ToolCalls) != 2 {
 		t.Fatalf("calls = %+v, want 2", res.ToolCalls)
 	}
@@ -85,10 +82,6 @@ func TestRoundDropsNamelessCall(t *testing.T) {
 	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
 	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "real" {
 		t.Fatalf("calls = %+v, want only [real]", res.ToolCalls)
-	}
-	// Presence of a complete call implies the finish reason.
-	if res.Finish != "tool_calls" {
-		t.Errorf("finish = %q, want implied tool_calls", res.Finish)
 	}
 }
 

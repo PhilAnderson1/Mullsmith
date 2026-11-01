@@ -146,16 +146,14 @@ type modelState struct {
 	canon    string // canonical resolved profile, part of the fingerprint
 }
 
-// Runtime is the validated selection: the endpoint fragment recipes, the
-// profile catalogue, and the effective choices PER PICKER MODEL (the
-// dropdown describes a model, and picker entries may name different
-// profiles). states is built eagerly at Build and never mutated after;
-// choices for models outside the picker are computed on demand from the
-// default profile.
+// Runtime is the validated selection: the endpoint fragment recipes and
+// the effective choices PER PICKER MODEL (the dropdown describes a model,
+// and picker entries may name different profiles). states is built eagerly
+// at Build and never mutated after; choices for models outside the picker
+// are computed on demand from the default profile.
 type Runtime struct {
 	set     Settings
 	ep      *Endpoint
-	profs   map[string]*Profile
 	states  map[string]*modelState
 	epCanon string // canonical resolved endpoint definition
 }
@@ -226,7 +224,7 @@ func Build(set Settings) (*Runtime, error) {
 	// its usable, compiled options NOW — a picker entry naming a missing
 	// profile is a startup error, and no lookup or rendering happens
 	// mid-flight.
-	rt := &Runtime{set: set, ep: ep, profs: profiles, states: map[string]*modelState{}, epCanon: canonical(endpointCanon(ep))}
+	rt := &Runtime{set: set, ep: ep, states: map[string]*modelState{}, epCanon: canonical(endpointCanon(ep))}
 	pids := []string{defPID}
 	for _, p := range set.ModelProfiles {
 		if p == "" {
