@@ -463,3 +463,67 @@ test("floating composer preserves scroll clearance as drafts and attachments gro
     assert.equal(await page.locator("#btn-attach").isVisible(), true);
   } finally { await ctx.close(); }
 });
+
+test("older-chat pagination follows the list without covering rows or skipping loaded chats", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession();
+  try {
+    const cookies = await ctx.cookies(app.base);
+    const csrf = cookies.find((c) => c.name === "mullsmith_csrf").value;
+    for (let i = 0; i < 35; i++) {
+      const response = await page.request.post(`${app.base}/api/v1/conversations`, {
+        headers: { "X-Mullsmith-CSRF": csrf }, data: { title: `Pagination check ${i}` },
+      });
+      assert.equal(response.status(), 201);
+    }
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() => !document.querySelector("#composer-input").disabled);
+      if (width < 1024) await page.click("#btn-menu");
+      await Promise.all([
+        page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return url.pathname === "/api/v1/conversations" && url.searchParams.get("q") === "Pagination check" && !url.searchParams.get("cursor");
+        }),
+        page.fill("#conv-search", "Pagination check"),
+      ]);
+      await page.waitForFunction(() => document.querySelectorAll("#conv-list .conv-item").length === 30);
+      const before = await page.evaluate(() => {
+        const scroll = document.querySelector(".conv-window");
+        const more = document.querySelector("#btn-more");
+        const last = document.querySelector("#conv-list").lastElementChild;
+        const initiallyBelow = more.getBoundingClientRect().top >= scroll.getBoundingClientRect().bottom;
+        scroll.scrollTop = scroll.scrollHeight;
+        return {
+          initiallyBelow, scrollTop: scroll.scrollTop,
+          lastBottom: last.getBoundingClientRect().bottom, buttonTop: more.getBoundingClientRect().top,
+          buttonHeight: more.getBoundingClientRect().height,
+        };
+      });
+      if (width >= 1024) {
+        const shell = await page.evaluate(() => ({
+          sidebarTop: document.querySelector("#sidebar").getBoundingClientRect().top,
+          sidebarBottom: document.querySelector("#sidebar").getBoundingClientRect().bottom,
+          headerHeight: document.querySelector(".topbar").getBoundingClientRect().height,
+          chatHeight: document.querySelector(".chat-main").getBoundingClientRect().height,
+          viewportHeight: innerHeight,
+        }));
+        assert.equal(shell.sidebarTop, 0, "desktop sidebar must start at the top of the page");
+        assert.ok(Math.abs(shell.sidebarBottom - shell.viewportHeight) < 1);
+        assert.ok(shell.headerHeight < 100, "long history stretched the header row");
+        assert.ok(shell.chatHeight > shell.viewportHeight * 0.6, "long history collapsed the chat area");
+        assert.equal(await page.locator("#topbar-title").isVisible(), false);
+      } else {
+        assert.equal(await page.locator("#topbar-title").isVisible(), true);
+      }
+      assert.equal(before.initiallyBelow, true, "pagination floated over the visible list");
+      assert.ok(before.lastBottom <= before.buttonTop, "pagination covered the oldest visible chat");
+      assert.ok(before.buttonHeight >= 44, "pagination lost its touch target");
+      await page.getByRole("button", { name: "Load older chats", exact: true }).click();
+      await page.waitForFunction(() => document.querySelectorAll("#conv-list .conv-item").length === 35);
+      assert.equal(await page.locator("#btn-more").isVisible(), false);
+      const after = await page.locator(".conv-window").evaluate((el) => el.scrollTop);
+      assert.ok(Math.abs(before.scrollTop - after) < 2, "pagination jumped past newly loaded chats");
+    }
+  } finally { await ctx.close(); }
+});

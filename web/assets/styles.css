@@ -6,6 +6,7 @@
   --bg: #f7f8fa;
   --bg-raised: #ffffff;
   --bg-sunken: #eceef2;
+  --bg-sidebar: #f0f2f6;
   --fg: #1a1d23;
   --fg-muted: #656d7b;
   --accent: #3b6cf5;
@@ -26,6 +27,7 @@
   --bg: #14161b;
   --bg-raised: #1e2128;
   --bg-sunken: #0e1013;
+  --bg-sidebar: #191c23;
   --fg: #e7eaf0;
   --fg-muted: #99a1af;
   --accent: #6c8cff;
@@ -44,6 +46,7 @@
     --bg: #14161b;
     --bg-raised: #1e2128;
     --bg-sunken: #0e1013;
+    --bg-sidebar: #191c23;
     --fg: #e7eaf0;
     --fg-muted: #99a1af;
     --accent: #6c8cff;
@@ -203,10 +206,10 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  padding: 0.5rem 0.75rem;
-  padding-top: calc(0.5rem + env(safe-area-inset-top));
-  background: var(--bg-raised);
-  border-bottom: 1px solid var(--border);
+  padding: 0.6rem clamp(0.75rem, 2vw, 1.25rem);
+  padding-top: calc(0.6rem + env(safe-area-inset-top));
+  background: var(--bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   min-width: 0; /* grid items default to min-width:auto: the nowrap topbar
                    children used to stretch the whole app past 320 px (§10.1) */
 }
@@ -221,6 +224,9 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   /* the chat title runs up against the model picker without this */
   margin-inline-end: 14px;
 }
+.topbar .icon-btn { color: var(--fg-muted); }
+.topbar .icon-btn svg { width: 20px; height: 20px; }
+.topbar .icon-btn:hover, .topbar .icon-btn:focus-visible { color: var(--fg); }
 .model-picker {
   flex: 0 0 auto;
   width: auto;
@@ -229,8 +235,10 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   max-width: 34vw;
   padding: 0.35rem 0.6rem;
   font-size: 0.88em;
-  background: var(--bg);
+  background: var(--bg-raised);
+  border-color: color-mix(in srgb, var(--border) 75%, transparent);
 }
+.model-picker:focus { border-color: var(--accent); }
 
 /* sidebar: slide-over drawer on phone/tablet (<1024) */
 
@@ -241,16 +249,16 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
      needs its text, and the wider the drawer the less page is left to
      tap shut; vw-capped so that strip always survives. */
   width: min(262px, 74vw);
-  background: var(--bg-raised);
-  border-right: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  border-right: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
   transform: translateX(-105%);
   transition: transform 180ms ease-out;
   z-index: 30;
   display: flex;
   flex-direction: column;
-  padding: 0.7rem;
-  padding-top: calc(0.7rem + env(safe-area-inset-top));
-  padding-bottom: calc(0.7rem + env(safe-area-inset-bottom));
+  padding: 1rem 0.75rem;
+  padding-top: calc(1rem + env(safe-area-inset-top));
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
 }
 body.drawer-open #sidebar { transform: translateX(0); }
 
@@ -261,30 +269,40 @@ body.drawer-open #sidebar { transform: translateX(0); }
   z-index: 20;
 }
 
-.sidebar-head { display: flex; gap: 0.5rem; }
-.sidebar-head .btn { padding-inline: 0.65rem; font-size: 0.88em; font-weight: 600; }
-.sidebar-search { margin: 0.85rem 0; }
-.sidebar-search input { background: var(--bg); font-size: 0.9em; }
-
-/* "Load older" pill: smaller muted text, centred, pill border — and it
-   floats over the bottom of the chat list (above in .conv-window) rather
-   than taking a row from it. Solid background so rows passing beneath
-   stay quiet behind it. */
-.btn.load-older {
-  position: absolute;
-  bottom: 0.35rem;
-  left: 50%;
-  /* own property, not transform: .btn:active's translateY must survive */
-  translate: -50% 0;
-  min-height: 0;
-  padding: 0.25rem 1rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  color: var(--fg-muted);
-  background: var(--bg-raised);
-  box-shadow: 0 1px 4px rgba(10, 12, 16, 0.18);
+.sidebar-head { display: flex; gap: 0.3rem; }
+.sidebar-head .btn { width: auto; padding-inline: 0.65rem; font-size: 0.88em; font-weight: 600; }
+#btn-new-chat { flex: 1.2 1 0; }
+#btn-files {
+  flex: 1 1 0;
+  padding-inline: 0.65rem;
+  border-color: var(--border);
+  color: var(--fg);
+  font-weight: 500;
 }
-.btn.load-older:hover { background: var(--bg-sunken); }
+.sidebar-search { margin: 1rem 0 0.75rem; }
+.sidebar-search input {
+  min-height: var(--tap);
+  background: color-mix(in srgb, var(--bg-raised) 55%, var(--bg-sidebar));
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  font-size: 0.9em;
+}
+.sidebar-search input:focus { border-color: var(--accent); }
+
+/* Pagination follows the last conversation inside the same scroll window. */
+.btn.load-older {
+  flex: none;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  border-color: transparent;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  /* Appending rows above a focused button must not pull the reader past
+     the conversations they just loaded. */
+  overflow-anchor: none;
+}
+.btn.load-older:hover, .btn.load-older:focus-visible { color: var(--fg); background: var(--bg-sunken); }
+.btn.load-older:focus-visible { outline-offset: -3px; }
 
 /* "Delete older than…" command row, docked under the conversation list
    and above the settings foot. Muted on purpose: housekeeping should not
@@ -292,8 +310,8 @@ body.drawer-open #sidebar { transform: translateX(0); }
    every choice). */
 .conv-prune {
   display: flex;
-  margin: 0.4rem 0 0;
-  padding: 0.15rem 0.35rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
   color: var(--fg-muted);
   font-size: 0.85em;
 }
@@ -303,37 +321,35 @@ body.drawer-open #sidebar { transform: translateX(0); }
   /* Opaque theme tokens, not transparent: the native popup paints its
      list from the control's colours, and transparency there means the
      OS default (white) with muted grey text on top. */
-  color: var(--fg);
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-sidebar);
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  padding: 0.25rem 0.4rem;
-  min-height: 2rem;
+  padding: 0.4rem 0.65rem;
+  min-height: var(--tap);
 }
+.conv-prune select:hover { color: var(--fg); }
+.conv-prune select:focus { border-color: var(--accent); }
 .conv-prune option { color: var(--fg); background: var(--bg-raised); }
 
-/* The list's scroll window: chats use the full height and the "Load
-   older" pill floats over the bottom edge instead of reserving a row. */
+/* Conversations and pagination scroll together; housekeeping stays docked. */
 .conv-window {
-  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 }
 
 .conv-list {
   list-style: none;
   margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  flex: 1;
+  padding: 0.15rem 0;
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
-/* Let the last row scroll clear of the floating pill. */
-.conv-window:has(.load-older:not([hidden])) .conv-list { padding-bottom: 2.1rem; }
 
 .conv-item {
   position: relative;
@@ -353,8 +369,11 @@ body.drawer-open #sidebar { transform: translateX(0); }
   -webkit-user-select: text;
   -webkit-touch-callout: default;
 }
-.conv-item:hover { background: var(--bg-sunken); }
-.conv-item.active { background: color-mix(in srgb, var(--accent) 10%, var(--bg-raised)); }
+.conv-item:hover { background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg-sidebar)); }
+.conv-item.active {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-sidebar));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 .conv-item.active .conv-title { font-weight: 600; }
 /* The row's actions hide behind "…": revealed on hover where hover exists;
    on touch devices the button yields to the long press entirely (below). */
@@ -378,7 +397,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   color: inherit;
   font: inherit;
   text-align: left;
-  padding: 0.65rem 0.7rem;
+  padding: 0.7rem 0.75rem;
   font-size: 0.92em;
   cursor: pointer;
 }
@@ -680,32 +699,29 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   #view-chat {
     grid-template-columns: 280px minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    /* Row 1 holds only the topbar, so its height is always just the
-       topbar's content. An earlier design spanned #sidebar across both
-       rows; with a long chat list the sidebar's intrinsic height fed the
-       `auto` row and stretched the topbar down the whole window,
-       crushing the chat column to 0px. Do not make any item span row 1
-       again without neutralising its size contribution. */
     grid-template-areas:
-      "topbar topbar"
+      "sidebar topbar"
       "sidebar main";
     max-width: 1800px;
     margin-inline: auto;
   }
+  .topbar { justify-content: flex-end; border-bottom: none; }
   #btn-menu { display: none; }
+  #topbar-title { display: none; }
   #sidebar {
+    grid-area: sidebar;
     position: static;
     width: auto;
     transform: none;
     transition: none;
-    border-right: 1px solid var(--border);
     z-index: auto;
     min-height: 0;
-    /* Sits below the topbar here, which already pads for the notch. */
-    padding-top: 0.7rem;
+    /* A long list must not contribute intrinsic height to the auto-sized
+       header row merely because the sidebar spans both grid rows. */
+    contain: size;
+    padding-top: calc(1rem + env(safe-area-inset-top));
   }
   body.drawer-open #backdrop { display: none; }
-  #topbar-title { font-size: 1.05rem; }
 }
 
 /* ---------- ultrawide ≥1600: roomier margins, capped text ---------- */
@@ -1106,10 +1122,18 @@ body.files-open .composer-stack { display: none; }
    never overflows. */
 .sidebar-foot {
   display: flex;
-  margin-top: 0.5rem;
+  margin-top: 0.35rem;
   padding-top: 0.55rem;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
+.sidebar-foot .btn {
+  justify-content: flex-start;
+  padding-inline: 0.65rem;
+  border-color: transparent;
+  color: var(--fg-muted);
+  font-size: 0.9em;
+}
+.sidebar-foot .btn:hover, .sidebar-foot .btn:focus-visible { color: var(--fg); }
 .settings-panel {
   flex: 1;
   min-height: 0;
