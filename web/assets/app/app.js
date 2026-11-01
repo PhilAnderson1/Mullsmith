@@ -739,11 +739,11 @@ function fmtTokens(n) {
   return s + suffix;
 }
 
-// updateCtxMeter fills the fullness line above the composer: the freshest
+// updateCtxMeter fills the compact footnote below the composer: the freshest
 // assistant total (prompt+completion of the last reply, an estimate where
 // the endpoint reported nothing) against the context window carried by
 // the conversation itself — the window is a model property, so it travels
-// with the chat, not with meta — "71.5K (37%)". With no known window it
+// with the chat, not with meta — "71.5K tokens · 37% context". With no known window it
 // reduces to the count alone; with no usage figure at all there is
 // nothing to say.
 function updateCtxMeter(used) {
@@ -752,16 +752,17 @@ function updateCtxMeter(used) {
   if (used > 0) navigation.rememberUsage(used); // remembered for a model switch
   el.classList.remove("ctx-meter-full"); // a live figure replaces any refusal
   const max = (navigation.currentConv && navigation.currentConv.max_context_tokens) || 0;
+  el.classList.toggle("ctx-meter-high", max > 0 && used / max >= 0.85);
   if (!(used > 0)) {
     el.hidden = true;
     return;
   }
   if (!max) {
-    el.textContent = fmtTokens(used);
+    el.textContent = `${fmtTokens(used)} tokens`;
     el.title = "context tokens used — the endpoint reports no window";
   } else {
     const pct = Math.max(1, Math.round((used / max) * 100));
-    el.textContent = `${fmtTokens(used)} (${pct}%)`;
+    el.textContent = `${fmtTokens(used)} tokens · ${pct}% context`;
     el.title = `${fmtInt(used)} of ${fmtInt(max)} context tokens`;
   }
   el.hidden = false;

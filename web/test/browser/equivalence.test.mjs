@@ -442,12 +442,17 @@ test("floating composer preserves scroll clearance as drafts and attachments gro
           lastBottom: thread.lastElementChild.getBoundingClientRect().bottom,
           overflow: document.documentElement.scrollWidth > innerWidth,
           attachmentParent: document.querySelector("#pending-files").parentElement.id,
+          meterTop: document.querySelector("#ctx-meter").getBoundingClientRect().top,
+          meterHeight: document.querySelector("#ctx-meter").getBoundingClientRect().height,
+          composerBottom: document.querySelector(".composer").getBoundingClientRect().bottom,
         };
       });
       assert.ok(Math.abs(geometry.mainBottom - geometry.threadBottom) < 1, "thread must extend behind the composer");
       assert.ok(geometry.lastBottom <= geometry.stackTop - 8, "end of answer was hidden beneath the floating controls");
       assert.equal(geometry.overflow, false);
       assert.equal(geometry.attachmentParent, "composer-stack");
+      assert.ok(geometry.meterTop >= geometry.composerBottom, "context footnote must sit below the message box");
+      assert.ok(geometry.meterHeight > 0 && geometry.meterHeight < 20, "context footnote should stay compact");
       // Leave the reader's scroll position alone when a draft changes.
       await page.evaluate(() => { document.querySelector("#thread").scrollTop = 0; });
       await page.fill("#composer-input", "short draft");
