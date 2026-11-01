@@ -120,11 +120,11 @@ async function reloadAndWait(page) {
     document.querySelectorAll("#thread .msg").length > 0, null, { timeout: 15_000 });
 }
 
-test("two-round tool turn: live DOM equals reloaded DOM", { timeout: 120_000 }, async () => {
+test("tool turn with a late call ID: live DOM equals reloaded DOM", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
   try {
     llm.queueScripts(
-      toolScript("call_w1", "fs_write", { path: "work/note.md", content: "# note\nhello browser\n" }),
+      phantomScript("fs_write", { path: "work/note.md", content: "# note\nhello browser\n" }, "call_w1"),
       textScript("Kyoto in autumn."),
     );
     await sendChat(page, "write a note, then answer");
@@ -222,29 +222,6 @@ test("denied call: 'denied' card with its verdict, live and after reload", { tim
     await reloadAndWait(page);
     assert.deepEqual(comparable(await digest(page)), comparable(live),
       "the denial renders identically after reload");
-  } finally { await ctx.close(); }
-});
-
-test("phantom repro: name arrives without an id, the id lands on the last fragment", { timeout: 120_000 }, async () => {
-  const { ctx, page } = await newSession();
-  try {
-    llm.queueScripts(
-      phantomScript("fs_write", { path: "work/phantom.md", content: "late id\n" }, "call_late"),
-      textScript("Phantom answered."),
-    );
-    await sendChat(page, "write with a late id, then answer");
-    await waitIdle(page);
-    const live = await digest(page);
-
-    const asst = assistants(live);
-    assert.equal(asst.length, 2);
-    assert.equal(asst[0].cards.length, 1, "exactly ONE card for the call — no phantom");
-    assert.equal(asst[0].cards[0].state, "done", "the card settled, not a perpetual running…");
-    assert.match(asst[0].cards[0].summary, /^Wrote/);
-
-    await reloadAndWait(page);
-    assert.deepEqual(comparable(await digest(page)), comparable(live),
-      "reload disagrees with the fragmented live stream");
   } finally { await ctx.close(); }
 });
 
