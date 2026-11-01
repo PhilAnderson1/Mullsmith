@@ -271,6 +271,88 @@ func CreateFile(root, userID, rel string, perms os.FileMode) (*os.File, error) {
 	return f, nil
 }
 
+// CreateExclusive creates a NEW regular file inside the user's scratchpad
+// and fails with ErrExists when anything is already at the path — unlike
+// CreateFile it never opens, truncates or touches whatever is there. It is
+// the staging half of an atomic replacement (finding 3): the staged name is
+// random, so EEXIST is a collision to retry, never the real target.
+// Parent directories are created as needed, like CreateFile.
+func CreateExclusive(root, userID, rel string, perms os.FileMode) (*os.File, error) {
+	segs, err := ParseRel(rel)
+	if err != nil {
+		return nil, err
+	}
+	if len(segs) == 0 {
+		return nil, ErrIsDir
+	}
+	or, err := openParent(root, userID, rel)
+	if errors.Is(err, ErrNotFound) {
+		if err := MkdirAll(root, userID, strings.Join(segs[:len(segs)-1], "/")); err != nil {
+			return nil, err
+		}
+		or, err = openParent(root, userID, rel)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer or.parent.Close()
+	// O_EXCL never follows a symlink even when O_NOFOLLOW is also set — an
+	// existing path of ANY type loses to EEXIST before a byte is written.
+	fd, err := unix.Openat(int(or.parent.Fd()), or.final,
+		unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
+		uint32(perms.Perm()))
+	if err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return nil, ErrExists
+		}
+		return nil, mapOpenErr(err)
+	}
+	return os.NewFile(uintptr(fd), or.final), nil
+}
+
+// RenameOver atomically moves srcRel onto dstRel INSIDE the user's
+// scratchpad; both must live in the same directory, which makes the
+// replace atomic without ever resolving a second path. The destination is
+// never opened or followed: rename(2) swaps out a regular file OR a symlink
+// sitting at dstRel, so nothing outside the tree can be touched — a
+// directory destination fails (EISDIR/ENOTEMPTY, reported as ErrIsDir).
+// This is the commit step of a staged replacement (finding 3); the original
+// at dstRel survives every path where the staging write or the rename fails.
+func RenameOver(root, userID, srcRel, dstRel string) error {
+	srcSegs, err := ParseRel(srcRel)
+	if err != nil {
+		return err
+	}
+	dstSegs, err := ParseRel(dstRel)
+	if err != nil {
+		return err
+	}
+	if len(srcSegs) == 0 || len(dstSegs) == 0 {
+		return ErrIsDir
+	}
+	if len(srcSegs) != len(dstSegs) {
+		return fmt.Errorf("%w: rename across directories", ErrPathUnsafe)
+	}
+	for i := range srcSegs[:len(srcSegs)-1] {
+		if srcSegs[i] != dstSegs[i] {
+			return fmt.Errorf("%w: rename across directories", ErrPathUnsafe)
+		}
+	}
+	or, err := openParent(root, userID, dstRel)
+	if err != nil {
+		return err
+	}
+	defer or.parent.Close()
+	if err := unix.Renameat(int(or.parent.Fd()), srcSegs[len(srcSegs)-1],
+		int(or.parent.Fd()), dstSegs[len(dstSegs)-1]); err != nil {
+		if errors.Is(err, unix.EISDIR) || errors.Is(err, unix.ENOTEMPTY) {
+			return ErrIsDir
+		}
+		return mapOpenErr(err)
+	}
+	return nil
+}
+
 // MkdirAll creates the directory chain rel inside the user's scratchpad,
 // fd-pinned end to end (astra finding 1): the walk opens the user root,
 // creates each component with mkdirat against the pinned parent fd, and

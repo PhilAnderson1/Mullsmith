@@ -78,7 +78,7 @@ func TestContextWindowUnknownIsNull(t *testing.T) {
 	if got := s.contextWindow("m1"); got != 0 {
 		t.Errorf("window = %d, want 0 while unresolved", got)
 	}
-	if s.conversationFull("whatever", "m1", "plenty of content") {
+	if full, _, _ := s.conversationFull(&store.Conversation{ID: "whatever", Model: "m1"}, "", "plenty of content", nil, ""); full {
 		t.Error("gate must be open while the window is unknown")
 	}
 }
@@ -132,13 +132,33 @@ func TestConversationCarriesItsModelsWindow(t *testing.T) {
 }
 
 func TestConversationFullGate(t *testing.T) {
-	a, s, db := newWindowTest(t, func(context.Context) (map[string]int, bool) { return map[string]int{"m1": 50}, true },
-		config.LLMModel{ID: "m1", Default: true, ContextSize: 50})
+	// The gate now measures the ACTUAL built request (finding 7): system
+	// prompt, tool guidance, tool schemas, manifests, history and the new
+	// turn. The window is set relative to the measured empty-request
+	// baseline, so these assertions pin the gate's arithmetic rather than
+	// today's exact prompt size.
+	a, s, db := newWindowTest(t,
+		func(context.Context) (map[string]int, bool) { return nil, false },
+		config.LLMModel{ID: "m1", Default: true})
 	u, err := db.UserByEmail(context.Background(), "gate@b.io")
 	if err != nil || u == nil {
 		t.Fatalf("owner lookup: %v", err)
 	}
 	c := createConv(t, a, map[string]any{"title": "gate"})
+	conv, err := db.ConversationForUser(context.Background(), u.ID, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseMsgs, baseSpecs := s.buildRequest(conv, u.ID, nil)
+	empty := requestTokens(baseMsgs, baseSpecs)
+	if empty <= 0 {
+		t.Fatal("baseline request estimated zero tokens")
+	}
+	// Window = baseline + 300 tokens of conversational room ON TOP of the
+	// output reserve — the overflow line is the window minus the reserve,
+	// so the reserve must be bought back for the room to be what it says.
+	room := 300
+	s.discoveredWindows.Swap("m1", int(empty)+room+s.cfg.LLM.MaxTokensResponse)
 
 	seed := func(content string) {
 		t.Helper()
@@ -148,18 +168,130 @@ func TestConversationFullGate(t *testing.T) {
 		}
 	}
 
-	// ~10 tokens of history against a 50-token window: space to spare.
-	seed(strings.Repeat("y", 40))
-	if s.conversationFull(c.ID, "m1", "hi") {
-		t.Error("gate closed with room to spare")
+	// ~100 tokens of history against 300 tokens of room: gate open.
+	seed(strings.Repeat("y", 400))
+	if full, why, hist := s.conversationFull(conv, u.ID, "hi", nil, ""); full {
+		t.Errorf("gate closed with room to spare (why=%q)", why)
+	} else if len(hist) != 2 {
+		// The gate's history is the prompt the send WOULD build: one
+		// seeded row plus the incoming turn, decided from ONE read.
+		t.Errorf("gate history = %d rows, want 2 (seeded + incoming)", len(hist))
 	}
-	// Cross the window with one big turn: the gate answers before the send.
-	seed(strings.Repeat("x", 240)) // ~60 tokens
-	if !s.conversationFull(c.ID, "m1", "hi") {
-		t.Error("gate open with history past the window")
+	// Cross the line with one big turn (~750 tokens): the gate answers
+	// before the send pays for it.
+	seed(strings.Repeat("x", 3000))
+	if full, why, _ := s.conversationFull(conv, u.ID, "hi", nil, ""); !full || why != "context_full" {
+		t.Errorf("gate open with history past the window (full=%v why=%q)", full, why)
 	}
 	// A conversation the store cannot read never reads as full.
-	if s.conversationFull("00NOTAREALID00", "m1", "hi") {
+	ghost := &store.Conversation{ID: "00NOTAREALID00", Model: "m1"}
+	if full, _, _ := s.conversationFull(ghost, u.ID, "hi", nil, ""); full {
 		t.Error("unknown conversation must not read as full")
+	}
+}
+
+// Review2 finding 1: the history row cap is a REPLAY limit, not a token
+// limit, so it must bind even while the window is still unknown — and it
+// must count the turn about to land, refusing at the point the NEXT
+// ContextHistory read would start failing with ErrHistoryLimit (len > cap),
+// never one row early.
+func TestHistoryCapBindsWithoutWindow(t *testing.T) {
+	restore := store.SetContextHistoryCap(3)
+	defer restore()
+	// Probe returns nothing discoverable: the window stays unknown, the
+	// token gate stays open — only the row cap can refuse.
+	a, s, db := newWindowTest(t,
+		func(context.Context) (map[string]int, bool) { return nil, false },
+		config.LLMModel{ID: "m1", Default: true})
+	if _, known := s.overflowLine("m1"); known {
+		t.Fatal("window must stay unknown for this test")
+	}
+	u, err := db.UserByEmail(context.Background(), "gate@b.io")
+	if err != nil || u == nil {
+		t.Fatalf("owner lookup: %v", err)
+	}
+	c := createConv(t, a, map[string]any{"title": "cap"})
+	conv, err := db.ConversationForUser(context.Background(), u.ID, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := func(role, content string) string {
+		t.Helper()
+		m := &store.Message{ConversationID: c.ID, Role: role, Content: content, Status: "complete"}
+		if err := db.AddMessage(context.Background(), u.ID, m); err != nil {
+			t.Fatal(err)
+		}
+		return m.ID
+	}
+
+	// Two stored rows + the incoming turn = cap exactly: the LAST send
+	// the cap allows — refusing here would be the early-refusal bug.
+	seed("user", "one")
+	last := seed("assistant", "two")
+	if full, why, hist := s.conversationFull(conv, u.ID, "third", nil, ""); full {
+		t.Errorf("send landing exactly ON the cap refused (why=%q)", why)
+	} else if len(hist) != 3 {
+		t.Errorf("gate history = %d rows, want 3", len(hist))
+	}
+	// A third stored row brings history TO the cap: readable, but the
+	// incoming turn would make cap+1 — the next read would fail
+	// ErrHistoryLimit, so the send is refused BEFORE anything persists.
+	seed("user", "three")
+	if full, why, _ := s.conversationFull(conv, u.ID, "fourth", nil, ""); !full || why != "history_limit" {
+		t.Errorf("past-cap send accepted (full=%v why=%q)", full, why)
+	}
+	// Regenerate excludes the retired reply: with the excluded row the
+	// replayable history is back at the cap, so the same conversation
+	// accepts a replacement — the cap counts what would remain, not
+	// what is stored.
+	if full, why, _ := s.conversationFull(conv, u.ID, "", nil, last); full {
+		t.Errorf("regenerate at the cap refused (why=%q)", why)
+	}
+}
+
+// Review2 finding 6: a DISCOVERED window smaller than the configured
+// output reserve used to make the reserve silently vanish from the gate
+// while requests still demanded it. The line now floors at zero, so every
+// send is refused with context_full — an honest "start a new chat" (really:
+// re-provision this model) instead of an overstatement of what fits.
+// All three relationships the audit names: smaller, equal, larger.
+func TestReserveAgainstDiscoveredWindow(t *testing.T) {
+	_, s, _ := newWindowTest(t,
+		func(context.Context) (map[string]int, bool) { return nil, false },
+		config.LLMModel{ID: "m1", Default: true})
+	reserve := int64(s.cfg.LLM.MaxTokensResponse)
+	if reserve <= 100 {
+		t.Fatalf("test needs a meaningful reserve, got %d", reserve)
+	}
+	conv := &store.Conversation{ID: "whatever", Model: "m1"}
+
+	// Smaller than the reserve: line floors at 0, every send refused.
+	s.discoveredWindows.Swap("m1", 100)
+	line, known := s.overflowLine("m1")
+	if !known || line != 0 {
+		t.Fatalf("window %d < reserve %d: line = %d (known=%v), want 0/true", 100, reserve, line, known)
+	}
+	if full, why, _ := s.conversationFull(conv, "", "hi", nil, ""); !full || why != "context_full" {
+		t.Errorf("send against reserve-sized window = (full=%v why=%q), want refusal", full, why)
+	}
+
+	// Equal to the reserve: nothing is left for the prompt — refused too.
+	s.discoveredWindows.Swap("m1", int(reserve))
+	if line, _ := s.overflowLine("m1"); line != 0 {
+		t.Fatalf("window == reserve: line = %d, want 0", line)
+	}
+	if full, why, _ := s.conversationFull(conv, "", "hi", nil, ""); !full || why != "context_full" {
+		t.Errorf("window == reserve = (full=%v why=%q), want refusal", full, why)
+	}
+
+	// Larger than the reserve: the normal arithmetic — window minus
+	// reserve, and the emptiest conversation fits.
+	s.discoveredWindows.Swap("m1", int(reserve)+50_000)
+	line, _ = s.overflowLine("m1")
+	if line != 50_000 {
+		t.Fatalf("window > reserve: line = %d, want 50000", line)
+	}
+	if full, why, _ := s.conversationFull(conv, "", "hi", nil, ""); full {
+		t.Errorf("empty request against a 50k line refused (why=%q)", why)
 	}
 }

@@ -151,3 +151,51 @@ func TestRoundClientGoneIsAborted(t *testing.T) {
 		t.Fatalf("status = %s, want aborted", res.Status)
 	}
 }
+
+// Review2 finding 5: an endpoint that opens a tool call WITHOUT an id gets
+// one minted at the first delta — and every live card is keyed by it from
+// then on. A LATER fragment carrying the endpoint's own id must not
+// replace the published identity, or the completed call, its audit row and
+// its replayed protocol answer to a different id than the cards on screen.
+func TestRoundFreezesPublishedToolCallID(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"web_search","arguments":"{\"q"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_late","function":{"arguments":"\":\"hi\"}"}}]}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	)
+	g := genFor(t, ts)
+
+	var published []string
+	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil },
+		func(_ int, d llm.ToolCallDelta) { published = append(published, d.ID) })
+	if len(res.ToolCalls) != 1 {
+		t.Fatalf("calls = %+v, want 1", res.ToolCalls)
+	}
+	final := res.ToolCalls[0].ID
+	if final == "" || final == "call_late" {
+		t.Fatalf("final id = %q: the first delta had no id, so a canonical one must be minted and kept", final)
+	}
+	for i, id := range published {
+		if id != final {
+			t.Fatalf("delta %d published id %q, want the frozen %q", i, id, final)
+		}
+	}
+	if got := res.ToolCalls[0].Function.Arguments; got != `{"q":"hi"}` {
+		t.Errorf("args = %s, want the late fragment to still contribute", got)
+	}
+}
+
+// The mirror case (finding 6): an endpoint that DOES send an id keeps it —
+// absorb takes the endpoint's identity whenever it arrives before one has
+// been published.
+func TestRoundKeepsEndpointIDWhenPresent(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_first","function":{"name":"web_search","arguments":"{}"}}]}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	)
+	g := genFor(t, ts)
+	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "call_first" {
+		t.Fatalf("calls = %+v, want the endpoint's own id kept", res.ToolCalls)
+	}
+}

@@ -5,6 +5,7 @@
 import { api, ApiError } from "/assets/app/api.js";
 import { streamChat } from "/assets/app/sse.js";
 import { renderMarkdown } from "/assets/app/markdown.js";
+import { LatestWins } from "/assets/app/ownership.js";
 
 const state = {
   meta: null,
@@ -111,10 +112,23 @@ function cycleTheme() {
   toast(`Theme: ${next}`, false);
 }
 
+// --- request ownership (finding 1) ------------------------------------------------
+//
+// navOwner sequences conversation navigation (opening a thread, loading its
+// first page); listOwner sequences sidebar list loads. Rule, already proven
+// by loadFiles' sequence guard: capture the token BEFORE the first await,
+// and only the youngest token's work may commit shared state or paint.
+// Sign-out bumps both — a response that lands after logout must not paint
+// the auth screen with the previous identity's data, nor race the next one.
+const navOwner = new LatestWins();
+const listOwner = new LatestWins();
+
 // --- view switching ------------------------------------------------------------
 
 function showAuth() {
   abandonInflight();
+  navOwner.bump(); // nothing outstanding belongs to whoever signs in next
+  listOwner.bump();
   state.me = null;
   state.currentId = "";
   state.pending = [];
@@ -650,7 +664,9 @@ function promoteConversation(id) {
 }
 
 async function loadConversations() {
+  const tok = listOwner.begin(); // newest search/list wins (finding 1)
   const data = await api.listConversations(state.query, "");
+  if (!listOwner.isCurrent(tok)) return;
   state.convs = data.items;
   state.convCursor = data.next_cursor;
   const list = $("#conv-list");
@@ -659,15 +675,28 @@ async function loadConversations() {
   show($("#btn-more"), Boolean(state.convCursor));
 }
 
+// One page-load at a time, and JOINING the current list sequence rather
+// than taking it over: a newer search supersedes this page when it lands,
+// but the page never supersedes its own base load (its rows append to the
+// list that load established).
+let listMoreBusy = false;
 async function loadMoreConversations() {
-  if (!state.convCursor) return;
-  const data = await api.listConversations(state.query, state.convCursor);
-  state.convCursor = data.next_cursor;
-  for (const c of data.items) {
-    state.convs.push(c);
-    $("#conv-list").appendChild(convRow(c));
+  if (!state.convCursor || listMoreBusy) return;
+  const tok = listOwner.current();
+  const cursor = state.convCursor;
+  listMoreBusy = true;
+  try {
+    const data = await api.listConversations(state.query, cursor);
+    if (!listOwner.isCurrent(tok)) return;
+    state.convCursor = data.next_cursor;
+    for (const c of data.items) {
+      state.convs.push(c);
+      $("#conv-list").appendChild(convRow(c));
+    }
+    show($("#btn-more"), Boolean(state.convCursor));
+  } finally {
+    listMoreBusy = false;
   }
-  show($("#btn-more"), Boolean(state.convCursor));
 }
 
 function markActive() {
@@ -836,12 +865,27 @@ function tpsNote(el, completion, durationMS) {
 }
 
 async function selectConversation(id) {
+  // Every click is a navigation intent, including a repeat click on the
+  // conversation already on screen (review2 finding 3): begin() runs
+  // FIRST, so a still-pending request from an older click loses its
+  // ownership. Returning before it let "select B, then click A again"
+  // end with B's late response taking over the screen.
+  const tok = navOwner.begin();
   if (id === state.currentId) return;
+  // Ownership is captured BEFORE the first await (finding 1): with two
+  // chats clicked in quick succession, only the youngest may commit. The
+  // confirmed bug wrote currentConv/currentId from whichever response
+  // landed LAST — the visible destination could differ from the user's
+  // choice, and sends follow state.currentId, so this was more than a
+  // flicker.
   await abandonInflight(); // a live stream belongs to the old thread
   try {
-    state.currentConv = await api.getConversation(id);
+    const conv = await api.getConversation(id);
+    if (!navOwner.isCurrent(tok)) return; // superseded by a newer navigation
+    state.currentConv = conv;
     state.currentId = id;
-    await loadFirstMessages();
+    await loadFirstMessages(tok, id);
+    if (!navOwner.isCurrent(tok)) return;
     markActive();
     renderConversation();
     if (state.focusOnOpen) {
@@ -849,6 +893,7 @@ async function selectConversation(id) {
       focusComposer();
     }
   } catch (err) {
+    if (!navOwner.isCurrent(tok)) return; // a superseded request's failure is not this screen's
     if (err instanceof ApiError && err.status === 404) {
       toast("That conversation no longer exists.");
       state.currentId = "";
@@ -860,8 +905,18 @@ async function selectConversation(id) {
   }
 }
 
-async function loadFirstMessages() {
-  const data = await api.listMessages(state.currentId, "");
+// loadFirstMessages fetches the newest page for convId — captured BEFORE
+// the await, never re-read after it (finding 1: the global current ID can
+// change mid-flight) — and only the youngest owner paints. A caller inside
+// a navigation passes its token; a standalone reload (regenerate's
+// rollback) joins the current sequence.
+async function loadFirstMessages(tok = navOwner.current(), convId = state.currentId) {
+  const data = await api.listMessages(convId, "");
+  if (!navOwner.isCurrent(tok) || state.currentId !== convId) return;
+  renderThread(data);
+}
+
+function renderThread(data) {
   const thread = $("#thread");
   thread.replaceChildren();
   if (data.items.length === 0) {
@@ -882,8 +937,10 @@ function earlierButton(cursor) {
   btn.className = "btn ghost wide load-earlier";
   btn.textContent = "Load earlier messages";
   btn.addEventListener("click", async () => {
+    const convId = state.currentId; // the page belongs to THIS thread
     try {
-      const data = await api.listMessages(state.currentId, cursor);
+      const data = await api.listMessages(convId, cursor);
+      if (state.currentId !== convId) return; // navigated away mid-page
       const host = $("#thread");
       const nextBtn = data.next_cursor ? earlierButton(data.next_cursor) : null;
       if (nextBtn) btn.replaceWith(nextBtn);
@@ -1685,12 +1742,18 @@ async function startGeneration(url, body, rollback, onAccepted) {
   };
   state.inflight = st;
   syncComposerButtons();
+  // One ownership rule for every live callback (finding 5): once this
+  // generation has been replaced or abandoned its events are noise — a
+  // late `start` in particular must not append a bubble nor fire
+  // onAccepted (the composer-tray clear belongs to the NEW screen).
+  const live = () => state.inflight === st;
   try {
     await streamChat(
       url,
       body,
       {
         onStart(d) {
+          if (!live()) return;
           st.started = true;
           st.genId = d.generation_id || "";
           st.msgId = d.message_id || "";
@@ -1706,6 +1769,7 @@ async function startGeneration(url, body, rollback, onAccepted) {
           maybeScroll(true);
         },
         onToken(t) {
+          if (!live()) return;
           stopSpinner(st); // output is flowing: the "waiting" dots are done
           st.raw += t;
           if (st.nodes) {
@@ -1714,6 +1778,7 @@ async function startGeneration(url, body, rollback, onAccepted) {
           }
         },
         onReasoning(t) {
+          if (!live()) return;
           st.reasoning += t;
           if (!state.meta || !state.meta.show_reasoning || !st.nodes) return;
           ensureThinking(st);
@@ -1721,6 +1786,7 @@ async function startGeneration(url, body, rollback, onAccepted) {
           maybeScroll();
         },
         onToolStart(d) {
+          if (!live()) return;
           if (!st.nodes) return;
           const card = toolCardNode(d.call_id, d.tool);
           toolCardsHost(st.nodes.el).append(card);
@@ -1728,6 +1794,7 @@ async function startGeneration(url, body, rollback, onAccepted) {
           maybeScroll();
         },
         onToolArgs(d) {
+          if (!live()) return;
           const c = st.cards[d.call_id];
           if (!c) return;
           c.args += d.t || "";
@@ -1736,6 +1803,7 @@ async function startGeneration(url, body, rollback, onAccepted) {
           pre.hidden = false;
         },
         onToolEnd(d) {
+          if (!live()) return;
           const c = st.cards[d.call_id];
           if (!c) return;
           c.card.classList.remove("st-running", "st-awaiting");
@@ -1753,6 +1821,7 @@ async function startGeneration(url, body, rollback, onAccepted) {
           maybeScroll();
         },
         onAwaitingApproval(d) {
+          if (!live()) return;
           if (!st.nodes) return;
           let c = st.cards[d.call_id];
           if (!c) {
@@ -1779,10 +1848,21 @@ async function startGeneration(url, body, rollback, onAccepted) {
     if (state.inflight === st) finishGeneration(st, { status: "lost" });
   } catch (err) {
     if (err.name === "AbortError") {
-      stopSpinner(st); // bubble may stay in the DOM: never spin forever
-      return; // deliberately abandoned
+      // One idempotent terminal transition (finding 5): finishGeneration
+      // is the single owner of cleanup, and its own staleness check makes
+      // it a no-op once the stream was abandoned. The old bare `return`
+      // left state.inflight SET whenever Stop's abort API failed and the
+      // fetch abort arrived here — the composer refused every later send.
+      finishGeneration(st, { status: "aborted" });
+      return;
     }
     if (err instanceof ApiError && err.status === 401) {
+      // A late 401 from an ABANDONED request is not the current screen's
+      // verdict (review2 finding 4): clearing state.inflight here erased a
+      // newer live generation's bookkeeping. The generation that owns the
+      // screen will meet its own auth failure if the session is really
+      // gone.
+      if (!live()) return;
       state.inflight = null;
       syncComposerButtons();
       handleErr(err, "send");
@@ -1791,10 +1871,16 @@ async function startGeneration(url, body, rollback, onAccepted) {
     if (st.started) {
       finishGeneration(st, { status: "lost" });
     } else {
+      // Pre-start rollback is screen-mutating (restores the draft, may
+      // pin the ctx-full panel): an abandoned generation must not run it
+      // against a composer that belongs to the newer one (review2
+      // finding 4's reproduced sequence).
+      if (!live()) return;
       if (rollback) rollback();
-      if (err instanceof ApiError && err.code === "context_full") {
-        // The thread can take no more turns: pin the explanation where the
-        // fullness figures live instead of a toast that fades in five seconds.
+      if (err instanceof ApiError && (err.code === "context_full" || err.code === "history_limit")) {
+        // The thread can take no more turns (or no more MESSAGES — the
+        // replay cap): pin the explanation where the fullness figures
+        // live instead of a toast that fades in five seconds.
         showCtxFull(err.message);
       } else {
         toast(err.message || "Could not start a reply.");
@@ -1882,22 +1968,22 @@ async function regenerateFrom(el, msgId) {
   );
 }
 
-// Stop the running generation (the UI thread is going away). Null the
-// inflight state first so finishGeneration leaves the old bubbles alone.
-async function abandonInflight() {
+// Stop the running generation because the UI thread is going away. Detach
+// LOCALLY first (finding 5): state is cleared and the fetch aborted before
+// anything is awaited, so navigation is never held hostage by the abort
+// API, and the old stream's callbacks are already dead by the time the
+// next screen paints. The server abort stays — best-effort persistence
+// coordination for the partial answer, fire-and-forget.
+function abandonInflight() {
   const st = state.inflight;
   if (!st) return;
   stopSpinner(st); // the bubble is going away; don't spin on a detached node
   state.inflight = null;
-  if (st.genId) {
-    try {
-      await api.abortGeneration(st.genId);
-    } catch {
-      /* already finished or gone */
-    }
-  }
-  st.controller.abort();
+  st.controller.abort(); // kills the fetch; its AbortError lands on a dead token
   syncComposerButtons();
+  if (st.genId) {
+    api.abortGeneration(st.genId).catch(() => { /* already finished or gone */ });
+  }
 }
 
 function renderConversation() {
@@ -1976,13 +2062,20 @@ async function newChat() {
 
 async function onModelChange(ev) {
   if (!state.currentId) return;
+  const convId = state.currentId; // the PATCH targets the chat on screen
   const model = ev.target.value;
   try {
-    state.currentConv = await api.patchConversation(state.currentId, { model });
+    const updated = await api.patchConversation(convId, { model });
+    // A PATCH that lands after navigation describes ANOTHER conversation —
+    // committing it would put that row's payload on this screen (finding 1).
+    if (state.currentId !== convId) return;
+    state.currentConv = updated;
     toast(`Model: ${model || "default"}`, false);
   } catch (err) {
+    if (state.currentId !== convId) return;
     handleErr(err, "set model");
   }
+  if (state.currentId !== convId) return; // the new screen rendered its own state
   // The dropdown describes the model now in force, so it is rebuilt
   // after a switch either way: a profile-less model hides the row, and
   // a saved choice outside the new model's list falls back to Default.
@@ -2044,15 +2137,19 @@ function syncThinkingSelect() {
 
 async function onThinkingChange(ev) {
   if (!state.currentId) return;
+  const convId = state.currentId; // identity guard, as in onModelChange
   const choice = ev.target.value;
   const before = (state.currentConv && state.currentConv.thinking) || "default";
   try {
-    state.currentConv = await api.patchConversation(state.currentId, { thinking: choice });
+    const updated = await api.patchConversation(convId, { thinking: choice });
+    if (state.currentId !== convId) return; // navigated mid-PATCH
+    state.currentConv = updated;
     syncThinkingSelect();
     const label = ev.target.selectedOptions[0]
       ? ev.target.selectedOptions[0].textContent : choice;
     toast(`Thinking: ${label}`, false);
   } catch (err) {
+    if (state.currentId !== convId) return;
     // The server kept the old state — the dropdown must show that, not
     // the rejected pick.
     ev.target.value = before;
@@ -2341,4 +2438,11 @@ async function boot() {
   }
 }
 
-boot();
+// boot() runs on import in the browser. The node lifecycle tests
+// (web/test/lifecycle.test.mjs) import this module with
+// __MULLSMITH_TEST__ preset to drive the real selectConversation /
+// startGeneration against stubs — everything else stays identical.
+if (!globalThis.__MULLSMITH_TEST__) boot();
+
+// Test-only exports for the lifecycle suite; the browser ignores them.
+export { state, navOwner, listOwner, selectConversation, startGeneration, abandonInflight };

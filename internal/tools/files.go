@@ -17,6 +17,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"mullsmith/internal/id"
 	"mullsmith/internal/scratch"
 )
 
@@ -267,11 +268,45 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	// joint writers each pass while overrunning together (audit2 finding 3).
 	unlock := lockQuota(w.QuotaMu)
 	defer unlock()
-	if err := checkQuota(root, inv.UserID, w.UserQuota); err != nil {
+
+	// Inspecting an existing target does DOUBLE duty (finding 3): its size
+	// keeps the quota maths honest while its bytes must survive a failed
+	// replacement — which staged-and-renamed writes guarantee, and a
+	// non-regular target keeps its explicit refusal for, instead of being
+	// silently swapped or destroyed.
+	var oldSize int64
+	if fi, serr := scratch.Stat(root, inv.UserID, rel); serr == nil {
+		if !fi.Mode().IsRegular() {
+			if fi.IsDir() {
+				return Result{}, fsErr("fs_write", scratch.ErrIsDir)
+			}
+			return Result{}, fmt.Errorf("fs_write: %s is a special file; refusing to replace it", quoteShort(rel))
+		}
+		oldSize = fi.Size()
+	} else if !errors.Is(serr, scratch.ErrNotFound) {
+		// An unreadable path means the replacement's quota maths (oldSize)
+		// cannot be done honestly either — same refusal the quota scan uses,
+		// not a raw permission string (fail closed, §9.7).
+		if errors.Is(serr, os.ErrPermission) {
+			return Result{}, errors.New("storage usage could not be verified; check scratchpad permissions")
+		}
+		return Result{}, fsErr("fs_write", serr)
+	}
+	// The old file's bytes free up exactly when the new ones land, so they
+	// come off the used total BEFORE either verdict — otherwise replacing a
+	// file at quota would always look over-quota (the two copies are
+	// counted jointly only for the moment of the swap).
+	if err := checkQuotaAllowing(root, inv.UserID, w.UserQuota, oldSize); err != nil {
 		return Result{}, err
 	}
 
-	f, err := scratch.CreateFile(root, inv.UserID, rel, 0o600)
+	// Stage beside the destination (same directory → rename is atomic),
+	// then commit with a rename that never opens or follows the target: a
+	// failure at ANY step leaves the original intact. The previous version
+	// truncated in place and, on a failed quota re-check, deleted the path
+	// outright — destroying a file the user still owned (finding 3).
+	tmpRel := stagingPath(rel)
+	f, err := scratch.CreateExclusive(root, inv.UserID, tmpRel, 0o600)
 	if err != nil {
 		return Result{}, fsErr("fs_write", err)
 	}
@@ -280,29 +315,60 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		err = cerr // surface a flush failure, not just the WriteString one
 	}
 	if err != nil {
-		_ = scratch.Remove(root, inv.UserID, rel)
+		_ = scratch.Remove(root, inv.UserID, tmpRel)
 		return Result{}, errors.New("write failed")
 	}
-	// Quota again after close — bytes may have crossed the line (§9.7). A
-	// failed re-scan keeps the file (no auto-delete on an unknown total)
-	// but never reports success: the write landed UNVERIFIED (audit2
-	// finding 3, fail closed).
-	if w.UserQuota > 0 {
-		used, derr := scratch.DirSize(root, inv.UserID)
-		if derr != nil {
-			return Result{}, errors.New("wrote " + quoteShort(rel) +
-				", but storage usage could not be verified; check scratchpad permissions")
+	// Quota again after close — bytes may have crossed the line (§9.7). The
+	// re-scan counts BOTH copies, so subtract oldSize again; crossing the
+	// line discards only the staged copy. A failed re-scan keeps the
+	// original (no auto-delete on an unknown total) but never reports
+	// success: nothing landed UNVERIFIED (audit2 finding 3, fail closed).
+	if err := checkQuotaAllowing(root, inv.UserID, w.UserQuota, oldSize); err != nil {
+		_ = scratch.Remove(root, inv.UserID, tmpRel)
+		if w.UserQuota > 0 {
+			if _, derr := scratch.DirSize(root, inv.UserID); derr != nil {
+				return Result{}, errors.New("wrote " + quoteShort(rel) +
+					", but storage usage could not be verified; check scratchpad permissions")
+			}
 		}
-		if used > w.UserQuota {
-			_ = scratch.Remove(root, inv.UserID, rel)
-			return Result{}, errors.New("write would exceed the storage quota; file removed")
-		}
+		return Result{}, errors.New("write would exceed the storage quota; replacement discarded")
+	}
+	if err := scratch.RenameOver(root, inv.UserID, tmpRel, rel); err != nil {
+		_ = scratch.Remove(root, inv.UserID, tmpRel)
+		return Result{}, fsErr("fs_write", err)
 	}
 	return Result{
 		Content: fmt.Sprintf(`{"path":%s,"bytes_written":%d}`, mustJSON(rel), n),
 		Summary: fmt.Sprintf("Wrote %s (%s)", quoteShort(rel), humanBytes(int64(n))),
 		Data:    map[string]any{"path": rel, "bytes": n},
 	}, nil
+}
+
+// checkQuotaAllowing is checkQuota with a deduction: bytes an in-flight
+// replacement will free (the old file it swaps out) do not count against
+// the new ones.
+func checkQuotaAllowing(root, userID string, quota, deduct int64) error {
+	if quota <= 0 {
+		return nil
+	}
+	used, err := scratch.DirSize(root, userID)
+	if err != nil {
+		return errors.New("storage usage could not be verified; check scratchpad permissions")
+	}
+	if used-deduct >= quota {
+		return errors.New("storage quota exceeded")
+	}
+	return nil
+}
+
+// stagingPath names the sibling a replacement is written to before the
+// atomic commit rename: the directory of rel plus a random dot-file. The
+// name is deliberately independent of the base name so a long target name
+// cannot push the staged name past the sandbox's segment-length limit, and
+// the dot-prefix keeps it out of the model's listings while it lives.
+func stagingPath(rel string) string {
+	dir, _ := path.Split(rel)
+	return dir + ".tmp-" + strings.ToLower(id.New())
 }
 
 // checkWriteTarget keeps the model out of the user's upload namespace:

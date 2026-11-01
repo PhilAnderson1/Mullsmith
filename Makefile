@@ -9,7 +9,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildDate=$(DATE)
 
-.PHONY: build test race vet lint vuln fuzz-short check dist
+.PHONY: build test test-js race vet lint vuln fuzz-short check dist
 
 build:
 	mkdir -p bin
@@ -17,6 +17,12 @@ build:
 
 test:
 	go test ./...
+
+# Executable client checks (finding 8): pure ES modules driven by node's
+# built-in test runner — zero dependencies, no bundler (spec §10 stays
+# true). The Go appjs tests remain for static asset contracts only.
+test-js:
+	node --test "web/test/*.test.mjs"
 
 race:
 	go test -race ./...

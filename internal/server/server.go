@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -348,34 +349,48 @@ func (s *Server) staticAssetsHandler() http.HandlerFunc {
 	})
 }
 
-// moduleSpecs are the absolute import specifiers the app's ES modules use
-// between each other (app.js imports all three, sse.js imports api.js).
-var moduleSpecs = []string{"/assets/app/api.js", "/assets/app/sse.js", "/assets/app/markdown.js"}
-
-// stampedModules returns the /assets/app/*.js bodies with every quoted
-// import specifier carrying ?v=stamp, so module imports rotate with each
-// deploy. Without it the shell's stamp reaches app.js but app.js's own
-// imports ride bare URLs, and the one-hour asset cache pairs NEW app.js
-// with OLD api.js after a contract-changing deploy — it bit once as the
-// 405-delete incident and again as "api.deleteAccount is not a function"
-// (2026-10-28), which is what this rewriting closes. Rewriting the import
-// strings (rather than an inline import map) keeps CSP at script-src 'self'.
-// An unusable stamp (dev build) yields nil: the bare embedded files serve.
+// stampedModules returns every embedded /assets/app/*.js body with each
+// quoted inter-module import specifier carrying ?v=stamp, so module imports
+// rotate with each deploy. Without it the shell's stamp reaches app.js but
+// the modules' own imports ride bare URLs, and the one-hour asset cache
+// pairs NEW app.js with OLD api.js after a contract-changing deploy — it
+// bit once as the 405-delete incident and again as "api.deleteAccount is
+// not a function" (2026-10-28), which is what this rewriting closes.
+// Rewriting the import strings (rather than an inline import map) keeps CSP
+// at script-src 'self'.
+//
+// The module set is DERIVED from the embed (finding 10): a new module needs
+// no registration — the glob picks it up, and any quoted absolute specifier
+// pointing at it is stamped like the rest. TestModuleGraphImportsResolve
+// pins the contract that makes derivation sound: every import in the graph
+// is an absolute /assets/app/*.js URL naming an embedded file. An unusable
+// stamp (dev build) yields nil: the bare embedded files serve.
 func stampedModules(stamp string) map[string][]byte {
 	if stamp == "" {
 		return nil
 	}
-	out := make(map[string][]byte, 4)
-	for _, name := range []string{"app.js", "api.js", "sse.js", "markdown.js"} {
-		b, err := web.FS.ReadFile("assets/app/" + name)
+	paths, err := fs.Glob(web.FS, "assets/app/*.js")
+	if err != nil || len(paths) == 0 {
+		return nil
+	}
+	specs := make([]string, 0, len(paths))
+	for _, p := range paths {
+		specs = append(specs, "/"+p)
+	}
+	out := make(map[string][]byte, len(paths))
+	for _, p := range paths {
+		b, err := web.FS.ReadFile(p)
 		if err != nil {
 			return nil
 		}
 		h := string(b)
-		for _, spec := range moduleSpecs {
+		for _, spec := range specs {
+			// Only the quoted specifier is a replacement target, and the
+			// stamped form ("...js?v=stamp") never re-matches: no module
+			// can be double-stamped by a later pass.
 			h = strings.ReplaceAll(h, `"`+spec+`"`, `"`+spec+`?v=`+stamp+`"`)
 		}
-		out["/assets/app/"+name] = []byte(h)
+		out["/"+p] = []byte(h)
 	}
 	return out
 }

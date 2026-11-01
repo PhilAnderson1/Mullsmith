@@ -52,11 +52,17 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 	// Overflow gate (spec §6.1): with a known window, a send that would
 	// cross it is refused before anything is persisted or paid for — the
-	// conversation is append-only until the end. Unknown window: the gate
-	// is open and the endpoint's own error stands.
-	if s.conversationFull(conv.ID, s.thinkingModel(conv.Model), content) {
-		writeAPIError(w, r, http.StatusConflict, "context_full",
-			"this conversation has reached its context window — start a new chat")
+	// conversation is append-only until the end. The estimate now covers
+	// the actual built request (finding 7), including this turn's content
+	// and attachment manifests, and the row cap binds with or without a
+	// discovered window (review2 finding 1). The history the gate read
+	// rides into the generation: the decision and the prompt are built
+	// from ONE read, so no second read can 409 AFTER the turn was
+	// committed. Unknown window: the token gate is open and the
+	// endpoint's own error stands.
+	full, reason, gateHist := s.conversationFull(conv, user.ID, content, attPaths, "")
+	if full {
+		s.fullRefusal(w, r, reason)
 		return
 	}
 	// A thinking choice shipped with the message is validated against the
@@ -84,18 +90,15 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 
 	// Persist the user turn first (spec §6.1 step 1), then stream. The user
 	// text also seeds auto-titling when the conversation is still unnamed.
-	s.streamAssistant(w, r, conv, content, func(bg context.Context) error {
+	s.streamAssistant(w, r, conv, content, gateHist, func(bg context.Context) (*store.Message, error) {
 		msg := &store.Message{
 			ConversationID: conv.ID, Role: "user", Content: content,
 			TokenCount: int64ptr(int64(agent.EstimateTokens(content))),
 		}
-		if err := s.store.AddMessage(bg, user.ID, msg); err != nil {
-			return err
-		}
-		if len(attPaths) > 0 {
-			return s.store.AttachFilesToMessage(bg, msg.ID, user.ID, attPaths)
-		}
-		return nil
+		// ONE transaction (finding 4): the turn and its attachment links
+		// commit together — a failed attach can no longer leave a durable
+		// message behind the failure the client rolled its bubble back on.
+		return nil, s.store.AddMessageWithFiles(bg, user.ID, msg, attPaths)
 	})
 }
 
@@ -255,26 +258,28 @@ func (s *Server) handleRegenerate(w http.ResponseWriter, r *http.Request) {
 		s.writeConvErr(w, r, err)
 		return
 	}
-	last, err := s.store.IsLastMessageInConversation(r.Context(), conv.ID, m.ID)
-	if err != nil {
-		s.writeConvErr(w, r, err)
-		return
-	}
-	if !last {
-		writeAPIError(w, r, http.StatusBadRequest, "not_last_message", "only the newest reply can be regenerated")
-		return
-	}
 	// streamAssistant secures the per-conversation slot BEFORE prepare runs,
-	// so a 409 leaves the existing reply untouched. Regeneration never
+	// so a refusal leaves the existing reply untouched. Regeneration never
 	// retitles: the conversation already has its name. The overflow gate
-	// applies here too — retrying a reply is still a send.
-	if s.conversationFull(conv.ID, s.thinkingModel(conv.Model), "") {
-		writeAPIError(w, r, http.StatusConflict, "context_full",
-			"this conversation has reached its context window — start a new chat")
+	// applies here too — retrying a reply is still a send — and it measures
+	// the request the REPLACEMENT would make: the old reply is excluded,
+	// because it is retired by the swap and never rides the regenerated
+	// prompt (finding 7's other half — refusing over content that will not
+	// be sent). "Newest" is deliberately NOT pre-checked here: another send
+	// could change the history between check and mutation (finding 4), so
+	// BeginRegeneration re-checks it INSIDE the swap and answers
+	// not_last_message via writeConvErr.
+	full, reason, gateHist := s.conversationFull(conv, user.ID, "", nil, m.ID)
+	if full {
+		s.fullRefusal(w, r, reason)
 		return
 	}
-	s.streamAssistant(w, r, conv, "", func(bg context.Context) error {
-		return s.store.DeleteMessage(bg, m.ID)
+	s.streamAssistant(w, r, conv, "", gateHist, func(bg context.Context) (*store.Message, error) {
+		// Atomic retire-and-replace (finding 4): newest-check, delete and
+		// placeholder insert share ONE transaction — there is no window
+		// where the old reply is gone without a replacement standing in.
+		ph, err := s.store.BeginRegeneration(bg, user.ID, conv.ID, m.ID)
+		return ph, err
 	})
 }
 
@@ -332,11 +337,17 @@ const toolResultBudgetRunes = 8 * 1024
 // autoTitle is the user text that may name an still-unnamed conversation
 // (empty from regenerate; see nameConversation).
 //
+// prepare returns the assistant draft row the generation will complete —
+// regeneration commits its placeholder as part of the atomic swap (finding
+// 4) and hands it back; a send returns nil and the first draft row is
+// created here like every later tool-round row.
+//
 // All persistence happens on a context detached from the browser request so
 // that disconnect-triggered aborts can still save the partial answer
 // (spec §6.2).
 func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
-	conv *store.Conversation, autoTitle string, prepare func(bg context.Context) error,
+	conv *store.Conversation, autoTitle string, gateHist []store.Message,
+	prepare func(bg context.Context) (*store.Message, error),
 ) {
 	user := UserFrom(r.Context())
 
@@ -386,46 +397,48 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
-	if err := prepare(genCtx); err != nil {
-		s.writeConvErr(w, r, err)
-		return
+	// The history the admission gate decided on (review2 finding 1):
+	// decision and prompt come from ONE read, so no second read can 409
+	// AFTER prepare committed the turn. Nil reaches here only when the
+	// gate's store read failed — re-read BEFORE prepare, so even that
+	// fallback refuses (e.g. history_limit) without persisting first.
+	hist := gateHist
+	if hist == nil {
+		var err error
+		hist, err = s.store.ContextHistory(genCtx, conv.ID, "")
+		if err != nil {
+			s.writeConvErr(w, r, err)
+			return
+		}
 	}
 
-	// From here on, errors travel as SSE events.
-	hist, err := s.store.ContextHistory(genCtx, conv.ID, "")
+	ph, err := prepare(genCtx)
 	if err != nil {
 		s.writeConvErr(w, r, err)
 		return
 	}
 
-	// The tool list and picture pipeline follow the conversation's
-	// model: view_image is offered only when its entry spells
-	// vision: true (§7.2), and a hallucinated call to a tool that was
-	// never offered is answered as an error, not executed.
-	visionOn := s.cfg.LLM.VisionFor(s.thinkingModel(conv.Model))
-	toolSpecs := s.tools.Specs()
-	if !visionOn {
-		filtered := toolSpecs[:0:0]
-		for _, sp := range toolSpecs {
-			if sp.Function.Name != "view_image" {
-				filtered = append(filtered, sp)
-			}
-		}
-		toolSpecs = filtered
-	}
-	sysPrompt := conv.SystemPrompt
-	if len(toolSpecs) > 0 {
-		sysPrompt += agent.ToolGuidance
-		if _, hasCode := s.tools.Get("code_run"); hasCode {
-			sysPrompt += agent.CodeRunGuidance
-		}
-	}
-	msgs := agent.BuildContext(sysPrompt, s.historyToLLM(hist, len(toolSpecs) > 0, visionOn, user.ID))
+	// From here on, errors travel as SSE events.
 
-	am := &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
-	if err := s.store.AddMessage(genCtx, user.ID, am); err != nil {
-		s.writeConvErr(w, r, err)
-		return
+	// ONE prompt builder for this loop and the admission gate (finding 7):
+	// what the gate measures is what is sent — conversation system prompt,
+	// tool guidance, the vision-filtered tool list and attachment
+	// manifests, and (for a send) the incoming user turn as the last row.
+	// The regeneration placeholder is status='streaming', so it never
+	// replays and hist correctly stops at the rows before it.
+	msgs, toolSpecs := s.buildRequest(conv, user.ID, hist)
+	visionOn := s.cfg.LLM.VisionFor(s.thinkingModel(conv.Model))
+
+	// The first draft row: regeneration's prepare already committed one as
+	// part of the swap (finding 4); a send creates it here, like every
+	// later tool-round row.
+	am := ph
+	if am == nil {
+		am = &store.Message{ConversationID: conv.ID, Role: "assistant", Status: "streaming"}
+		if err := s.store.AddMessage(genCtx, user.ID, am); err != nil {
+			s.writeConvErr(w, r, err)
+			return
+		}
 	}
 
 	conn, err := newSSE(w)
@@ -490,11 +503,30 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 	}
 	var res agent.Result
 	var lastMS int64 // model-round wall time behind the final message row
+	// storeErr records a persistence failure the terminal events must
+	// surface (finding 4): success may only be announced when the final
+	// state is actually durable — a storage error is not an endpoint error.
+	var storeErr error
+	// midFull marks the loop stopping on its own overflow recheck
+	// (finding 7) rather than on model or storage trouble.
+	var midFull bool
 	round := 0
 	for {
 		roundTools := toolSpecs
 		if round >= maxRounds {
 			roundTools = nil // force a final, tool-less answer
+		}
+		if round > 0 && s.continuationFull(conv, msgs, roundTools) {
+			// Every tool result so far rides msgs; a continuation the
+			// admission gate never saw can now cross the line itself.
+			// Refuse the NEXT round before paying for it: the transcript
+			// stays durable, this still-empty draft row is the only
+			// casualty.
+			midFull = true
+			if ferr := s.finishMessage(genCtx, am.ID, "", "aborted", 0, 0, 0); ferr != nil {
+				storeErr = ferr
+			}
+			break
 		}
 		roundStart := time.Now() // model time only: tool runs land on tool cards
 		res = s.runModelRound(genCtx, conn, s.thinkingModel(conv.Model), msgs, roundTools, thinkFrag)
@@ -502,29 +534,50 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 
 		if res.Err != nil || res.Status == "aborted" {
 			lastMS = roundMS
-			s.finishMessage(genCtx, am.ID, res.Content, res.Status, res.Usage, res.Completion, roundMS)
+			if ferr := s.finishMessage(genCtx, am.ID, res.Content, res.Status, res.Usage, res.Completion, roundMS); ferr != nil {
+				storeErr = ferr
+			}
 			break
 		}
 		if len(res.ToolCalls) == 0 || round >= maxRounds {
 			lastMS = roundMS
-			s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS)
+			if ferr := s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS); ferr != nil {
+				storeErr = ferr
+			}
 			break
 		}
 
 		// Persist the answered assistant turn, then execute every call
 		// (the protocol requires one answer per call) and continue with a
 		// fresh placeholder row. runToolCall owns the audit rows.
-		s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS)
+		if ferr := s.finishMessage(genCtx, am.ID, res.Content, "complete", res.Usage, res.Completion, roundMS); ferr != nil {
+			storeErr = ferr
+		}
 
 		msgs = append(msgs, llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls})
 		for _, call := range res.ToolCalls {
-			result, attach := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call, visionOn)
+			result, attach, perr := s.runToolCall(genCtx, g, conn, user.ID, conv.ID, am.ID, call, visionOn)
 			msgs = append(msgs, llm.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 			if attach != "" {
 				if im, ok := s.attachImageView(user.ID, conv.ID, attach); ok {
 					msgs = append(msgs, im)
 				}
 			}
+			if perr != nil {
+				// The transcript is NOT durable (review2 finding 2): the
+				// model saw a result later history cannot replay. Stop
+				// here rather than continue (and answer) on memory alone
+				// — done.status must not claim a success the storage
+				// refused. An abort that killed the write is not a
+				// storage failure.
+				if genCtx.Err() == nil {
+					storeErr = perr
+					break
+				}
+			}
+		}
+		if storeErr != nil {
+			break
 		}
 
 		round++
@@ -534,6 +587,10 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 				break // abort/shutdown: not a storage failure, finalize below
 			}
 			s.logger.Error("placeholder for tool round failed", "error", err)
+			// The loop ends WITHOUT an answer (finding 4): there is no row
+			// to stream the next round into, and done must not claim a
+			// success the database never got.
+			storeErr = err
 			break
 		}
 	}
@@ -552,9 +609,34 @@ func (s *Server) streamAssistant(w http.ResponseWriter, r *http.Request,
 			"request_id": RequestIDFrom(r.Context()),
 		})
 	}
+	// Terminal events describe DURABLE outcomes (finding 4): the client
+	// must be able to tell an endpoint failure from a storage failure from
+	// the conversation hitting its window mid-flight — each needs a
+	// different next move (retry / reload / new chat).
+	if midFull {
+		_ = conn.Event("error", map[string]any{
+			"code":    "context_full",
+			"message": "this conversation reached its context window during tool rounds — start a new chat",
+		})
+	}
+	if storeErr != nil {
+		s.logger.Error("generation persistence failed", "error", storeErr, "user", user.ID,
+			"conversation", conv.ID, "rid", RequestIDFrom(r.Context()))
+		_ = conn.Event("error", map[string]any{
+			"code":    "storage_error",
+			"message": "the reply could not be fully saved; reload this conversation",
+		})
+	}
+	doneStatus := res.Status
+	if midFull {
+		doneStatus = "error"
+	}
+	if storeErr != nil && (doneStatus == "" || doneStatus == "complete") {
+		doneStatus = "error" // never announce a success the database refused
+	}
 	_ = conn.Event("done", map[string]any{
 		"message_id":   am.ID,
-		"status":       res.Status,
+		"status":       doneStatus,
 		"usage_tokens": res.Usage,
 		// The numbers behind the UI's per-message tok/s readout: what the
 		// model produced and the model-round wall time it took (tool runs
@@ -613,9 +695,11 @@ func (s *Server) runModelRound(ctx context.Context, conn *sseConn, model string,
 		return nil
 	}, toolDelta)
 
-	// Endpoints occasionally omit ids; the protocol, the audit rows and the
-	// UI cards all pair on one id, so mint the missing ones here — before
-	// the fallback-card pass so the two never disagree.
+	// Defensive backstop: Round now mints ONE canonical id per call while
+	// accumulating (finding 6), so every completed call arrives identified
+	// and the live card already carries that same id. The loop stays — an
+	// empty id reaching the protocol, audit rows or cards downstream would
+	// orphan them, and this is the last cheap place to guarantee it.
 	for i := range res.ToolCalls {
 		if res.ToolCalls[i].ID == "" {
 			res.ToolCalls[i].ID = id.New()
@@ -658,9 +742,14 @@ func (s *Server) execTimeout(tool string) time.Duration {
 // call.ID is guaranteed non-empty by runModelRound.
 func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	userID, convID, assistantMsgID string, call llm.ChatToolCall, visionOn bool,
-) (string, string) {
+) (string, string, error) {
 	callID := call.ID
 	name := call.Function.Name
+	// persistErr collects failed REQUIRED writes (audit finalisation,
+	// tool-result row): the transcript the loop continues from would not
+	// replay from history, so the orchestrator ends the generation as a
+	// storage error instead of announcing success (review2 finding 2).
+	var persistErr error
 
 	emitEnd := func(status, summary string, data any) {
 		_ = conn.Event("tool_end", map[string]any{
@@ -672,14 +761,14 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	tool, known := s.tools.Get(name)
 	if !known {
 		emitEnd("error", "unknown tool", nil)
-		return `{"error":"unknown tool ` + jsonQuote(name) + `"}`, ""
+		return `{"error":"unknown tool ` + jsonQuote(name) + `"}`, "", nil
 	}
 	// Belt to the spec filter: a model whose entry left vision off was
 	// never offered view_image, so a call for it can only be a
 	// hallucination — answered as such, never executed (§7.2).
 	if name == "view_image" && !visionOn {
 		emitEnd("error", "model cannot see images", nil)
-		return `{"error":"this model cannot see images"}`, ""
+		return `{"error":"this model cannot see images"}`, "", nil
 	}
 
 	status := "running"
@@ -695,20 +784,30 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 		Arguments: call.Function.Arguments, Status: status,
 	}
 	if err := s.store.AddToolCall(ctx, tc); err != nil {
-		// Audit is required (§7.1) but must not strand the conversation:
-		// log and continue with a blank audit id; the model still gets an
-		// answer for this call.
-		s.logger.Error("tool audit insert failed", "error", err, "tool", name)
+		// Audit is a PREREQUISITE for execution (finding 4): an unaudited
+		// side effect is invisible to review and unreplayable, which is
+		// worse than a refusal — the old behaviour logged and ran it. The
+		// model gets an ordinary tool error, so the protocol stays intact.
+		s.logger.Error("tool audit insert failed; call not executed", "error", err, "tool", name)
+		msg := "tool call could not be audited; it was not executed"
+		emitEnd("error", msg, nil)
+		// The audit gap itself is already a visible refusal; the loop may
+		// continue — the transcript (error answer included) stays durable.
+		return `{"error":` + jsonQuote(msg) + `}`, "", nil
 	}
 
 	if status == "pending_approval" {
 		decision := s.awaitApproval(ctx, g, conn, callID, name, call.Function.Arguments)
-		if tc.ID != "" {
-			newStatus, uctx := "approved", ctx
-			if !decision.Approve {
-				newStatus, uctx = "denied", context.Background() // abort may have killed ctx
-			}
-			_ = s.store.UpdateToolCallStatus(uctx, tc.ID, newStatus)
+		newStatus, uctx := "approved", ctx
+		if !decision.Approve {
+			newStatus, uctx = "denied", context.Background() // abort may have killed ctx
+		}
+		// The approval verdict IS the audit trail for a side-effecting
+		// run (review2 finding 2): if that update fails, the loop must
+		// not carry on as though the call's history were durable.
+		if uerr := s.store.UpdateToolCallStatus(uctx, tc.ID, newStatus); uerr != nil {
+			s.logger.Error("tool approval audit update failed", "error", uerr, "tool", name)
+			persistErr = uerr
 		}
 		if decision.Approve && decision.Remember && name == "code_run" {
 			s.remembered.remember(convID, name) // "always allow" for this chat only (§9.9)
@@ -718,7 +817,7 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 			// Deliberately no tool-result row: historyToLLM only replays
 			// answered calls, so a denied call simply vanishes from later
 			// prompts; the in-session msgs get the denial answer below.
-			return `{"error":"the user denied this tool call"}`, ""
+			return `{"error":"the user denied this tool call"}`, "", persistErr
 		}
 	}
 
@@ -735,21 +834,36 @@ func (s *Server) runToolCall(ctx context.Context, g *generation, conn *sseConn,
 	if err != nil {
 		msg := tools.Elide(err.Error(), 200) // tool errors are pre-sanitized
 		content := `{"error":` + jsonQuote(msg) + `}`
-		if tc.ID != "" {
-			_ = s.store.FinishToolCall(detachedCtx(), tc.ID, "error", content, dur)
+		if ferr := s.finalizeToolCall(tc.ID, "error", content, dur, userID, convID, callID); ferr != nil {
+			persistErr = ferr
 		}
-		s.appendToolResult(detachedCtx(), userID, convID, callID, content)
 		emitEnd("error", msg, nil)
-		return content, ""
+		return content, "", persistErr
 	}
 
 	content := tools.TruncateMiddle(tres.Content, toolResultBudgetRunes)
-	if tc.ID != "" {
-		_ = s.store.FinishToolCall(detachedCtx(), tc.ID, "ok", content, dur)
+	if ferr := s.finalizeToolCall(tc.ID, "ok", content, dur, userID, convID, callID); ferr != nil {
+		persistErr = ferr
 	}
-	s.appendToolResult(detachedCtx(), userID, convID, callID, content)
 	emitEnd("ok", tres.Summary, tres.Data)
-	return content, tres.AttachPath
+	return content, tres.AttachPath, persistErr
+}
+
+// finalizeToolCall performs the two REQUIRED writes that close one tool
+// call: the audit row's final state and the role='tool' answer row. Both
+// errors surface — a call whose answer never landed must not be replayed
+// from memory as though it had (review2 finding 2).
+func (s *Server) finalizeToolCall(tcID, status, content string, dur int64,
+	userID, convID, callID string,
+) error {
+	if err := s.store.FinishToolCall(detachedCtx(), tcID, status, content, dur); err != nil {
+		s.logger.Error("tool audit finalize failed", "error", err, "call", callID)
+		// The result row still goes in: an answer the model acted on
+		// should at least be replayable even if its audit tail is thin.
+		_ = s.appendToolResult(detachedCtx(), userID, convID, callID, content)
+		return err
+	}
+	return s.appendToolResult(detachedCtx(), userID, convID, callID, content)
 }
 
 // detachedCtx gives a final persistence write 5 s of independence from the
@@ -790,8 +904,10 @@ func (s *Server) awaitApproval(ctx context.Context, g *generation, conn *sseConn
 	}
 }
 
-// appendToolResult persists the role='tool' answer row (§4).
-func (s *Server) appendToolResult(ctx context.Context, userID, convID, callID, content string) {
+// appendToolResult persists the role='tool' answer row (§4). The error
+// surfaces: replaying a result that never landed is exactly the live-vs-
+// history divergence review2 finding 2 names.
+func (s *Server) appendToolResult(ctx context.Context, userID, convID, callID, content string) error {
 	m := &store.Message{
 		ConversationID: convID,
 		Role:           "tool",
@@ -802,7 +918,9 @@ func (s *Server) appendToolResult(ctx context.Context, userID, convID, callID, c
 	}
 	if err := s.store.AddMessage(ctx, userID, m); err != nil {
 		s.logger.Error("tool result persist failed", "error", err, "call", callID)
+		return err
 	}
+	return nil
 }
 
 // viewTurnMarker prefixes the persisted note of every synthetic
@@ -852,12 +970,11 @@ func (s *Server) attachImageView(userID, convID, rel string) (llm.ChatMessage, b
 		Synthetic:  true, // the browser hides it: the model's copy, not your words
 		TokenCount: int64ptr(int64(agent.EstimateTokens(note + manifest))),
 	}
-	if err := s.store.AddMessage(ctx, userID, m); err != nil {
+	// ONE transaction (finding 4): the note row and its file link land
+	// together — a half-attached synthetic turn would replay as prose
+	// promising a picture that never embeds.
+	if err := s.store.AddMessageWithFiles(ctx, userID, m, []string{rel}); err != nil {
 		s.logger.Error("view_image attach persist failed", "error", err, "path", rel)
-		return llm.ChatMessage{}, false
-	}
-	if err := s.store.AttachFilesToMessage(ctx, m.ID, userID, []string{rel}); err != nil {
-		s.logger.Error("view_image attach link failed", "error", err, "path", rel)
 		return llm.ChatMessage{}, false
 	}
 	return llm.ChatMessage{Role: "user", Content: note + manifest, Images: urls}, true
@@ -895,12 +1012,49 @@ func (s *Server) nameConversation(conv *store.Conversation, firstUser string, co
 
 // finishMessage persists the final state on a short background context: the
 // browser may already be gone (and genCtx already cancelled) when we save.
-func (s *Server) finishMessage(_ context.Context, msgID, content, status string, usage, completion, durationMS int64) {
+// The error reaches the orchestrator (finding 4) so terminal events can
+// distinguish "saved" from "announced but not durable".
+func (s *Server) finishMessage(_ context.Context, msgID, content, status string, usage, completion, durationMS int64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.store.FinalizeMessage(ctx, msgID, content, status, usage, completion, durationMS); err != nil {
 		s.logger.Error("failed to persist message final state", "error", err, "message", msgID)
+		return err
 	}
+	return nil
+}
+
+// buildRequest is THE prompt builder (finding 7): stored history becomes the
+// exact request the next model round carries — conversation system prompt,
+// tool guidance, the vision-filtered tool list, attachment manifests — so
+// the streaming loop and the admission gate measure and send the same
+// thing. Returns the messages and the specs that round would advertise;
+// the caller-provided turn a send has not yet persisted is appended to hist
+// by the gate itself, so this function only ever reads stored rows.
+func (s *Server) buildRequest(conv *store.Conversation, userID string, hist []store.Message) ([]llm.ChatMessage, []llm.ToolSpec) {
+	// The tool list and picture pipeline follow the conversation's model:
+	// view_image is offered only when its entry spells vision: true (§7.2),
+	// and a hallucinated call to a tool that was never offered is answered
+	// as an error, not executed.
+	visionOn := s.cfg.LLM.VisionFor(s.thinkingModel(conv.Model))
+	toolSpecs := s.tools.Specs()
+	if !visionOn {
+		filtered := toolSpecs[:0:0]
+		for _, sp := range toolSpecs {
+			if sp.Function.Name != "view_image" {
+				filtered = append(filtered, sp)
+			}
+		}
+		toolSpecs = filtered
+	}
+	sysPrompt := conv.SystemPrompt
+	if len(toolSpecs) > 0 {
+		sysPrompt += agent.ToolGuidance
+		if _, hasCode := s.tools.Get("code_run"); hasCode {
+			sysPrompt += agent.CodeRunGuidance
+		}
+	}
+	return agent.BuildContext(sysPrompt, s.historyToLLM(hist, len(toolSpecs) > 0, visionOn, userID)), toolSpecs
 }
 
 // --- history replay ----------------------------------------------------------------

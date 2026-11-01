@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -404,25 +406,36 @@ func TestIndexAssetURLsAreVersioned(t *testing.T) {
 // The mixed-version incident (twice: 405-delete, then api.deleteAccount
 // undefined on 2026-10-28) was a NEW app.js importing an hour-stale bare
 // /assets/app/api.js. Request-time rewriting must stamp EVERY inter-module
-// specifier — app.js's three imports and sse.js's import of api.js — so
-// one deploy rotates the whole module graph together.
+// specifier — whichever module imports whichever other — so one deploy
+// rotates the whole module graph together. The expected set is derived
+// from the embed itself, so a new module is covered the moment it exists.
 func TestStampedModuleImports(t *testing.T) {
+	paths, err := fs.Glob(web.FS, "assets/app/*.js")
+	if err != nil || len(paths) < 4 {
+		t.Fatalf("glob of embedded modules = %v (%v), want at least the four app modules", paths, err)
+	}
 	stamped := stampedModules("abc123")
-	if len(stamped) != 4 {
-		t.Fatalf("stampedModules covered %d files, want 4", len(stamped))
+	if len(stamped) != len(paths) {
+		t.Fatalf("stampedModules covered %d files, want all %d embedded modules", len(stamped), len(paths))
 	}
-	app := string(stamped["/assets/app/app.js"])
-	for _, spec := range moduleSpecs {
-		if !strings.Contains(app, `"`+spec+`?v=abc123"`) {
-			t.Errorf("app.js import of %s not stamped", spec)
+	for _, p := range paths {
+		raw, err := web.FS.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if strings.Contains(app, `"`+spec+`"`) {
-			t.Errorf("app.js still imports %s bare", spec)
+		body := string(stamped["/"+p])
+		for _, q := range paths {
+			spec := "/" + q
+			if !strings.Contains(string(raw), `"`+spec+`"`) {
+				continue // this module never references that one
+			}
+			if !strings.Contains(body, `"`+spec+`?v=abc123"`) {
+				t.Errorf("%s: import of %s not stamped", p, spec)
+			}
+			if strings.Contains(body, `"`+spec+`"`) {
+				t.Errorf("%s still imports %s bare", p, spec)
+			}
 		}
-	}
-	sse := string(stamped["/assets/app/sse.js"])
-	if !strings.Contains(sse, `"/assets/app/api.js?v=abc123"`) {
-		t.Error("sse.js import of api.js not stamped")
 	}
 	// Files without imports keep their exact bytes.
 	apiRaw, err := web.FS.ReadFile("assets/app/api.js")
@@ -455,6 +468,42 @@ func TestStampedModuleImports(t *testing.T) {
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/app/app.js", nil))
 	if !strings.Contains(rec.Body.String(), `"/assets/app/api.js?v=abc123"`) {
 		t.Error("served app.js lacks the stamped api.js import")
+	}
+}
+
+// TestModuleGraphImportsResolve is the completeness half of the stamping
+// contract (finding 10): request-time rewriting derives its module list
+// from the embed, which is only sound while every module import is an
+// absolute /assets/app/*.js URL naming an embedded file. Relative or
+// off-graph specifiers are invisible to the rewriter — they would drift
+// back into the mixed-version incident SILENTLY, which is exactly the
+// maintenance trap of the old hand-kept list. Adding a module now needs no
+// registration anywhere; breaking the URL convention fails here.
+func TestModuleGraphImportsResolve(t *testing.T) {
+	paths, err := fs.Glob(web.FS, "assets/app/*.js")
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob of embedded modules: %v", err)
+	}
+	known := map[string]bool{}
+	for _, p := range paths {
+		known["/"+p] = true
+	}
+	importRe := regexp.MustCompile(`(?m)(?:\bfrom\b|\bimport\b)\s*\(?\s*"([^"]+)"`)
+	for _, p := range paths {
+		b, err := web.FS.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range importRe.FindAllStringSubmatch(string(b), -1) {
+			spec := m[1]
+			if !strings.HasPrefix(spec, "/assets/app/") || !strings.HasSuffix(spec, ".js") {
+				t.Errorf("%s imports %q: module imports must be absolute /assets/app/*.js URLs — stamping rewrites nothing else", p, spec)
+				continue
+			}
+			if !known[spec] {
+				t.Errorf("%s imports %q, which is not an embedded module", p, spec)
+			}
+		}
 	}
 }
 

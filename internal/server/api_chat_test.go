@@ -680,8 +680,8 @@ func TestRegenerateRejections(t *testing.T) {
 		t.Fatal(err)
 	}
 	r = a.do(http.MethodPost, "/api/v1/messages/"+assistantID+"/regenerate", nil)
-	if r.StatusCode != 400 || apiErrCode(t, r) != "not_last_message" {
-		t.Errorf("not-last regenerate = %d, want 400 not_last_message", r.StatusCode)
+	if r.StatusCode != 409 || apiErrCode(t, r) != "not_last_message" {
+		t.Errorf("not-last regenerate = %d, want 409 not_last_message", r.StatusCode)
 	}
 
 	// Unknown message id reads as plain 404.
@@ -812,5 +812,87 @@ func TestSweepStreamingHelper(t *testing.T) {
 	}
 	if n, _ := a.db.SweepStreaming(context.Background()); n != 0 {
 		t.Errorf("second sweep touched %d rows", n)
+	}
+}
+
+// Review2 finding 1 at the ENDPOINT level: a history-cap refusal must be
+// decided BEFORE anything persists — the audit's own review tests had
+// caught the old gate refusing while writing the rejected turn into the
+// conversation. The fake endpoint discovers no window, so this also pins
+// that the row cap binds without window discovery.
+func TestChatHistoryCapRefusalLeavesConversationUntouched(t *testing.T) {
+	restore := store.SetContextHistoryCap(2)
+	defer restore()
+	fake := newFakeLLM(t, scriptReply("Reply."))
+	a := signedInChat(t, chatCfg(t, fake.URL))
+	c := createConv(t, a, map[string]any{"title": "cap"})
+
+	resp := sendChat(t, a, c.ID, "one")
+	defer resp.Body.Close()
+	drainSSE(t, newSSEReader(t, resp))
+
+	var before msgPage
+	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &before)
+	if len(before.Items) != 2 {
+		t.Fatalf("after first send: %+v", before.Items)
+	}
+
+	// History is AT the cap; the incoming row would put the next context
+	// read past it — refusal, 409, and NOTHING written.
+	resp2 := a.do(http.MethodPost, "/api/v1/conversations/"+c.ID+"/messages",
+		map[string]any{"content": "two"})
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("past-cap send = %d, want 409", resp2.StatusCode)
+	}
+	if code := apiErrCode(t, resp2); code != "history_limit" {
+		t.Errorf("refusal code = %q, want history_limit", code)
+	}
+	var after msgPage
+	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &after)
+	if len(after.Items) != 2 {
+		t.Fatalf("refused send persisted %d rows (want the original 2): %+v", len(after.Items), after.Items)
+	}
+	if after.Items[1].Content != "Reply." {
+		t.Errorf("messages mutated: %+v", after.Items)
+	}
+}
+
+// Review2 finding 2 with a fault injected at the database: the tool RUNS
+// (its answer is real and the model sees it in-session), but the required
+// role='tool' row is rejected by the store. The generation must NOT finish
+// as a success — the transcript the answer rests on is not durable — so
+// the stream ends with storage_error and done.status "error".
+func TestChatToolResultPersistFailureEndsGeneration(t *testing.T) {
+	a, _, _ := newRealToolServer(t, [][]string{
+		{toolCallChunk(0, "c1", "fs_list", `{"path":"."}`), finishChunk("tool_calls")},
+		{answerChunk("All quiet."), finishChunk("stop")}, // must never run
+	})
+	c := createConv(t, a, map[string]any{"title": "fault"})
+
+	if err := a.db.ExecForTest(`CREATE TRIGGER no_tool_rows BEFORE INSERT ON messages
+		WHEN NEW.role = 'tool'
+		BEGIN SELECT RAISE(ABORT, 'injected tool-row failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := sendChat(t, a, c.ID, "list the scratchpad")
+	defer resp.Body.Close()
+	rd := newSSEReader(t, resp)
+	es := drainSSE(t, rd) // returns AT the error event
+
+	if countEvents(es, "error") != 1 {
+		t.Fatalf("error events = %d, want 1 (%v)", countEvents(es, "error"), es.events)
+	}
+	if code, _ := es.data["error"]["code"].(string); code != "storage_error" {
+		t.Errorf("error code = %q, want storage_error", code)
+	}
+	// done follows the error and must NOT announce success.
+	ev, done := rd.next()
+	if ev != "done" || done["status"] != "error" {
+		t.Errorf("final event = %q %v, want done with status error", ev, done)
+	}
+	// The second model round must not have run.
+	if _, dup := es.data["token"]; dup {
+		t.Errorf("post-fault round produced tokens despite the break: %v", es.events)
 	}
 }

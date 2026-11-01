@@ -14,10 +14,12 @@ of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
   ([details](#password-reset--email-confirmation)).
 * **Streaming chat** — SSE token streaming, stop/regenerate, markdown answers,
   dark/light theme, responsive from 320 px phones to ultrawide.
-* **Vision** — with `llm.vision: true`, images you attach to a message
-  (png/jpeg/webp) travel to the endpoint inline, so a vision-capable model
-  actually sees the picture; text-only endpoints keep the old manifest-only
-  behaviour untouched.
+* **Vision** — with `vision: true` on a model entry, that model is offered
+  the `view_image` tool: attached and scratchpad images (png/jpeg/webp) are
+  named to every model as a manifest, and a vision model ASKS for the ones
+  it wants — those then travel inline, and stay visible on later turns.
+  Text-only endpoints never see picture bytes at all; the manifest-only
+  behaviour is untouched.
 * **Tools with an approval layer** — `web_search` (Brave) and SSRF-guarded
   `web_fetch`, per-conversation **scratchpad files** (`fs_list/fs_read/
   fs_write/fs_delete`, uploads from the browser, artifact download cards, a
@@ -45,9 +47,11 @@ audit artifacts stay with the operator as machine-local files (untracked
   can get a per-run cgroup resource meter — kernel ≥ 5.7 with cgroup v2. No
   meterable subtree ⇒ code execution refuses to start, never runs un-metered.
 * An OpenAI-compatible endpoint for the model. Text is the baseline; if the
-  endpoint serves a vision model, set `llm.vision: true` and attached images
-  (png/jpeg/webp) are sent inline as `image_url` content parts.
-* To build: Go ≥ 1.24 (Ubuntu's `apt install golang-go` is fine if recent
+  endpoint serves a vision model, set `vision: true` on that model entry and
+  it is offered the `view_image` tool: images (png/jpeg/webp) are named to
+  the model as a manifest and it asks for the ones it wants, which then
+  travel inline as `image_url` content parts.
+* To build: Go ≥ 1.26 (Ubuntu's `apt install golang-go` is fine if recent
   enough; otherwise grab the latest from https://go.dev/dl/).
 
 ## Build

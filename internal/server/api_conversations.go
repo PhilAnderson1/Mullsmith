@@ -118,6 +118,15 @@ func (s *Server) writeConvErr(w http.ResponseWriter, r *http.Request, err error)
 		writeAPIError(w, r, http.StatusNotFound, "not_found", "conversation not found")
 	case errors.Is(err, errInvalidCursor):
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_cursor", "invalid pagination cursor")
+	case errors.Is(err, store.ErrHistoryLimit):
+		// A past-cap history is refused explicitly, never replayed
+		// truncated (finding 2).
+		writeAPIError(w, r, http.StatusConflict, "history_limit",
+			"this conversation has outgrown the message limit for context replay — start a new chat")
+	case errors.Is(err, store.ErrNotLastMessage):
+		// BeginRegeneration found a newer row behind the one being
+		// replaced (finding 4): the swap rolled back, nothing was lost.
+		writeAPIError(w, r, http.StatusConflict, "not_last_message", "only the newest reply can be regenerated")
 	default:
 		s.logger.Error("conversation store error", "error", err, "rid", RequestIDFrom(r.Context()))
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")

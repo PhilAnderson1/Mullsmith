@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"mullsmith/internal/id"
 	"mullsmith/internal/llm"
 )
 
@@ -47,7 +48,8 @@ type Generator struct {
 // caller renders it once, so every round of one generation — tool
 // continuations included — speaks the same thinking level.
 func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMessage,
-	tools []llm.ToolSpec, thinking map[string]any, emit func(kind, text string) error,
+	tools []llm.ToolSpec, thinking map[string]any,
+	emit func(kind, text string) error,
 	toolDelta func(callIndex int, d llm.ToolCallDelta),
 ) Result {
 	var (
@@ -73,7 +75,20 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 				acc[tc.Index] = a
 				order = append(order, tc.Index)
 			}
+			// Canonical identity (finding 6): an endpoint that omits the call
+			// id gets ONE minted here, so the live card, the completed call,
+			// the audit row and the replayed protocol all carry the same id.
+			// Minting downstream instead gave the delta stream and the final
+			// assembly two ids — the first card never received its final
+			// tool event and a fallback card appeared under the second one.
+			// Absorb runs FIRST so the endpoint's own id wins when it
+			// arrives before anything is published; once published, absorb
+			// freezes and later ids cannot overwrite it (review2 finding 5).
 			a.absorb(tc)
+			if a.id == "" {
+				a.id = id.New()
+			}
+			tc.ID = a.id
 			if toolDelta != nil {
 				toolDelta(tc.Index, tc)
 			}
@@ -134,7 +149,13 @@ type callAccumulator struct {
 }
 
 func (a *callAccumulator) absorb(d llm.ToolCallDelta) {
-	if d.ID != "" {
+	// The ID freezes once published (review2 finding 5): Round mints a
+	// canonical id at the first delta and every later delta, the completed
+	// call, the audit row and the replayed protocol must agree on it. A
+	// late fragment carrying the endpoint's own id therefore does NOT
+	// replace it — live cards keyed by the published identity would never
+	// receive their argument and end events.
+	if a.id == "" && d.ID != "" {
 		a.id = d.ID
 	}
 	if d.Name != "" {

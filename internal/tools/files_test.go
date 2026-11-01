@@ -237,6 +237,48 @@ func TestFsWriteQuotaRollback(t *testing.T) {
 	}
 }
 
+// Finding 3: a REFUSED replacement must leave the original byte-for-byte
+// intact. The pre-fix flow truncated in place on open and deleted the path
+// on the failed re-check — destroying a file the user still owned. Writes
+// now stage beside the destination and commit via rename, so the original
+// only ever disappears into a SUCCESS.
+func TestFsWriteReplacementPreservesOriginalOnQuotaFailure(t *testing.T) {
+	root := toolRoot(t)
+	w := FsWrite{UserQuota: 1000}
+
+	if _, err := w.Execute(context.Background(), inv(root, argsJSON(t, map[string]string{
+		"path": "work/keep.txt", "content": strings.Repeat("a", 900)}))); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	// New content alone at quota: the staged total minus the freed 900
+	// still crosses the line → refuse, discard ONLY the staged copy.
+	_, err := w.Execute(context.Background(), inv(root, argsJSON(t, map[string]string{
+		"path": "work/keep.txt", "content": strings.Repeat("b", 1000)})))
+	if err == nil || !strings.Contains(err.Error(), "quota") {
+		t.Fatalf("over-quota replacement = %v, want quota error", err)
+	}
+	b, rerr := os.ReadFile(filepath.Join(root, toolUser, "work/keep.txt"))
+	if rerr != nil || string(b) != strings.Repeat("a", 900) {
+		t.Errorf("original damaged by refused replacement: %v %.40q", rerr, string(b))
+	}
+	entries, _ := os.ReadDir(filepath.Join(root, toolUser, "work"))
+	if len(entries) != 1 {
+		t.Errorf("staged copy left behind: %v", entries)
+	}
+
+	// The other half (finding 3's quota maths): replacing a file while the
+	// two copies jointly sit over the quota is LEGAL — the old bytes free
+	// up in the same rename that lands the new ones, so they must be net
+	// of the check. 900-for-900 at a 1000 quota passes both checks.
+	if _, err := w.Execute(context.Background(), inv(root, argsJSON(t, map[string]string{
+		"path": "work/keep.txt", "content": strings.Repeat("c", 900)}))); err != nil {
+		t.Fatalf("equal-size replacement must not false-overquota: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, toolUser, "work/keep.txt")); string(b) != strings.Repeat("c", 900) {
+		t.Errorf("replacement did not land: %.40q", string(b))
+	}
+}
+
 func TestFsReadTruncationAndBinary(t *testing.T) {
 	root := toolRoot(t)
 	writeDirect(t, root, "work/big.txt", strings.Repeat("a", fsReadLimit+100))

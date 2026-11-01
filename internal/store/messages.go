@@ -39,10 +39,35 @@ type Message struct {
 	Attachments []Attachment
 }
 
+// ErrHistoryLimit means the conversation's completed history exceeds the
+// hard row cap, so context replay would silently drop turns (finding 2).
+// A successful-but-partial history is a lie the caller cannot detect, so
+// the cap now fails the read loudly; the server turns this into an
+// explicit refusal BEFORE accepting another turn rather than quietly
+// truncating — the append-only doctrine has no silent exit.
+var ErrHistoryLimit = errors.New("conversation history exceeds the context row cap")
+
+// contextHistoryCap is the ContextHistory runaway guard (rows). A var so
+// tests exercise the boundary without inserting thousands of messages.
+var contextHistoryCap = 4000
+
 // AddMessage inserts a message and bumps the conversation's updated_at in one
 // transaction (the sidebar orders by it, spec §6.1 step 6). userID guards
 // against writing into someone else's thread (spec §9.2).
 func (d *DB) AddMessage(ctx context.Context, userID string, m *Message) error {
+	return d.addMessage(ctx, userID, m, nil)
+}
+
+// AddMessageWithFiles is AddMessage plus the attachment links IN THE SAME
+// transaction (finding 4): there is no window where a durable user message
+// exists without its files — the divergence that left an orphan turn behind
+// when the separate attach call failed after the request had already been
+// answered with a failure the client rolled back.
+func (d *DB) AddMessageWithFiles(ctx context.Context, userID string, m *Message, paths []string) error {
+	return d.addMessage(ctx, userID, m, paths)
+}
+
+func (d *DB) addMessage(ctx context.Context, userID string, m *Message, paths []string) error {
 	if m.ID == "" {
 		m.ID = id.New()
 	}
@@ -78,6 +103,12 @@ func (d *DB) AddMessage(ctx context.Context, userID string, m *Message) error {
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ConversationID, m.Role, m.Content, m.Status, tok, m.CreatedAt.Unix(), m.ToolCallID, m.Synthetic); err != nil {
 		return err
+	}
+	for _, p := range paths {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO attachments(message_id, path) VALUES(?, ?)`, m.ID, p); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE conversations SET updated_at = ? WHERE id = ?`,
@@ -116,6 +147,10 @@ func (d *DB) GetMessageForUser(ctx context.Context, userID, msgID string) (*Mess
 }
 
 // IsLastMessageInConversation reports whether msgID is the newest row.
+// Mutation decisions must NOT use it as a check-then-act guard: between
+// this read and any following write a send can append. Regeneration uses
+// BeginRegeneration, which re-checks newestness inside its own transaction
+// (finding 4). It remains for read-only projections.
 func (d *DB) IsLastMessageInConversation(ctx context.Context, convID, msgID string) (bool, error) {
 	var last string
 	err := d.sqlDB.QueryRowContext(ctx,
@@ -139,6 +174,85 @@ func (d *DB) DeleteMessage(ctx context.Context, msgID string) error {
 		return ErrConversationNotFound
 	}
 	return nil
+}
+
+// ErrNotLastMessage marks a mutation that must land on the conversation's
+// newest row and found it isn't — checkable only inside the transaction
+// that performs the swap, so no send can interleave (finding 4).
+var ErrNotLastMessage = errors.New("message is not the newest in its conversation")
+
+// BeginRegeneration atomically retires the newest assistant reply and puts a
+// fresh streaming placeholder in its place: newest-check, delete and insert
+// share ONE transaction (finding 4 — the old flow deleted the reply first
+// and created the replacement only later, so a failure in between could
+// leave the conversation a turn short, and a send that raced the check
+// turned "newest" into a stale verdict). The deleted row's tool_calls and
+// attachments disappear by cascade, exactly as with DeleteMessage. The
+// placeholder is status='streaming', so ContextHistory already ignores it
+// and the regenerated request never quotes its own draft; FinalizeMessage
+// completes it like any streamed reply. Ownership is enforced through the
+// conversation row.
+func (d *DB) BeginRegeneration(ctx context.Context, userID, convID, oldMsgID string) (*Message, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var one int
+	err = tx.QueryRowContext(ctx,
+		`SELECT 1 FROM conversations WHERE id = ? AND user_id = ?`, convID, userID).Scan(&one)
+	if errors.Is(err, ErrNoRows) {
+		return nil, ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var oldConv, oldRole string
+	err = tx.QueryRowContext(ctx,
+		`SELECT conversation_id, role FROM messages WHERE id = ?`, oldMsgID).
+		Scan(&oldConv, &oldRole)
+	if errors.Is(err, ErrNoRows) {
+		return nil, ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if oldConv != convID || oldRole != "assistant" {
+		return nil, ErrConversationNotFound // indistinguishable (§9.2)
+	}
+
+	var last string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+		convID).Scan(&last)
+	if err != nil {
+		return nil, err
+	}
+	if last != oldMsgID {
+		return nil, ErrNotLastMessage
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, oldMsgID); err != nil {
+		return nil, err
+	}
+	ph := &Message{
+		ID: id.New(), ConversationID: convID, Role: "assistant",
+		Status: "streaming", CreatedAt: time.Now(),
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO messages(id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ph.ID, ph.ConversationID, ph.Role, ph.Content, ph.Status, nil, ph.CreatedAt.Unix(), "", false); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE conversations SET updated_at = ? WHERE id = ?`,
+		ph.CreatedAt.Unix(), convID); err != nil {
+		return nil, err
+	}
+	return ph, tx.Commit()
 }
 
 // FinalizeMessage writes the produced content and status once a generation
@@ -168,11 +282,36 @@ func (d *DB) SweepStreaming(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+// ContextHistoryRows exposes the runaway row cap so admission can account
+// for the incoming turn BEFORE persisting it (the cap itself lives with
+// the query that enforces it).
+func ContextHistoryRows() int { return contextHistoryCap }
+
+// SetContextHistoryCap overrides the runaway row cap and returns the
+// restore function. Test-only seam: it lets endpoint-level tests exercise
+// the boundary without inserting thousands of rows. Production paths never
+// call it — the cap is fixed policy.
+func SetContextHistoryCap(n int) (restore func()) {
+	old := contextHistoryCap
+	contextHistoryCap = n
+	return func() { contextHistoryCap = old }
+}
+
+// ExecForTest runs one raw statement against the store's database.
+// Test-only fault-injection seam (e.g. a BEFORE INSERT trigger rejecting
+// a class of writes); production code must never call it.
+func (d *DB) ExecForTest(q string, args ...any) error {
+	_, err := d.sqlDB.Exec(q, args...)
+	return err
+}
+
 // ContextHistory returns the conversation's completed messages (chronological,
-// excluding excludeID) for prompt assembly and the overflow estimate. Every
-// stored turn is returned (the row cap is a runaway guard, not a policy):
-// the request is append-only and the context-full gate (server.ctxwindow)
-// answers before a send would cross the window. Assistant rows carry
+// excluding excludeID) for prompt assembly and the overflow estimate. The
+// request is append-only: when the row cap is exceeded, ContextHistory does
+// NOT return a silently-truncated oldest slice — it fails with
+// ErrHistoryLimit (finding 2). The server's overflow gate turns that into an
+// explicit refusal before another turn is accepted; the cap remains a
+// runaway guard, not a history policy. Assistant rows carry
 // their Calls and tool rows their ToolCallID so the agent can replay the
 // OpenAI tool protocol faithfully.
 func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Message, error) {
@@ -180,8 +319,8 @@ func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Me
 		`SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic
 		 FROM messages
 		 WHERE conversation_id = ? AND id <> ? AND status = 'complete'
-		 ORDER BY created_at ASC, id ASC LIMIT 4000`,
-		convID, excludeID)
+		 ORDER BY created_at ASC, id ASC LIMIT ?`,
+		convID, excludeID, contextHistoryCap+1) // sentinel row: cap+1 means OVER the cap
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +344,9 @@ func (d *DB) ContextHistory(ctx context.Context, convID, excludeID string) ([]Me
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(out) > contextHistoryCap {
+		return nil, ErrHistoryLimit
 	}
 	if err := d.attachCalls(ctx, out); err != nil {
 		return nil, err

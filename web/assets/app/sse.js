@@ -9,6 +9,7 @@
 // header.
 
 import { ApiError, cookieValue } from "/assets/app/api.js";
+import { handleFrame, splitFrames } from "/assets/app/sseparse.js";
 
 /**
  * POST a JSON body and stream the SSE reply into `handlers`.
@@ -47,61 +48,9 @@ export async function streamChat(path, body, handlers, signal) {
     const { value, done } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
-      handleFrame(buf.slice(0, idx), handlers);
-      buf = buf.slice(idx + 2);
-    }
+    const split = splitFrames(buf);
+    for (const frame of split.frames) handleFrame(frame, handlers);
+    buf = split.rest;
   }
   if (buf.trim() !== "") handleFrame(buf, handlers); // trailing frame at EOF
-}
-
-function handleFrame(frame, h) {
-  let event = "message";
-  const dataLines = [];
-  for (let line of frame.split("\n")) {
-    if (line.endsWith("\r")) line = line.slice(0, -1);
-    if (line.startsWith(":")) continue; // ping comment
-    else if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
-  }
-  if (dataLines.length === 0) return;
-  let data;
-  try {
-    data = JSON.parse(dataLines.join("\n"));
-  } catch {
-    return; // malformed frame: skip (spec §6.2 leniency)
-  }
-  switch (event) {
-    case "start":
-      h.onStart && h.onStart(data);
-      break;
-    case "token":
-      h.onToken && h.onToken(data.t || "");
-      break;
-    case "reasoning":
-      h.onReasoning && h.onReasoning(data.t || "");
-      break;
-    case "tool_start":
-      h.onToolStart && h.onToolStart(data);
-      break;
-    case "tool_args":
-      h.onToolArgs && h.onToolArgs(data);
-      break;
-    case "tool_end":
-      h.onToolEnd && h.onToolEnd(data);
-      break;
-    case "awaiting_approval":
-      h.onAwaitingApproval && h.onAwaitingApproval(data);
-      break;
-    case "error":
-      h.onError && h.onError(data);
-      break;
-    case "title":
-      h.onTitle && h.onTitle(data);
-      break;
-    case "done":
-      h.onDone && h.onDone(data);
-      break;
-  }
 }
