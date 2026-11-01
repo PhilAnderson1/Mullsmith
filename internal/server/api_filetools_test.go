@@ -48,7 +48,7 @@ func newRealToolServerTuned(t *testing.T, replies [][]string,
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
 	ts := httptest.NewServer(s.Handler())
 
 	a := newAuthTestOn(t, ts, db)

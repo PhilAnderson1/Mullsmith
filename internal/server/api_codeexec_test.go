@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mullsmith/internal/chat"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,9 +36,9 @@ func TestMain(m *testing.M) {
 // /bin/sh. Approval policy follows config exactly (§9.9 layer 6).
 func newCodeChatServer(t *testing.T, replies [][]string) (*authTest, *Server, *toolLLM, *config.Config) {
 	t.Helper()
-	prev := approvalTimeout
-	approvalTimeout = 5 * time.Second // a stuck test denies fast instead of hanging 10 min
-	t.Cleanup(func() { approvalTimeout = prev })
+	prev := chat.ApprovalTimeout
+	chat.ApprovalTimeout = 5 * time.Second // a stuck test denies fast instead of hanging 10 min
+	t.Cleanup(func() { chat.ApprovalTimeout = prev })
 
 	script := &toolLLM{replies: replies}
 	fake := newFakeLLM(t, script.handler)
@@ -72,7 +73,7 @@ func newCodeChatServer(t *testing.T, replies [][]string) (*authTest, *Server, *t
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", codeRunner, nil)
+	s := newPreparedServer(t, cfg, db, logger, "test", codeRunner, nil)
 	ts := httptest.NewServer(s.Handler())
 
 	a := newAuthTestOn(t, ts, db)
@@ -233,7 +234,7 @@ func TestChatCodeRunRememberSkipsLaterPrompts(t *testing.T) {
 			t.Errorf("%s missing: %v", name, err)
 		}
 	}
-	if !s.remembered.remembered(c.ID, "code_run") {
+	if !s.chat.Approvals.Remembered(c.ID, "code_run") {
 		t.Error("remembered map not set after remember approval")
 	}
 
@@ -253,7 +254,7 @@ func TestChatCodeRunRememberSkipsLaterPrompts(t *testing.T) {
 	if del.StatusCode != http.StatusNoContent {
 		t.Fatalf("conversation delete = %d", del.StatusCode)
 	}
-	if s.remembered.remembered(c.ID, "code_run") {
+	if s.chat.Approvals.Remembered(c.ID, "code_run") {
 		t.Error("consent must die with the conversation")
 	}
 }
@@ -285,8 +286,8 @@ func TestChatApprovalBypassAndTimeoutDeny(t *testing.T) {
 	})
 	// Shrink after construction so the helper's cleanup still restores the
 	// original value (cleanups run LIFO).
-	approvalTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { approvalTimeout = 5 * time.Second })
+	chat.ApprovalTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { chat.ApprovalTimeout = 5 * time.Second })
 	rd, _ := startCodeChat(t, a, "timeout", "run it, say nothing")
 
 	genID := ""

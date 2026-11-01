@@ -1192,3 +1192,39 @@ func TestLoadThinkingSelectorDerived(t *testing.T) {
 		}
 	})
 }
+
+func TestPrepareUsesSameDefaultsAndRejectsRuntimeFailure(t *testing.T) {
+	loaded, err := Load(writeCfg(t, minimalYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct := Defaults()
+	direct.Server.Listen = loaded.Server.Listen
+	direct.Database.Dir = t.TempDir()
+	direct.Scratchpad.Root = t.TempDir()
+	direct.LLM.Endpoint = loaded.LLM.Endpoint
+	direct.LLM.Models = loaded.LLM.Models
+	if err := direct.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(direct.Scratchpad.CodeExec, loaded.Scratchpad.CodeExec) {
+		t.Fatalf("constructor defaults differ: %+v / %+v", direct.Scratchpad.CodeExec, loaded.Scratchpad.CodeExec)
+	}
+	if direct.Scratchpad.CodeExec.MaxMemory != 256<<20 {
+		t.Fatalf("memory default=%d", direct.Scratchpad.CodeExec.MaxMemory)
+	}
+	runtime := direct.Thinking
+	if err := direct.Prepare(); err != nil || direct.Thinking != runtime {
+		t.Fatalf("preparation rebuilt the runtime: %v", err)
+	}
+	bad := *direct
+	bad.prepared = false
+	bad.Thinking = nil
+	bad.LLM.ProfilesFile = filepath.Join(t.TempDir(), "missing-profiles.yaml")
+	if err := bad.Prepare(); err == nil {
+		t.Fatal("runtime loading failure was silently accepted")
+	}
+	if bad.prepared {
+		t.Fatal("failed configuration marked prepared")
+	}
+}

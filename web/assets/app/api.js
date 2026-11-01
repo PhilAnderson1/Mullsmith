@@ -19,53 +19,41 @@ export function cookieValue(name) {
   return "";
 }
 
-async function finalize(resp) {
-  if (resp.status === 204) return null;
-  let data = null;
-  try {
-    data = await resp.json();
-  } catch {
-    /* non-JSON body */
+async function responseJSON(resp) {
+  try { return await resp.json(); } catch { return null; }
+}
+
+export async function apiError(resp) {
+  const data = await responseJSON(resp);
+  const err = data?.error || {};
+  return new ApiError(resp.status, err.code, err.message);
+}
+
+// Shared transport policy. Multipart bodies keep the browser's boundary;
+// successful stream bodies remain untouched for the SSE reader.
+export function fetchAPI(path, { json, ...options } = {}) {
+  const headers = { ...options.headers };
+  const csrf = cookieValue("mullsmith_csrf");
+  if (csrf) headers["X-Mullsmith-CSRF"] = csrf;
+  if (json !== undefined) {
+    headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(json);
   }
-  if (!resp.ok) {
-    const err = (data && data.error) || {};
-    throw new ApiError(resp.status, err.code, err.message);
-  }
-  return data;
+  return fetch(path, { ...options, headers, credentials: "same-origin" });
 }
 
 async function request(method, path, body) {
-  const headers = {};
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-  const csrf = cookieValue("mullsmith_csrf");
-  if (csrf) headers["X-Mullsmith-CSRF"] = csrf;
-
-  const resp = await fetch(path, {
-    method,
-    headers,
-    credentials: "same-origin",
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  return finalize(resp);
+  const resp = await fetchAPI(path, { method, json: body });
+  if (!resp.ok) throw await apiError(resp);
+  return resp.status === 204 ? null : responseJSON(resp);
 }
 
-// Multipart upload; the browser sets the Content-Type boundary, so only the
-// CSRF header travels. Streams the file, no whole-body buffering on our side.
 async function uploadFile(file) {
-  const fd = new FormData();
-  fd.append("file", file);
-  const headers = {};
-  const csrf = cookieValue("mullsmith_csrf");
-  if (csrf) headers["X-Mullsmith-CSRF"] = csrf;
-  const resp = await fetch("/api/v1/files", {
-    method: "POST",
-    headers,
-    credentials: "same-origin",
-    body: fd,
-  });
-  return finalize(resp);
+  const body = new FormData();
+  body.append("file", file);
+  const resp = await fetchAPI("/api/v1/files", { method: "POST", body });
+  if (!resp.ok) throw await apiError(resp);
+  return responseJSON(resp);
 }
 
 export const api = {

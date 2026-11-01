@@ -3,10 +3,9 @@ package tools
 import (
 	"log/slog"
 	"net/http"
-	"sync"
-	"time"
 
 	"mullsmith/internal/config"
+	"mullsmith/internal/managed"
 	"mullsmith/internal/runner"
 )
 
@@ -17,11 +16,14 @@ import (
 // files_share ride the scratchpad and are always available (sharing is a
 // file copy, nothing to configure); code_run needs a Runner and is
 // registered only when code execution is enabled (§9.9 layer 1: opt-in).
-// quotaMu is the storage-quota lock shared with the server's upload
-// commits (audit2 finding 3); nil serializes nothing (unit tests).
+// cfg is prepared by the application constructor. files owns the shared
+// managed-write policy, including quota serialization.
 func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client,
-	code runner.Runner, quotaMu *sync.Mutex,
+	code runner.Runner, files *managed.Service,
 ) *Registry {
+	if files == nil {
+		files = managed.New(int64(cfg.Scratchpad.UserQuota))
+	}
 	reg := NewRegistry(func(name string) string {
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {
 			return p
@@ -56,9 +58,6 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 
 	if cfg.Tools.WebFetch.Enabled {
 		timeout := cfg.Tools.WebFetch.Timeout.D()
-		if timeout <= 0 {
-			timeout = 15 * time.Second
-		}
 		reg.Register(NewWebFetch(NewGuardedClient(timeout), int64(cfg.Tools.WebFetch.MaxBytes)))
 	}
 
@@ -66,9 +65,9 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	// construction (config validation + EnsureDirs at startup).
 	reg.Register(FsList{})
 	reg.Register(FsRead{})
-	reg.Register(FsWrite{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
+	reg.Register(FsWrite{Files: files})
 	reg.Register(FsDelete{})
-	reg.Register(FilesShare{UserQuota: int64(cfg.Scratchpad.UserQuota), QuotaMu: quotaMu})
+	reg.Register(FilesShare{Files: files})
 	// Seeing pictures is only a capability when some model can take
 	// them (llm.models[].vision): with no entry flagged the tool is not
 	// offered at all. Per conversation the offer is filtered further by
@@ -82,9 +81,8 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 			Runtimes:     cfg.Scratchpad.CodeExec.AllowedRuntimes,
 			Timeout:      cfg.Scratchpad.CodeExec.Timeout.D(),
 			MaxOutput:    int(cfg.Scratchpad.CodeExec.MaxOutput),
-			UserQuota:    int64(cfg.Scratchpad.UserQuota),
+			Files:        files,
 			AllowNetwork: cfg.Scratchpad.CodeExec.AllowNetwork,
-			QuotaMu:      quotaMu,
 		})
 	}
 

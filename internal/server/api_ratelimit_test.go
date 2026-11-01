@@ -1,6 +1,7 @@
 package server
 
 import (
+	"mullsmith/internal/chat"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -190,18 +191,18 @@ func TestChatGlobalStreamCap(t *testing.T) {
 // --- registry unit level: reservation is atomic by construction --------------
 
 func TestGenRegistryAtomicReservation(t *testing.T) {
-	r := newGenRegistry()
+	r := chat.NewRegistry()
 	noop := func() {}
 
 	g1, err := r.Start("c1", "alice", 1, 2, noop)
 	if err != nil {
 		t.Fatalf("first start: %v", err)
 	}
-	if _, err := r.Start("c1", "alice", 1, 2, noop); err != errGenerating {
-		t.Errorf("same conversation: err = %v, want errGenerating", err)
+	if _, err := r.Start("c1", "alice", 1, 2, noop); err != chat.ErrGenerating {
+		t.Errorf("same conversation: err = %v, want chat.ErrGenerating", err)
 	}
-	if _, err := r.Start("c2", "alice", 1, 2, noop); err != errUserStreams {
-		t.Errorf("alice over personal cap: err = %v, want errUserStreams", err)
+	if _, err := r.Start("c2", "alice", 1, 2, noop); err != chat.ErrUserStreams {
+		t.Errorf("alice over personal cap: err = %v, want chat.ErrUserStreams", err)
 	}
 	// bob is under his personal cap but hits the GLOBAL cap of 2...
 	if _, err := r.Start("c3", "bob", 1, 1, noop); err == nil {
@@ -212,13 +213,13 @@ func TestGenRegistryAtomicReservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bob under global cap 2: %v", err)
 	}
-	if _, err := r.Start("c5", "carol", 0, 2, noop); err != errGlobalStreams {
-		t.Errorf("carol vs full global cap: err = %v, want errGlobalStreams", err)
+	if _, err := r.Start("c5", "carol", 0, 2, noop); err != chat.ErrGlobalStreams {
+		t.Errorf("carol vs full global cap: err = %v, want chat.ErrGlobalStreams", err)
 	}
 	r.Finish(g1)
 	r.Finish(g2)
-	if len(r.byID) != 0 {
-		t.Errorf("registry leaked after Finish: %+v", r.byID)
+	if r.Count() != 0 {
+		t.Errorf("registry leaked after Finish: %+v", r.Count())
 	}
 
 	// Hammer: 8 parallel starts, distinct conversations, same user, personal
@@ -226,7 +227,7 @@ func TestGenRegistryAtomicReservation(t *testing.T) {
 	// later arrivals can never legitimately slip in after a finish).
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var held []*generation
+	var held []*chat.Generation
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -240,7 +241,7 @@ func TestGenRegistryAtomicReservation(t *testing.T) {
 	}
 	wg.Wait()
 	if len(held) != 3 {
-		t.Errorf("concurrent starts: %d succeeded, want exactly 3 (cap), registry=%v", len(held), r.byID)
+		t.Errorf("concurrent starts: %d succeeded, want exactly 3 (cap), registry=%v", len(held), r.Count())
 	}
 	for _, g := range held {
 		r.Finish(g)

@@ -147,18 +147,15 @@ function sseStream() {
 
 globalThis.__MULLSMITH_TEST__ = true;
 const {
-  state, navOwner, selectConversation, startGeneration,
+  state, navigation, generation, navOwner, selectConversation, startGeneration,
   sendFromComposer, regenerateFrom,
   onHashChange, onModelChange, earlierButton,
 } = await import("../assets/app/app.js");
 
 // reset gives each test a clean, logged-in-looking session.
 function reset(currentId = "") {
-  state.currentId = currentId;
-  state.currentConv = currentId ? { id: currentId } : null;
-  state.navPendingId = "";
-  state.reconcileId = ""; // a previous test's recovery must not leak (finding 4)
-  state.inflight = null;
+  generation.abandonInflight();
+  navigation.reset(currentId ? {id:currentId}:null);
   state.pending = [];
   state.meta = { models: [], default_model: "", show_reasoning: false };
   state.filesOpen = false;
@@ -194,14 +191,14 @@ test("re-selecting the open conversation invalidates a pending navigation", asyn
   settleB();
   await pB;
   // B's late response must NOT take over: the latest intent is still A.
-  assert.equal(state.currentId, "A");
+  assert.equal(navigation.currentId, "A");
 });
 
 test("control: a completed navigation to another conversation does commit", async () => {
   reset("A");
   fetcher = async (url) => CHAT_OK(url);
   await selectConversation("C");
-  assert.equal(state.currentId, "C");
+  assert.equal(navigation.currentId, "C");
 });
 
 // --- finding 4: generation ownership on exception paths -----------------------
@@ -224,12 +221,13 @@ async function startDeferred() {
 test("a late pre-start failure from an ABANDONED generation must not roll back the newer one", async () => {
   reset("A");
   const gen = await startDeferred();
-  const newer = { genId: "newer" }; // a newer generation owns the screen now
-  state.inflight = newer;
+  const newerOperation=await startDeferred();
+  const newer=generation.current;
   gen.reject(new ApiError(500, "boom", "server exploded"));
   await gen.p;
-  assert.equal(state.inflight, newer, "abandoned rollback cleared the newer generation");
+  assert.equal(generation.current, newer, "abandoned rollback cleared the newer generation");
   assert.equal(gen.rollbackRan(), false, "abandoned rollback restored an obsolete draft");
+  newerOperation.reject(new ApiError(409,"history_limit","stopped"));await newerOperation.p;
 });
 
 test("control: a pre-start failure while STILL owner rolls back and clears inflight", async () => {
@@ -237,7 +235,7 @@ test("control: a pre-start failure while STILL owner rolls back and clears infli
   const gen = await startDeferred();
   gen.reject(new ApiError(409, "history_limit", "no more messages")); // no timer, no toast
   await gen.p;
-  assert.equal(state.inflight, null);
+  assert.equal(generation.current, null);
   assert.equal(gen.rollbackRan(), true);
 });
 
@@ -252,11 +250,12 @@ test("a late 401 from an ABANDONED request must not clear the current generation
   });
   const p = startGeneration("/api/v1/conversations/A/messages", { content: "hi" }, null, null);
   await Promise.resolve(); // the request is in flight; its token is live
-  const newer = { genId: "newer" };
-  state.inflight = newer; // a newer generation takes over while the 401 is still on the wire
+  const newerOperation=await startDeferred();
+  const newer=generation.current;
   release401();
   await p;
-  assert.equal(state.inflight, newer, "a superseded 401 must not log out a live generation");
+  assert.equal(generation.current, newer, "a superseded 401 must not log out a live generation");
+  newerOperation.reject(new ApiError(409,"history_limit","stopped"));await newerOperation.p;
 });
 
 test("control: a 401 while STILL owner ends the generation", async () => {
@@ -266,7 +265,7 @@ test("control: a 401 while STILL owner ends the generation", async () => {
     json: async () => ({ error: { code: "unauthenticated", message: "signed out" } }),
   });
   await startGeneration("/api/v1/conversations/A/messages", { content: "hi" }, null, null);
-  assert.equal(state.inflight, null);
+  assert.equal(generation.current, null);
 });
 
 // --- C5: conversation identity commits WITH its rendered messages --------------
@@ -286,13 +285,13 @@ test("re-selecting during the message load still paints the thread (C5 repro)", 
       : Promise.resolve(ok({ id: "B", title: "B" }));
   const pB = selectConversation("B");
   await tick(); // metadata has landed; the page is the one thing still in flight
-  assert.equal(state.navPendingId, "B");
-  assert.equal(state.currentId, "A"); // metadata alone must not commit identity
+  assert.equal(navigation.navPendingId, "B");
+  assert.equal(navigation.currentId, "A"); // metadata alone must not commit identity
   await selectConversation("B"); // repeat intent: must NOT orphan the sole loader
   settleMsgs();
   await pB;
-  assert.equal(state.currentId, "B");
-  assert.equal(state.navPendingId, "");
+  assert.equal(navigation.currentId, "B");
+  assert.equal(navigation.navPendingId, "");
   assert.equal(elFor("#thread").children.length, 1); // the destination actually rendered
 });
 
@@ -305,16 +304,16 @@ test("leaving to the blank route invalidates a pending navigation (C5)", async (
   fetcher = () => new Promise((resolve) => { settleB = () => resolve(ok({ id: "B", title: "B" })); });
   onHashChange(); // routes into selectConversation("B") — pending
   await tick();
-  assert.equal(state.navPendingId, "B");
+  assert.equal(navigation.navPendingId, "B");
   location.hash = "";
   onHashChange(); // walk away while B is still loading
   settleB();
   await tick();
-  assert.equal(state.currentId, ""); // B must not commit into the blank route
-  assert.equal(state.navPendingId, "");
+  assert.equal(navigation.currentId, ""); // B must not commit into the blank route
+  assert.equal(navigation.navPendingId, "");
 });
 
-// A→B→A restores ID equality, so the old `state.currentId !== convId` guard
+// A→B→A restores ID equality, so the old `navigation.currentId !== convId` guard
 // admitted a stale settings response over the fresh conversation row. The
 // click-time epoch moves on every navigation, return included.
 test("a settings PATCH from a previous visit to the same ID does not commit (C5)", async () => {
@@ -331,7 +330,7 @@ test("a settings PATCH from a previous visit to the same ID does not commit (C5)
   await selectConversation("A"); // …and back — the ID matches the PATCH target again
   settlePatch(); // the stale response lands now
   await p;
-  assert.notEqual(state.currentConv && state.currentConv.model, "late-m2");
+  assert.notEqual(navigation.currentConv && navigation.currentConv.model, "late-m2");
 });
 
 // Unqueued, two quick picks race: the second PATCH can overcomplete the
@@ -359,7 +358,7 @@ test("model picks send and commit in click order, not response order (C5)", asyn
   settleFirst();
   await Promise.all([p1, p2]);
   assert.deepEqual(seen, ["slow", "fast"]); // server writes follow clicks
-  assert.equal(state.currentConv.model, "fast"); // and the newest pick stands
+  assert.equal(navigation.currentConv.model, "fast"); // and the newest pick stands
 });
 
 // Earlier-message pages: accepted only while the SAME visit still owns the
@@ -415,7 +414,7 @@ test("Send and regenerate are inert while a navigation is pending; the draft sur
   };
   const pB = selectConversation("B"); // in flight: A is still the committed thread
   await tick();
-  assert.equal(state.navPendingId, "B");
+  assert.equal(navigation.navPendingId, "B");
   assert.equal(elFor("#btn-send").disabled, true, "Send stayed enabled into a pending navigation");
 
   const input = elFor("#composer-input");
@@ -423,12 +422,12 @@ test("Send and regenerate are inert while a navigation is pending; the draft sur
   await sendFromComposer();
   assert.equal(input.value, "typed while navigating", "the draft was clobbered by a rejected send");
   await regenerateFrom(document.createElement("div"), "msg-7");
-  assert.equal(state.inflight, null);
+  assert.equal(generation.current, null);
   assert.deepEqual(calls.filter(([m]) => m === "POST"), [], "a send or regenerate raced the pending navigation");
 
   settleB();
   await pB;
-  assert.equal(state.currentId, "B");
+  assert.equal(navigation.currentId, "B");
   assert.equal(elFor("#btn-send").disabled, false, "the committed thread must re-enable Send");
 });
 
@@ -444,11 +443,11 @@ test("a generation left behind by a navigation cannot paint into the new thread"
   await tick();
   s.push('event: start\ndata: {"generation_id":"g1","message_id":"m1"}\n\n');
   await tick();
-  assert.equal(state.inflight && state.inflight.genId, "g1");
+  assert.equal(generation.current && generation.current.genId, "g1");
 
   await selectConversation("B"); // abandon + repaint
-  assert.equal(state.inflight, null, "the navigation must dispose the generation it replaces");
-  assert.equal(state.currentId, "B");
+  assert.equal(generation.current, null, "the navigation must dispose the generation it replaces");
+  assert.equal(navigation.currentId, "B");
   const painted = elFor("#thread").children.slice();
 
   // The abandoned stream keeps talking (this reader ignores the abort —
@@ -478,7 +477,7 @@ test("control: a coded refusal pre-start rolls back and reconciles nothing", asy
   );
   assert.equal(rolled, true, "a definite refusal must restore the draft");
   assert.equal(uncertain, false, "a coded envelope is not an uncertain outcome");
-  assert.equal(state.inflight, null);
+  assert.equal(generation.current, null);
   assert.deepEqual(calls, [["POST", "/api/v1/conversations/A/messages"]], "a refusal must not trigger a reload");
 });
 
@@ -493,7 +492,7 @@ test("a network death before start reconciles: bubble out, draft back, thread re
   const input = elFor("#composer-input");
   input.value = "half-sent thought";
   await sendFromComposer();
-  assert.equal(state.inflight, null);
+  assert.equal(generation.current, null);
   assert.equal(input.value, "half-sent thought", "the draft was not given back");
   assert.equal(elFor("#thread").children.length, 0, "the optimistic bubble outlived the uncertainty");
   assert.ok(
@@ -517,7 +516,7 @@ test("a clean stream end before start is UNCERTAIN too, not a silent rollback", 
   const input = elFor("#composer-input");
   input.value = "eof before start";
   await sendFromComposer();
-  assert.equal(state.inflight, null);
+  assert.equal(generation.current, null);
   assert.equal(input.value, "eof before start", "EOF was treated as a definite refusal");
   assert.ok(
     calls.some(([m, u]) => m === "GET" && u.includes("/conversations/A/messages")),
@@ -575,20 +574,20 @@ test("an uncertain send holds recovery: Send stays shut while the reload is on t
   await tick();
   rejectPost();
   await pSend;
-  assert.equal(state.reconcileId, "A", "the reconcile did not take ownership of the thread");
+  assert.equal(navigation.reconcileId, "A", "the reconcile did not take ownership of the thread");
   assert.equal(elFor("#btn-send").disabled, true, "Send reopened while the reconcile was still on the wire");
 
   input.value = "second thought";
   await sendFromComposer(); // must be inert — recovery owns the screen
   await regenerateFrom(document.createElement("div"), "msg-9");
-  assert.equal(state.inflight, null, "regenerate raced the recovery state");
+  assert.equal(generation.current, null, "regenerate raced the recovery state");
   assert.equal(input.value, "second thought", "a rejected send clobbered the draft");
   assert.equal(calls.filter(([m]) => m === "POST").length, 1, "a second POST escaped the recovery state");
 
   settleReload(); // the truth lands
   await tick();
   await tick();
-  assert.equal(state.reconcileId, "");
+  assert.equal(navigation.reconcileId, "");
   assert.equal(elFor("#btn-send").disabled, false, "a settled reconcile must release Send");
 });
 
@@ -608,7 +607,7 @@ test("a reconcile snapshot cannot paint over newer thread activity", async () =>
   };
   elFor("#composer-input").value = "dies uncertain";
   await sendFromComposer(); // recovery state; the reload GET is on the wire
-  assert.equal(state.reconcileId, "A");
+  assert.equal(navigation.reconcileId, "A");
 
   // Defence in depth: newer activity arriving despite the composer guard —
   // a generation started straight into A (startGeneration is the shared
@@ -642,6 +641,6 @@ test("a failed reconcile is announced and releases the composer", async () => {
   await tick();
   assert.ok(elFor("#toast").textContent.includes("Could not reload"),
     `the reconcile failure was swallowed: "${elFor("#toast").textContent}"`);
-  assert.equal(state.reconcileId, "", "a failed reconcile must still end the recovery state");
+  assert.equal(navigation.reconcileId, "", "a failed reconcile must still end the recovery state");
   assert.equal(elFor("#btn-send").disabled, false, "Send stayed shut after an announced failure");
 });

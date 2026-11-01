@@ -32,16 +32,18 @@ func mkUser(email string) *User {
 	}
 }
 
-func TestMigrateIdempotent(t *testing.T) {
+func TestInitializeSchemaIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "t.db")
 	db1, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	db1.Close()
-	if _, err := Open(path); err != nil {
-		t.Fatalf("re-open (second migration pass): %v", err)
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
 	}
+	defer db2.Close()
 }
 
 func TestCreateGetUser(t *testing.T) {
@@ -231,5 +233,18 @@ func TestSetPassword(t *testing.T) {
 	}
 	if err := db.SetPassword(ctx, "01NONEXISTENT00000000000000", "x", time.Now()); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("unknown user: got %v, want ErrUserNotFound", err)
+	}
+}
+
+func TestSchemaUserStatusDefault(t *testing.T) {
+	db := openTestDB(t)
+	// The schema default must use the application's current account vocabulary.
+	if _, err := db.sqlDB.Exec(`INSERT INTO users(id,email,name,password_hash,created_at,updated_at)
+ VALUES('default-status','default@example.com','Default','hash',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	user, err := db.UserByID(context.Background(), "default-status")
+	if err != nil || user == nil || user.Status != "enabled" {
+		t.Fatalf("default user=%+v err=%v", user, err)
 	}
 }

@@ -184,7 +184,11 @@ func run(args []string) int {
 			"authenticated", cfg.Email.SMTP.AuthenticatedSMTP)
 	}
 
-	srv := server.New(cfg, db, logger, version, codeRunner, mailer)
+	srv, err := server.New(cfg, db, logger, version, codeRunner, mailer)
+	if err != nil {
+		logger.Error("server construction failed", "error", err)
+		return 1
+	}
 	srv.StartContextWindowProbe() // no-op unless some entry leaves context_size to auto
 	serveErr := make(chan error, 1)
 	go func() {

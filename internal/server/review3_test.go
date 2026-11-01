@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"mullsmith/internal/chat"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -34,12 +35,12 @@ func TestForeignDeleteCannotCancelOwnersGeneration(t *testing.T) {
 
 	resp := sendChat(t, a, c.ID, "hello")
 	<-arrived
-	if s.gens.Count() != 1 {
-		t.Fatalf("generation never took its slot: %d", s.gens.Count())
+	if s.chat.Generations.Count() != 1 {
+		t.Fatalf("generation never took its slot: %d", s.chat.Generations.Count())
 	}
 	// Consent on file for the owner's conversation — a side effect the
 	// foreign delete must also leave alone.
-	s.remembered.remember(c.ID, "code_run")
+	s.chat.Approvals.Remember(c.ID, "code_run")
 
 	// Second authenticated account on the same server. Invite codes are
 	// single-use, so the intruder gets its own.
@@ -57,10 +58,10 @@ func TestForeignDeleteCannotCancelOwnersGeneration(t *testing.T) {
 	}
 	// The owner's work is UNTOUCHED: still holding its slot (a cancel
 	// would have ended the parked model call's generation bookkeeping).
-	if s.gens.Count() != 1 {
-		t.Fatalf("foreign delete cancelled the owner's generation (count %d)", s.gens.Count())
+	if s.chat.Generations.Count() != 1 {
+		t.Fatalf("foreign delete cancelled the owner's generation (count %d)", s.chat.Generations.Count())
 	}
-	if !s.remembered.remembered(c.ID, "code_run") {
+	if !s.chat.Approvals.Remembered(c.ID, "code_run") {
 		t.Error("foreign delete dropped the owner's remembered consent")
 	}
 
@@ -68,8 +69,8 @@ func TestForeignDeleteCannotCancelOwnersGeneration(t *testing.T) {
 	if r := b.do(http.MethodDelete, "/api/v1/conversations/0000000000000000000000", nil); r.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown delete = %d, want 404", r.StatusCode)
 	}
-	if s.gens.Count() != 1 {
-		t.Errorf("unknown delete touched the registry (count %d)", s.gens.Count())
+	if s.chat.Generations.Count() != 1 {
+		t.Errorf("unknown delete touched the registry (count %d)", s.chat.Generations.Count())
 	}
 
 	// The owner's own delete still works end to end: cancel, slot gone,
@@ -80,7 +81,7 @@ func TestForeignDeleteCannotCancelOwnersGeneration(t *testing.T) {
 	close(release)
 	waitForNoGenerations(t, s)
 	resp.Body.Close()
-	if s.remembered.remembered(c.ID, "code_run") {
+	if s.chat.Approvals.Remembered(c.ID, "code_run") {
 		t.Error("owner delete must forget remembered consent (§9.9)")
 	}
 }
@@ -88,7 +89,7 @@ func TestForeignDeleteCannotCancelOwnersGeneration(t *testing.T) {
 // The registry refuses a foreign (conv, user) pair even if a caller ever
 // forgets to authorize first — defence in depth (review3 issue 1).
 func TestAbortConvIsOwnerAware(t *testing.T) {
-	r := newGenRegistry()
+	r := chat.NewRegistry()
 	cancelled := 0
 	cancel := func() { cancelled++ }
 	g, err := r.Start("conv-1", "owner", 0, 0, cancel)
@@ -173,8 +174,8 @@ func newBlockingToolServer(t *testing.T, policies map[string]string, tool tools.
 	cfg.LLM.Endpoint = fake.URL
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
-	s.tools = registryFor(policies, tool)
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
+	s.chat.Tools = registryFor(policies, tool)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	a := newAuthTestOn(t, ts, db)

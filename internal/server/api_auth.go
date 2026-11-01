@@ -612,7 +612,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// account is cancelled before the rows go, so no model call or tool
 	// execution is still running when its owner's storage is removed, and
 	// a final write racing the delete reads as cancellation, not success.
-	s.gens.AbortUser(user.ID)
+	s.chat.Generations.AbortUser(user.ID)
 	deleted, err := s.store.DeleteUser(r.Context(), user.ID)
 	if err != nil {
 		s.logger.Error("account deletion failed", "error", err, "user", user.ID,
@@ -643,7 +643,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 // was recreated behind the removal.
 func (s *Server) sweepRemovedUserDirs(userID string) {
 	deadline := time.Now().Add(30 * time.Second)
-	for s.gens.countUser(userID) > 0 && time.Now().Before(deadline) {
+	for s.chat.Generations.CountUser(userID) > 0 && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	u, err := s.store.UserByID(context.Background(), userID)

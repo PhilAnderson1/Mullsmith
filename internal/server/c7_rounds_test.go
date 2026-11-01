@@ -40,7 +40,7 @@ type c7Page struct {
 	} `json:"items"`
 }
 
-// displayOf parses one stored card payload; "" (a pre-0015 row) is nil.
+// displayOf parses one stored card payload; an empty payload is nil.
 func displayOf(t *testing.T, raw string) map[string]any {
 	t.Helper()
 	if raw == "" {

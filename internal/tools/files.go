@@ -12,12 +12,10 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"path"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
-	"mullsmith/internal/id"
+	"mullsmith/internal/managed"
 	"mullsmith/internal/scratch"
 )
 
@@ -32,38 +30,6 @@ func scratchRoot(inv Invocation) (string, error) {
 		return "", errors.New("scratchpad is not available in this deployment")
 	}
 	return inv.Scratchpad, nil
-}
-
-// checkQuota enforces per-user bytes before/after a write (§9.7). An
-// undeterminable usage FAILS the check: "unknown" never authorizes a write
-// (audit2 finding 3 — chmod-000 must not make bytes invisible AND free).
-// The scan error itself (paths included) belongs in server logs, not in
-// the model/user-facing message.
-func checkQuota(root, userID string, quota int64) error {
-	if quota <= 0 {
-		return nil
-	}
-	used, err := scratch.DirSize(root, userID)
-	if err != nil {
-		return errors.New("storage usage could not be verified; check scratchpad permissions")
-	}
-	if used >= quota {
-		return errors.New("storage quota exceeded")
-	}
-	return nil
-}
-
-// lockQuota serializes check-then-write quota decisions across every
-// application-managed write path — upload commit (server), fs_write, and
-// code_run staging (audit2 finding 3). Individually-atomic checks that do
-// not share a lock each pass while JOINTLY overrunning. Nil-safe so unit
-// tests and non-sharing embedders stay unchanged.
-func lockQuota(mu *sync.Mutex) func() {
-	if mu == nil {
-		return func() {}
-	}
-	mu.Lock()
-	return mu.Unlock
 }
 
 // parseArgs unmarshals tool arguments; unknown fields are ignored (some
@@ -212,12 +178,7 @@ func (FsRead) Execute(ctx context.Context, inv Invocation) (Result, error) {
 
 // --- fs_write --------------------------------------------------------------
 
-type FsWrite struct {
-	UserQuota int64
-	// QuotaMu is the shared quota lock (see lockQuota); nil leaves the
-	// check-then-write sequence unserialized (unit tests only).
-	QuotaMu *sync.Mutex
-}
+type FsWrite struct{ Files *managed.Service }
 
 func (FsWrite) Name() string { return "fs_write" }
 
@@ -255,157 +216,14 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if rel == "" {
 		return Result{}, errors.New("path is required")
 	}
-	if err := checkWriteTarget(rel); err != nil {
+	n, err := w.Files.WriteText(root, inv.UserID, rel, args.Content)
+	if err != nil {
 		return Result{}, err
 	}
-	if !scratch.DiskFloorOK(root) {
-		return Result{}, errors.New("server storage is nearly full")
-	}
-	// Fresh-check → write → re-check is ONE quota-critical section, shared
-	// with upload commits and code_run staging: separately-atomic checks let
-	// joint writers each pass while overrunning together (audit2 finding 3).
-	unlock := lockQuota(w.QuotaMu)
-	defer unlock()
-
-	// Inspecting an existing target does DOUBLE duty (finding 3): its size
-	// keeps the quota maths honest while its bytes must survive a failed
-	// replacement — which staged-and-renamed writes guarantee, and a
-	// non-regular target keeps its explicit refusal for, instead of being
-	// silently swapped or destroyed.
-	var oldSize int64
-	if fi, serr := scratch.Stat(root, inv.UserID, rel); serr == nil {
-		if !fi.Mode().IsRegular() {
-			if fi.IsDir() {
-				return Result{}, fsErr("fs_write", scratch.ErrIsDir)
-			}
-			return Result{}, fmt.Errorf("fs_write: %s is a special file; refusing to replace it", quoteShort(rel))
-		}
-		oldSize = fi.Size()
-	} else if !errors.Is(serr, scratch.ErrNotFound) {
-		// An unreadable path means the replacement's quota maths (oldSize)
-		// cannot be done honestly either — same refusal the quota scan uses,
-		// not a raw permission string (fail closed, §9.7).
-		if errors.Is(serr, os.ErrPermission) {
-			return Result{}, errors.New("storage usage could not be verified; check scratchpad permissions")
-		}
-		return Result{}, fsErr("fs_write", serr)
-	}
-	// The old file's bytes free up exactly when the new ones land, so they
-	// come off the used total BEFORE either verdict — otherwise replacing a
-	// file at quota would always look over-quota (the two copies are
-	// counted jointly only for the moment of the swap).
-	if err := checkQuotaAllowing(root, inv.UserID, w.UserQuota, oldSize); err != nil {
-		return Result{}, err
-	}
-
-	// Stage beside the destination (same directory → rename is atomic),
-	// then commit with a rename that never opens or follows the target: a
-	// failure at ANY step leaves the original intact. The previous version
-	// truncated in place and, on a failed quota re-check, deleted the path
-	// outright — destroying a file the user still owned (finding 3).
-	tmpRel := stagingPath(rel)
-	f, err := scratch.CreateExclusive(root, inv.UserID, tmpRel, 0o600)
-	if err != nil {
-		return Result{}, fsErr("fs_write", err)
-	}
-	n, err := f.WriteString(args.Content)
-	if cerr := f.Close(); err == nil {
-		err = cerr // surface a flush failure, not just the WriteString one
-	}
-	if err != nil {
-		_ = scratch.Remove(root, inv.UserID, tmpRel)
-		return Result{}, errors.New("write failed")
-	}
-	// Quota again after close — bytes may have crossed the line (§9.7). The
-	// re-scan counts BOTH copies, so subtract oldSize again; crossing the
-	// line discards only the staged copy. A failed re-scan keeps the
-	// original (no auto-delete on an unknown total) but never reports
-	// success: nothing landed UNVERIFIED (audit2 finding 3, fail closed).
-	if err := checkQuotaAllowing(root, inv.UserID, w.UserQuota, oldSize); err != nil {
-		_ = scratch.Remove(root, inv.UserID, tmpRel)
-		if w.UserQuota > 0 {
-			if _, derr := scratch.DirSize(root, inv.UserID); derr != nil {
-				return Result{}, errors.New("wrote " + quoteShort(rel) +
-					", but storage usage could not be verified; check scratchpad permissions")
-			}
-		}
-		return Result{}, errors.New("write would exceed the storage quota; replacement discarded")
-	}
-	if err := scratch.RenameOver(root, inv.UserID, tmpRel, rel); err != nil {
-		_ = scratch.Remove(root, inv.UserID, tmpRel)
-		return Result{}, fsErr("fs_write", err)
-	}
-	return Result{
-		Content: fmt.Sprintf(`{"path":%s,"bytes_written":%d}`, mustJSON(rel), n),
-		Summary: fmt.Sprintf("Wrote %s (%s)", quoteShort(rel), humanBytes(int64(n))),
-	}, nil
+	return Result{Content: fmt.Sprintf(`{"path":%s,"bytes_written":%d}`, mustJSON(rel), n), Summary: fmt.Sprintf("Wrote %s (%s)", quoteShort(rel), humanBytes(int64(n)))}, nil
 }
 
-// checkQuotaAllowing is checkQuota with a deduction: bytes an in-flight
-// replacement will free (the old file it swaps out) do not count against
-// the new ones.
-func checkQuotaAllowing(root, userID string, quota, deduct int64) error {
-	if quota <= 0 {
-		return nil
-	}
-	used, err := scratch.DirSize(root, userID)
-	if err != nil {
-		return errors.New("storage usage could not be verified; check scratchpad permissions")
-	}
-	if used-deduct >= quota {
-		return errors.New("storage quota exceeded")
-	}
-	return nil
-}
-
-// stagingPath names the sibling a replacement is written to before the
-// atomic commit rename: the directory of rel plus a random dot-file. The
-// name is deliberately independent of the base name so a long target name
-// cannot push the staged name past the sandbox's segment-length limit, and
-// the dot-prefix keeps it out of the model's listings while it lives.
-func stagingPath(rel string) string {
-	dir, _ := path.Split(rel)
-	return dir + ".tmp-" + strings.ToLower(id.New())
-}
-
-// checkWriteTarget keeps the model out of the user's upload namespace:
-// uploads are the user's data, written only via HTTP. The rule runs on
-// segments NORMALIZED by scratch.ParseRel — the same normalizer the
-// filesystem layer applies — because a raw prefix check was bypassable:
-// "./uploads/x" has "." as its first raw segment yet lands in uploads/
-// after normalization (audit finding 7). Used by both writers, fs_write
-// and fs_delete, so both are held to the same validation.
-//
-// POSITIVE allowlist (root-litter fix): the first segment must be work/
-// or artifacts/ — a bare "notes.txt" would land in the user's data ROOT
-// beside the three directories, where the Files page cannot list or
-// delete it and the jail now refuses writes anyway. Layout directories
-// themselves (a lone "work"/"artifacts"/"uploads" as a delete target)
-// are likewise out of reach: the workflow needs their CONTENTS, not the
-// mount points. fs_delete applies the same rule through checkDeleteTarget
-// below, the one uploads/ exception described there.
-func checkWriteTarget(rel string) error {
-	segs, err := scratch.ParseRel(rel)
-	if err != nil {
-		return err
-	}
-	if len(segs) == 0 {
-		return errors.New("path must be inside work/ or artifacts/")
-	}
-	switch segs[0] {
-	case "uploads":
-		return errors.New("uploads/ is read-only for the model; write under work/ or artifacts/")
-	case "work", "artifacts":
-		if len(segs) == 1 {
-			return errors.New("path must be a file inside work/ or artifacts/, not the directory itself")
-		}
-		return nil
-	default:
-		return errors.New("the scratchpad root is not writable; write under work/ or artifacts/")
-	}
-}
-
-// checkDeleteTarget is fs_delete's scoping rule: checkWriteTarget's law
+// checkDeleteTarget is fs_delete's scoping rule: managed.WriteTarget's law
 // for work/ and artifacts/, plus FILES under uploads/. fs_delete is the
 // only tool that removes upload bytes, and its guard is not the path rule
 // but the approval gate: fs_delete defaults to confirm (§7.1 — unknown
@@ -431,7 +249,7 @@ func checkDeleteTarget(rel string) error {
 		}
 		return nil
 	}
-	return checkWriteTarget(rel)
+	return managed.WriteTarget(rel)
 }
 
 // --- fs_delete ---------------------------------------------------------------
@@ -514,13 +332,7 @@ func (FsDelete) Execute(ctx context.Context, inv Invocation) (Result, error) {
 // already downloadable from the Files page, and must never be entangled
 // with artifact lifecycle.
 
-type FilesShare struct {
-	UserQuota int64
-	// QuotaMu is the shared quota lock (see lockQuota): a share copy is a
-	// write and joins the same serialized quota section as fs_write,
-	// upload commits and code_run staging (audit2 finding 3).
-	QuotaMu *sync.Mutex
-}
+type FilesShare struct{ Files *managed.Service }
 
 func (FilesShare) Name() string { return "files_share" }
 
@@ -575,111 +387,11 @@ func (s FilesShare) Execute(ctx context.Context, inv Invocation) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
-	rel := strings.TrimSpace(args.Path)
-	if rel == "" {
-		return Result{}, errors.New("path is required")
-	}
-	// The uploads namespace is off-limits AFTER normalization (same lesson
-	// as audit finding 7): uploads must never gain a TTL'd artifact copy —
-	// the sweep or a card-delete must never reach the user's originals.
-	segs, err := scratch.ParseRel(rel)
+	file, err := s.Files.Share(root, inv.UserID, args.Path)
 	if err != nil {
-		return Result{}, fsErr("files_share", err)
-	}
-	if len(segs) == 0 {
-		return Result{}, errors.New("path is required")
-	}
-	if segs[0] == "uploads" {
-		return Result{}, errors.New("uploads are the user's data and already downloadable " +
-			"from the Files page; share files under work/ or artifacts/ instead")
-	}
-	rel = path.Join(segs...) // canonical spelling all the way through (§8)
-	fi, err := scratch.Stat(root, inv.UserID, rel)
-	if err != nil {
-		return Result{}, fsErr("files_share", err)
-	}
-	if fi.IsDir() {
-		return Result{}, errors.New("path is a directory, not a file")
-	}
-	if !fi.Mode().IsRegular() {
-		// FIFOs/sockets would block the copy open indefinitely.
-		return Result{}, errors.New("path is not a regular file")
-	}
-
-	if segs[0] == "artifacts" {
-		// Already a deliverable: deliver as-is. No copy, no quota spend;
-		// the card points at the existing bytes and their own mtime
-		// governs expiry (re-sharing refreshes nothing — that is what
-		// snapshots mean).
-		return shareResult(rel, path.Base(rel), fi.Size(), args.Note), nil
-	}
-
-	// A copy is a WRITE: same disk floor, lock and checks as fs_write.
-	if !scratch.DiskFloorOK(root) {
-		return Result{}, errors.New("server storage is nearly full")
-	}
-	unlock := lockQuota(s.QuotaMu)
-	defer unlock()
-	if err := checkQuota(root, inv.UserID, s.UserQuota); err != nil {
 		return Result{}, err
 	}
-	if err := scratch.MkdirAll(root, inv.UserID, "artifacts"); err != nil {
-		return Result{}, fsErr("files_share", err)
-	}
-
-	src, err := scratch.OpenFile(root, inv.UserID, rel)
-	if err != nil {
-		return Result{}, fsErr("files_share", err)
-	}
-	defer src.Close()
-
-	// Stream to a temp in the scratch ROOT (same filesystem as the
-	// destination, so the landing rename is atomic), then collide-free
-	// NOREPLACE placement with name bumping. The COPY is what the card
-	// points at, so later edits to the source never rewrite history.
-	tmp, err := os.CreateTemp(root, ".share-*")
-	if err != nil {
-		return Result{}, errors.New("share staging failed")
-	}
-	tempPath := tmp.Name()
-	defer os.Remove(tempPath) // no-op after a successful placement
-	n, err := io.Copy(tmp, src)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr // a failed close can silently truncate the copy
-	}
-	if err != nil {
-		return Result{}, errors.New("share copy failed")
-	}
-
-	dstRel := ""
-	for i := 0; i < 200; i++ {
-		cand := "artifacts/" + scratch.BumpName(path.Base(rel), i)
-		if perr := scratch.PlaceNoReplace(root, inv.UserID, cand, tempPath); perr == nil {
-			dstRel = cand
-			break
-		} else if !errors.Is(perr, scratch.ErrExists) {
-			return Result{}, fsErr("files_share", perr)
-		}
-	}
-	if dstRel == "" {
-		return Result{}, errors.New("too many files already share this name")
-	}
-
-	// Fail-closed re-check exactly like fs_write: the bytes landed, so the
-	// total must be VERIFIED; a real overrun is collected again, an
-	// unverifiable one is reported instead of a false success (§9.7).
-	if s.UserQuota > 0 {
-		used, derr := scratch.DirSize(root, inv.UserID)
-		if derr != nil {
-			return Result{}, errors.New("shared " + quoteShort(dstRel) +
-				", but storage usage could not be verified; check scratchpad permissions")
-		}
-		if used > s.UserQuota {
-			_ = scratch.Remove(root, inv.UserID, dstRel)
-			return Result{}, errors.New("share would exceed the storage quota; copy removed")
-		}
-	}
-	return shareResult(dstRel, path.Base(dstRel), n, args.Note), nil
+	return shareResult(file.Path, file.Name, file.Bytes, args.Note), nil
 }
 
 // --- shared helpers ------------------------------------------------------------

@@ -15,21 +15,35 @@ import (
 	"testing"
 
 	"mullsmith/internal/config"
+	"mullsmith/internal/mail"
+	"mullsmith/internal/runner"
 	"mullsmith/internal/store"
 	"mullsmith/web"
 )
 
 func testCfg() *config.Config {
-	return &config.Config{
-		Server: config.Server{
-			Listen: "127.0.0.1:0",
-		},
-		LLM:  config.LLM{Models: []config.LLMModel{{ID: "m1", Default: true}}},
-		Auth: config.Auth{Registration: "invite-only"},
-		// config.Load applies these defaults; struct-literal test configs
-		// must set them too or bodyLimit rejects every POST (max=0).
-		Limits: config.Limits{MaxBodyBytes: 1 << 20, MaxMessageChars: 32000, MaxAttachments: 8},
+	cfg := config.Defaults()
+	cfg.Server.Listen = "127.0.0.1:0"
+	cfg.Database.Dir = "."
+	cfg.Scratchpad.Root = "."
+	cfg.LLM.Endpoint = "http://127.0.0.1:1/v1"
+	cfg.LLM.Models = []config.LLMModel{{ID: "m1", Default: true}}
+	cfg.Limits.ConcurrentStreamsPerUser = -1
+	cfg.Limits.ConcurrentStreamsTotal = -1
+	cfg.Limits.RequestsPerMinute = -1
+	cfg.Limits.ChatMessagesPerHour = -1
+	cfg.Limits.HashConcurrency = -1
+	cfg.Limits.ConcurrentUploads = -1
+	return cfg
+}
+
+func newPreparedServer(t *testing.T, cfg *config.Config, db *store.DB, logger *slog.Logger, version string, code runner.Runner, mailer *mail.Outbox) *Server {
+	t.Helper()
+	s, err := New(cfg, db, logger, version, code, mailer)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return s
 }
 
 func testStore(t *testing.T) *store.DB {
@@ -52,7 +66,7 @@ func newTestServerWithDB(t *testing.T, cfg *config.Config) (*httptest.Server, *s
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	return httptest.NewServer(New(cfg, db, logger, "test", nil, nil).Handler()), db
+	return httptest.NewServer(newPreparedServer(t, cfg, db, logger, "test", nil, nil).Handler()), db
 }
 
 func TestHealthz(t *testing.T) {
@@ -372,7 +386,7 @@ func TestBodyLimit(t *testing.T) {
 // rewriting (stampedModules), which TestStampedModuleImports pins.
 func TestIndexAssetURLsAreVersioned(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := New(testCfg(), testStore(t), logger, "abc123", nil, nil)
+	s := newPreparedServer(t, testCfg(), testStore(t), logger, "abc123", nil, nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {
@@ -453,7 +467,7 @@ func TestStampedModuleImports(t *testing.T) {
 	// End to end: a stamped server hands out rewritten modules through
 	// the /assets/ route with a JS content type.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := New(testCfg(), testStore(t), logger, "abc123", nil, nil)
+	s := newPreparedServer(t, testCfg(), testStore(t), logger, "abc123", nil, nil)
 	for _, path := range []string{"/assets/app/app.js", "/assets/app/sse.js?v=abc123"} {
 		rec := httptest.NewRecorder()
 		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))

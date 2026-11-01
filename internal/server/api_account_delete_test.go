@@ -49,7 +49,7 @@ func TestDeleteAccountCascadesEverything(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ts := httptest.NewServer(New(cfg, db, logger, "test", nil, nil).Handler())
+	ts := httptest.NewServer(newPreparedServer(t, cfg, db, logger, "test", nil, nil).Handler())
 	a := newAuthTestOn(t, ts, db)
 	a.invite("gk-code-1") // the code a.register() presents
 	if resp := a.register("doomed@test.io", "str0ng-passphrase-1", false); resp.StatusCode != http.StatusCreated {

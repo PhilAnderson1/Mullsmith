@@ -78,7 +78,7 @@ func emailTestApp(t *testing.T) (*authTest, *fakeMailer) {
 	fm := &fakeMailer{ch: make(chan mail.Job, 64)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, mail.NewOutbox(fm, logger))
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, mail.NewOutbox(fm, logger))
 	ts := httptest.NewServer(s.Handler())
 	return newAuthTestOn(t, ts, db), fm
 }

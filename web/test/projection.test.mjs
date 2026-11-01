@@ -74,14 +74,11 @@ globalThis.document = {
   addEventListener() {}, removeEventListener() {},
 };
 globalThis.__MULLSMITH_TEST__ = true;
-const { state, startGeneration } = await import("../assets/app/app.js");
+const { state,navigation,generation,startGeneration } = await import("../assets/app/app.js");
 
 function resetThread() {
-  state.currentId = "FIXTURE";
-  state.currentConv = { id: "FIXTURE" };
-  state.navPendingId = "";
-  state.reconcileId = "";
-  state.inflight = null;
+  generation.abandonInflight();
+  navigation.reset({id:"FIXTURE"});
   state.meta = { models: [], default_model: "", show_reasoning: false };
   elFor("#thread").children = [];
 }

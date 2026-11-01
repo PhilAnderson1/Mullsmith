@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
@@ -8,16 +9,36 @@ import (
 	"mullsmith/web"
 )
 
+// Read the workflow modules together for these static asset contracts.
+func appSources(t *testing.T) string {
+	t.Helper()
+	var out strings.Builder
+	err := fs.WalkDir(web.FS, "assets/app", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".js") {
+			b, err := web.FS.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			out.Write(b)
+			out.WriteByte('\n')
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
 // A handler name used but never defined is a runtime ReferenceError that
 // browsers swallow into the console — the exact silent "Send does nothing"
 // bug this guards. node --check cannot see it; this test reads the embedded
 // module and resolves every addEventListener target against the file.
 func TestJSHandlersAreDefined(t *testing.T) {
-	b, err := web.FS.ReadFile("assets/app/app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(b)
+	src := appSources(t)
 
 	patterns := []*regexp.Regexp{
 		// addEventListener("click", handler)
@@ -44,15 +65,16 @@ func TestJSHandlersAreDefined(t *testing.T) {
 }
 
 // jsFuncBody extracts an embedded-app function body by convention: the
-// signature line starts the body, and the first column-0 "}" ends it
-// (internal blocks are indented).
+// signature line starts the body; a matching closing indentation ends it.
 func jsFuncBody(t *testing.T, src, sig string) string {
 	t.Helper()
 	i := strings.Index(src, sig)
 	if i < 0 {
 		t.Fatalf("app.js no longer contains %q", sig)
 	}
-	end := strings.Index(src[i:], "\n}")
+	lineStart := strings.LastIndex(src[:i], "\n") + 1
+	indent := src[lineStart:i]
+	end := strings.Index(src[i:], "\n"+indent+"}")
 	if end < 0 {
 		t.Fatalf("unterminated %q", sig)
 	}
@@ -63,7 +85,7 @@ func jsFuncBody(t *testing.T, src, sig string) string {
 // responses into one list — the same path rendered twice; (2) deleting a
 // folder removed only its own row, leaving every deleted child row on
 // screen as an undeletable 404 ghost. Both fixes are pinned textually —
-// the app has no browser test harness, so the source is the contract.
+// these remain lightweight static asset contracts alongside browser coverage.
 func TestJSFilesListRefreshDiscardsStaleAndGhosts(t *testing.T) {
 	b, err := web.FS.ReadFile("assets/app/app.js")
 	if err != nil {
@@ -97,11 +119,7 @@ func TestJSFilesListRefreshDiscardsStaleAndGhosts(t *testing.T) {
 // (4) the waiting spinner is CSS-driven (no braille JS timer — the frozen
 // glyph was the iPad complaint) and must never leave a setInterval behind.
 func TestJSRegenerateActivationLoginSpinnerContracts(t *testing.T) {
-	b, err := web.FS.ReadFile("assets/app/app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(b)
+	src := appSources(t)
 
 	finish := jsFuncBody(t, src, "function finishGeneration(")
 	if !strings.Contains(finish, "attachRegen(") {

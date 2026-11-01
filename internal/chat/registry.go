@@ -1,4 +1,4 @@
-package server
+package chat
 
 import (
 	"context"
@@ -9,17 +9,17 @@ import (
 	"mullsmith/internal/id"
 )
 
-// errGenerating enforces "one in-flight generation per conversation"
+// ErrGenerating enforces "one in-flight Generation per conversation"
 // (spec §6.2): the second POST returns 409.
-var errGenerating = errors.New("generation already running for this conversation")
+var ErrGenerating = errors.New("Generation already running for this conversation")
 
 // Capacity refusals from the atomic reservation in Start (§9.11).
 var (
-	errUserStreams   = errors.New("per-user concurrent generation limit reached")
-	errGlobalStreams = errors.New("server generation capacity reached")
+	ErrUserStreams   = errors.New("per-user concurrent Generation limit reached")
+	ErrGlobalStreams = errors.New("server Generation capacity reached")
 )
 
-type generation struct {
+type Generation struct {
 	ID     string
 	ConvID string
 	UserID string
@@ -27,19 +27,19 @@ type generation struct {
 
 	// approvals tracks outstanding awaiting_approval requests (§6.1 step 5):
 	// approval id → decision channel the tool loop waits on.
-	approvals map[string]chan approvalDecision
+	approvals map[string]chan ApprovalDecision
 }
 
-// approvalDecision is the user's answer to one tool approval; Remember
+// ApprovalDecision is the user's answer to one tool approval; Remember
 // lets "always allow in this conversation" persist for the rest of the
 // conversation (§6.1 step 5, §9.9 layer 6 — code_run).
-type approvalDecision struct {
+type ApprovalDecision struct {
 	Approve  bool
 	Remember bool
 }
 
-// AddApproval registers a pending approval for a live generation.
-func (r *genRegistry) AddApproval(genID string) (string, <-chan approvalDecision, bool) {
+// AddApproval registers a pending approval for a live Generation.
+func (r *Registry) AddApproval(genID string) (string, <-chan ApprovalDecision, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	g, ok := r.byID[genID]
@@ -47,17 +47,17 @@ func (r *genRegistry) AddApproval(genID string) (string, <-chan approvalDecision
 		return "", nil, false
 	}
 	if g.approvals == nil {
-		g.approvals = map[string]chan approvalDecision{}
+		g.approvals = map[string]chan ApprovalDecision{}
 	}
 	id := id.New()
-	ch := make(chan approvalDecision, 1)
+	ch := make(chan ApprovalDecision, 1)
 	g.approvals[id] = ch
 	return id, ch, true
 }
 
 // ResolveApproval delivers a user decision; the caller must own the
-// generation. Unknown ids (already answered, timed out, gone) → false.
-func (r *genRegistry) ResolveApproval(genID, approvalID, userID string, approve, remember bool) bool {
+// Generation. Unknown ids (already answered, timed out, gone) → false.
+func (r *Registry) ResolveApproval(genID, approvalID, userID string, approve, remember bool) bool {
 	r.mu.Lock()
 	g, ok := r.byID[genID]
 	if !ok || g.UserID != userID {
@@ -72,13 +72,13 @@ func (r *genRegistry) ResolveApproval(genID, approvalID, userID string, approve,
 	if !open {
 		return false
 	}
-	ch <- approvalDecision{Approve: approve, Remember: remember} // buffered: never blocks
+	ch <- ApprovalDecision{Approve: approve, Remember: remember} // buffered: never blocks
 	return true
 }
 
 // RemoveApproval drops an unresolved approval when the loop gives up
 // (timeout or abort) so late POSTs cannot fill a dead channel.
-func (r *genRegistry) RemoveApproval(genID, approvalID string) {
+func (r *Registry) RemoveApproval(genID, approvalID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if g, ok := r.byID[genID]; ok {
@@ -86,29 +86,29 @@ func (r *genRegistry) RemoveApproval(genID, approvalID string) {
 	}
 }
 
-// genRegistry tracks live generations. It doubles as the concurrency
+// Registry tracks live generations. It doubles as the concurrency
 // counter for limits.concurrent_streams_per_user.
-type genRegistry struct {
+type Registry struct {
 	mu     sync.Mutex
-	byConv map[string]*generation
-	byID   map[string]*generation
+	byConv map[string]*Generation
+	byID   map[string]*Generation
 }
 
-func newGenRegistry() *genRegistry {
-	return &genRegistry{byConv: map[string]*generation{}, byID: map[string]*generation{}}
+func NewRegistry() *Registry {
+	return &Registry{byConv: map[string]*Generation{}, byID: map[string]*Generation{}}
 }
 
-func (r *genRegistry) Start(convID, userID string, maxUser, maxGlobal int, cancel context.CancelFunc) (*generation, error) {
+func (r *Registry) Start(convID, userID string, maxUser, maxGlobal int, cancel context.CancelFunc) (*Generation, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, busy := r.byConv[convID]; busy {
-		return nil, errGenerating
+		return nil, ErrGenerating
 	}
 	// The per-user and global caps are evaluated and reserved in THIS lock
 	// acquisition (audit finding 3): the previous check-then-Start split let
 	// parallel requests for different conversations sail past the user cap.
 	if maxGlobal > 0 && len(r.byID) >= maxGlobal {
-		return nil, errGlobalStreams
+		return nil, ErrGlobalStreams
 	}
 	if maxUser > 0 {
 		running := 0
@@ -118,18 +118,18 @@ func (r *genRegistry) Start(convID, userID string, maxUser, maxGlobal int, cance
 			}
 		}
 		if running >= maxUser {
-			return nil, errUserStreams
+			return nil, ErrUserStreams
 		}
 	}
-	g := &generation{ID: id.New(), ConvID: convID, UserID: userID, cancel: cancel}
+	g := &Generation{ID: id.New(), ConvID: convID, UserID: userID, cancel: cancel}
 	r.byConv[convID] = g
 	r.byID[g.ID] = g
 	return g, nil
 }
 
-// Finish removes the generation (idempotent, only if it is still the same
+// Finish removes the Generation (idempotent, only if it is still the same
 // one for the conversation).
-func (r *genRegistry) Finish(g *generation) {
+func (r *Registry) Finish(g *Generation) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cur, ok := r.byConv[g.ConvID]; ok && cur == g {
@@ -138,8 +138,8 @@ func (r *genRegistry) Finish(g *generation) {
 	delete(r.byID, g.ID)
 }
 
-// Abort cancels the generation when id matches and the caller owns it.
-func (r *genRegistry) Abort(genID, userID string) bool {
+// Abort cancels the Generation when id matches and the caller owns it.
+func (r *Registry) Abort(genID, userID string) bool {
 	r.mu.Lock()
 	g, ok := r.byID[genID]
 	r.mu.Unlock()
@@ -150,15 +150,15 @@ func (r *genRegistry) Abort(genID, userID string) bool {
 	return true
 }
 
-// AbortConv cancels the live generation of one conversation whose rows are
+// AbortConv cancels the live Generation of one conversation whose rows are
 // being deleted (C6) — but ONLY for the conversation's owner (review3
 // issue 1): the delete handler authorizes before it gets here, and the
 // registry refuses to be a second way to touch another account's work.
 // The cancel is issued with the registry lock released and nothing is
-// awaited: the generation notices at its next context check and its final
+// awaited: the Generation notices at its next context check and its final
 // writes then land as ErrRowGone/ErrConversationNotFound — which the
 // orchestrator reads as cancellation, not storage failure.
-func (r *genRegistry) AbortConv(convID, userID string) bool {
+func (r *Registry) AbortConv(convID, userID string) bool {
 	r.mu.Lock()
 	g, ok := r.byConv[convID]
 	if ok && g.UserID != userID {
@@ -172,12 +172,12 @@ func (r *genRegistry) AbortConv(convID, userID string) bool {
 	return ok
 }
 
-// AbortUser cancels every live generation of one account — the
+// AbortUser cancels every live Generation of one account — the
 // deletion counterpart of AbortConv (C6): after the owner's rows are gone
 // there is no work worth continuing, and no slot held while anyone waits.
-func (r *genRegistry) AbortUser(userID string) {
+func (r *Registry) AbortUser(userID string) {
 	r.mu.Lock()
-	var running []*generation
+	var running []*Generation
 	for _, g := range r.byID {
 		if g.UserID == userID {
 			running = append(running, g)
@@ -189,15 +189,15 @@ func (r *genRegistry) AbortUser(userID string) {
 	}
 }
 
-func (r *genRegistry) Count() int {
+func (r *Registry) Count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.byID)
 }
 
-// countUser reports the running generations of one account (the account-
+// CountUser reports the running generations of one account (the account-
 // delete sweep's idle check, C6).
-func (r *genRegistry) countUser(userID string) int {
+func (r *Registry) CountUser(userID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n := 0
@@ -209,13 +209,13 @@ func (r *genRegistry) countUser(userID string) int {
 	return n
 }
 
-// abortAll cancels every in-flight generation and reports how many were
+// AbortAll cancels every in-flight Generation and reports how many were
 // running. Graceful shutdown calls it first: streams finalize exactly like
 // a user-pressed Stop (partial answer persisted, "done" written) so
 // http.Server.Shutdown can actually complete within the grace window.
-func (r *genRegistry) abortAll() int {
+func (r *Registry) AbortAll() int {
 	r.mu.Lock()
-	gens := make([]*generation, 0, len(r.byID))
+	gens := make([]*Generation, 0, len(r.byID))
 	for _, g := range r.byID {
 		gens = append(gens, g)
 	}
@@ -226,9 +226,9 @@ func (r *genRegistry) abortAll() int {
 	return len(gens)
 }
 
-// waitIdle blocks until no generations are running or ctx expires — used at
+// WaitIdle blocks until no generations are running or ctx expires — used at
 // shutdown so streams can persist their final state before the DB closes.
-func (r *genRegistry) waitIdle(ctx context.Context) {
+func (r *Registry) WaitIdle(ctx context.Context) {
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
 	for r.Count() > 0 {

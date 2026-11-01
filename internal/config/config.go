@@ -134,7 +134,8 @@ type Config struct {
 	// setDefaults an absent cap and a spelled-out 0 are the same int, and
 	// only the raw keys can tell them apart (cap syntax, §9.11).
 	// Unexported — invisible to yaml in both directions.
-	rawDoc map[string]any
+	prepared bool
+	rawDoc   map[string]any
 }
 
 type Server struct {
@@ -642,23 +643,33 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	c.Path = abs
-	c.setDefaults()
-	// The thinking catalogues resolve like every other relative path in
-	// the file — against the config's directory, never the process
-	// working dir — but before Validate, which pairs with the build
-	// below.
-	c.LLM.EndpointsFile = resolveAgainst(filepath.Dir(abs), c.LLM.EndpointsFile)
-	c.LLM.ProfilesFile = resolveAgainst(filepath.Dir(abs), c.LLM.ProfilesFile)
-	if err := c.Validate(); err != nil {
+	if err := c.Prepare(); err != nil {
 		return nil, err
 	}
-	c.resolvePaths()
-	// The thinking runtime reads its catalogues from the configured
-	// files, so it is built here rather than inside the pure Validate: an
-	// explicitly configured unreadable or invalid file, or a selection
-	// whose file is missing, is a startup error, and the selected
-	// endpoint/profile combination must be cross-checked before the
-	// server ever serves a choice list.
+	return &c, nil
+}
+
+// Defaults supplies the same pure defaults used by file loading. Callers
+// may override fields before Prepare validates and resolves the runtime.
+func Defaults() *Config { c := &Config{}; c.setDefaults(); return c }
+
+// Prepare is the single application construction path. Once prepared,
+// configurations are immutable; constructors do not repair them silently.
+func (c *Config) Prepare() error {
+	if c.prepared {
+		return nil
+	}
+	c.setDefaults()
+	if c.Path != "" {
+		c.LLM.EndpointsFile = resolveAgainst(filepath.Dir(c.Path), c.LLM.EndpointsFile)
+		c.LLM.ProfilesFile = resolveAgainst(filepath.Dir(c.Path), c.LLM.ProfilesFile)
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if c.Path != "" {
+		c.resolvePaths()
+	}
 	rt, err := thinking.Build(thinking.Settings{
 		EndpointURL:  c.LLM.Endpoint,
 		EndpointType: c.LLM.EndpointType,
@@ -672,10 +683,26 @@ func Load(path string) (*Config, error) {
 		ProfilesFile:  c.LLM.ProfilesFile,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	c.Thinking = rt
-	return &c, nil
+	c.prepared = true
+	return nil
+}
+
+// WithDefaults normalizes standalone runner options using the same policy
+// as the complete application configuration.
+func (ce CodeExecution) WithDefaults() CodeExecution {
+	if ce.Timeout == 0 {
+		ce.Timeout = Duration(30 * time.Second)
+	}
+	if ce.MaxOutput == 0 {
+		ce.MaxOutput = 32 << 10
+	}
+	if ce.MaxMemory == 0 {
+		ce.MaxMemory = 256 << 20
+	}
+	return ce
 }
 
 // legacyModelKeys answers the pre-picker era of model config with the
@@ -909,15 +936,7 @@ func (c *Config) setDefaults() {
 		}
 		c.Scratchpad.BlockExtensions = merged
 	}
-	if c.Scratchpad.CodeExec.Timeout == 0 {
-		c.Scratchpad.CodeExec.Timeout = Duration(30 * time.Second)
-	}
-	if c.Scratchpad.CodeExec.MaxOutput == 0 {
-		c.Scratchpad.CodeExec.MaxOutput = 32 << 10
-	}
-	if c.Scratchpad.CodeExec.MaxMemory == 0 {
-		c.Scratchpad.CodeExec.MaxMemory = 256 << 20 // matches configs/config.yaml
-	}
+	c.Scratchpad.CodeExec = c.Scratchpad.CodeExec.WithDefaults()
 	// Any entry leaving context_size unset (or spelled -1) discovers its
 	// window from the endpoint (§2.2); a positive number pins it. The
 	// internal sentinel for "auto" is -1.

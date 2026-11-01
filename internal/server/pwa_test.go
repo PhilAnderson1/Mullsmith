@@ -20,7 +20,7 @@ import (
 func TestManifestServedAsJSONWithUsableIcons(t *testing.T) {
 	cfg := chatCfg(t, "http://127.0.0.1:1/v1") // endpoint unused: nothing chats here
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := New(cfg, testStore(t), logger, "test", nil, nil)
+	s := newPreparedServer(t, cfg, testStore(t), logger, "test", nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 

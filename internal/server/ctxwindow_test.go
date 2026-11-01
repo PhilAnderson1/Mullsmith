@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"mullsmith/internal/chat"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,7 +29,7 @@ func newWindowTest(t *testing.T, probe func(context.Context) (map[string]int, bo
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
 	s.windowProbe = probe
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -80,7 +81,7 @@ func TestContextWindowUnknownIsNull(t *testing.T) {
 	if got := s.contextWindow("m1"); got != 0 {
 		t.Errorf("window = %d, want 0 while unresolved", got)
 	}
-	if adm, err := s.admitSend(context.Background(), &store.Conversation{ID: "whatever", Model: "m1"}, "", "plenty of content", nil, nil); err != nil || adm.full {
+	if adm, err := s.chat.AdmitSend(context.Background(), &store.Conversation{ID: "whatever", Model: "m1"}, "", "plenty of content", nil, nil); err != nil || adm.Full {
 		t.Error("gate must be open while the window is unknown")
 	}
 }
@@ -151,8 +152,8 @@ func TestConversationFullGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseMsgs, baseSpecs := s.buildRequest(conv, u.ID, nil)
-	empty := requestTokens(baseMsgs, baseSpecs)
+	baseMsgs, baseSpecs := s.chat.BuildRequest(conv, u.ID, nil)
+	empty := chat.RequestTokens(baseMsgs, baseSpecs)
 	if empty <= 0 {
 		t.Fatal("baseline request estimated zero tokens")
 	}
@@ -172,22 +173,22 @@ func TestConversationFullGate(t *testing.T) {
 
 	// ~100 tokens of history against 300 tokens of room: gate open.
 	seed(strings.Repeat("y", 400))
-	if adm, err := s.admitSend(context.Background(), conv, u.ID, "hi", nil, nil); err != nil || adm.full {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, u.ID, "hi", nil, nil); err != nil || adm.Full {
 		t.Errorf("gate closed with room to spare (err=%v adm=%+v)", err, adm)
-	} else if len(adm.hist) != 2 {
+	} else if len(adm.History) != 2 {
 		// The gate's history is the prompt the send WOULD build: one
 		// seeded row plus the incoming turn, decided from ONE read.
-		t.Errorf("gate history = %d rows, want 2 (seeded + incoming)", len(adm.hist))
+		t.Errorf("gate history = %d rows, want 2 (seeded + incoming)", len(adm.History))
 	}
 	// Cross the line with one big turn (~750 tokens): the gate answers
 	// before the send pays for it.
 	seed(strings.Repeat("x", 3000))
-	if adm, err := s.admitSend(context.Background(), conv, u.ID, "hi", nil, nil); err != nil || !adm.full || adm.reason != "context_full" {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, u.ID, "hi", nil, nil); err != nil || !adm.Full || adm.Reason != "context_full" {
 		t.Errorf("gate open with history past the window (adm=%+v err=%v)", adm, err)
 	}
 	// A conversation the store cannot read never reads as full.
 	ghost := &store.Conversation{ID: "00NOTAREALID00", Model: "m1"}
-	if adm, err := s.admitSend(context.Background(), ghost, u.ID, "hi", nil, nil); err != nil || adm.full {
+	if adm, err := s.chat.AdmitSend(context.Background(), ghost, u.ID, "hi", nil, nil); err != nil || adm.Full {
 		t.Error("unknown conversation must not read as full")
 	}
 }
@@ -230,23 +231,23 @@ func TestHistoryCapBindsWithoutWindow(t *testing.T) {
 	// the cap allows — refusing here would be the early-refusal bug.
 	seed("user", "one")
 	last := seed("assistant", "two")
-	if adm, err := s.admitSend(context.Background(), conv, u.ID, "third", nil, nil); err != nil || adm.full {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, u.ID, "third", nil, nil); err != nil || adm.Full {
 		t.Errorf("send landing exactly ON the cap refused (adm=%+v err=%v)", adm, err)
-	} else if len(adm.hist) != 3 {
-		t.Errorf("gate history = %d rows, want 3", len(adm.hist))
+	} else if len(adm.History) != 3 {
+		t.Errorf("gate history = %d rows, want 3", len(adm.History))
 	}
 	// A third stored row brings history TO the cap: readable, but the
 	// incoming turn would make cap+1 — the next read would fail
 	// ErrHistoryLimit, so the send is refused BEFORE anything persists.
 	seed("user", "three")
-	if adm, err := s.admitSend(context.Background(), conv, u.ID, "fourth", nil, nil); err != nil || !adm.full || adm.reason != "history_limit" {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, u.ID, "fourth", nil, nil); err != nil || !adm.Full || adm.Reason != "history_limit" {
 		t.Errorf("past-cap send accepted (adm=%+v err=%v)", adm, err)
 	}
 	// Regenerate excludes the retired reply: with the excluded row the
 	// replayable history is back at the cap, so the same conversation
 	// accepts a replacement — the cap counts what would remain, not
 	// what is stored.
-	if adm, err := s.admitSend(context.Background(), conv, u.ID, "", nil, []string{last}); err != nil || adm.full {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, u.ID, "", nil, []string{last}); err != nil || adm.Full {
 		t.Errorf("regenerate at the cap refused (adm=%+v err=%v)", adm, err)
 	}
 }
@@ -273,7 +274,7 @@ func TestReserveAgainstDiscoveredWindow(t *testing.T) {
 	if !known || line != 0 {
 		t.Fatalf("window %d < reserve %d: line = %d (known=%v), want 0/true", 100, reserve, line, known)
 	}
-	if adm, err := s.admitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || !adm.full || adm.reason != "context_full" {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || !adm.Full || adm.Reason != "context_full" {
 		t.Errorf("send against reserve-sized window = (adm=%+v err=%v), want refusal", adm, err)
 	}
 
@@ -282,7 +283,7 @@ func TestReserveAgainstDiscoveredWindow(t *testing.T) {
 	if line, _ := s.overflowLine("m1"); line != 0 {
 		t.Fatalf("window == reserve: line = %d, want 0", line)
 	}
-	if adm, err := s.admitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || !adm.full || adm.reason != "context_full" {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || !adm.Full || adm.Reason != "context_full" {
 		t.Errorf("window == reserve = (adm=%+v err=%v), want refusal", adm, err)
 	}
 
@@ -293,7 +294,7 @@ func TestReserveAgainstDiscoveredWindow(t *testing.T) {
 	if line != 50_000 {
 		t.Fatalf("window > reserve: line = %d, want 50000", line)
 	}
-	if adm, err := s.admitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || adm.full {
+	if adm, err := s.chat.AdmitSend(context.Background(), conv, "", "hi", nil, nil); err != nil || adm.Full {
 		t.Errorf("empty request against a 50k line refused (adm=%+v err=%v)", adm, err)
 	}
 }
@@ -306,7 +307,7 @@ func TestAdmitSendReadFailureIsTyped(t *testing.T) {
 		func(context.Context) (map[string]int, bool) { return nil, false },
 		config.LLMModel{ID: "m1", Default: true})
 	db.Close() // every store read fails from here
-	adm, err := s.admitSend(context.Background(),
+	adm, err := s.chat.AdmitSend(context.Background(),
 		&store.Conversation{ID: "c-absent", Model: "m1"}, "u1", "hi", nil, nil)
 	if err == nil || adm != nil {
 		t.Fatalf("admission over a failed read = (%+v, %v), want (nil, error)", adm, err)

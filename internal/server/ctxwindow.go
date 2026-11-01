@@ -17,16 +17,12 @@ package server
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"mullsmith/internal/agent"
 	"mullsmith/internal/llm"
-	"mullsmith/internal/store"
 )
 
 // windowGrace bounds how long a caller may wait for a first-ever probe of
@@ -204,131 +200,6 @@ func (s *Server) overflowLine(model string) (int64, bool) {
 		return window - reserve, true
 	}
 	return window, true
-}
-
-// requestTokens estimates the ACTUAL built request (finding 7): every
-// message's text, the tool-call arguments the protocol replays, and the
-// advertised tool schemas — the material the previous gate simply did not
-// count (system prompt and guidance ride in msgs[0]; schemas are what the
-// endpoint tokenises alongside the conversation). Data URLs are NOT
-// estimated: a picture's real cost is the endpoint's own resolution
-// formula, and runes/4 over base64 would refuse sends wildly early; the
-// manifest line a picture arrives with is counted.
-func requestTokens(msgs []llm.ChatMessage, specs []llm.ToolSpec) int64 {
-	var used int64
-	for _, m := range msgs {
-		used += int64(agent.EstimateTokens(m.Content))
-		for _, tc := range m.ToolCalls {
-			used += int64(agent.EstimateTokens(tc.Function.Name + tc.Function.Arguments))
-		}
-	}
-	if len(specs) > 0 {
-		if b, err := json.Marshal(specs); err == nil {
-			used += int64(agent.EstimateTokens(string(b)))
-		}
-	}
-	return used
-}
-
-// admission is the typed verdict of the send gate (C1). A successful
-// admission carries the exact history the accepted request is built from —
-// the rows read under the reservation plus the turn about to land — so the
-// generation never re-reads, and a nil slice can never double as an
-// error indicator: failures return (nil, err), refusals return a verdict
-// with full=true and a reason.
-type admission struct {
-	hist   []store.Message // valid only when !full
-	full   bool
-	reason string // "context_full" | "history_limit" when full
-}
-
-// admitSend answers "would the next request overflow?" — measured, not
-// approximated (finding 7): the gate builds the SAME request the send would
-// make (buildRequest: system prompt, guidance, tool schemas, manifests)
-// plus the turn about to land (extra/attPaths; empty on regenerate), and
-// compares the estimate with the window minus the output reserve.
-// excludeIDs drop the rows a regeneration retires — counting them would
-// refuse a replacement whose request excludes it.
-//
-// The read runs on the CALLER's context — for a real send that is the
-// generation's own reservation context (C1): the snapshot belongs to the
-// reserved operation, so no other generation can complete between admission
-// and acceptance, and no accepted send omits a completed predecessor.
-//
-// Still honest-by-estimate: agent.EstimateTokens is runes/4, so a send may
-// cross the real line a little early or late. The refusal reason is
-// "context_full", or "history_limit" when the conversation has outgrown
-// context replay itself (finding 2: a past-cap history is an explicit
-// refusal, never a silently-truncated success; the row cap binds even when
-// the window is unknown, and the incoming turn counts toward it — review2
-// finding 1). A failed store read is a typed error, not an open gate with a
-// nil history: the caller refuses without persisting anything.
-func (s *Server) admitSend(ctx context.Context, conv *store.Conversation,
-	userID, extra string, attPaths []string, excludeIDs []string,
-) (*admission, error) {
-	_, known := s.overflowLine(s.thinkingModel(conv.Model))
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	hist, err := s.store.ContextHistory(ctx, conv.ID, excludeIDs...)
-	if errors.Is(err, store.ErrHistoryLimit) {
-		return &admission{full: true, reason: "history_limit"}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	// The row cap binds EVEN WITHOUT a discovered window (review2
-	// finding 1): it limits context REPLAY, not token cost, so the
-	// unknown-window case cannot skip it. The refusal point is where the
-	// NEXT ContextHistory read would fail — persisted rows (hist, already
-	// excluding the regenerated reply) PLUS the turn about to land
-	// (send: one row; regenerate: none, the placeholder replaces the
-	// retired one) past the cap. len+incoming > cap, not >=: a history
-	// AT the cap is still readable, and a send that lands exactly ON it
-	// is the last one the cap allows rather than one refused early.
-	incoming := 0
-	if extra != "" || len(attPaths) > 0 {
-		incoming = 1
-	}
-	if len(hist)+incoming > store.ContextHistoryRows() {
-		return &admission{full: true, reason: "history_limit"}, nil
-	}
-	// The turn about to land rides the history the generation builds its
-	// prompt from — one read for decision AND request.
-	if incoming > 0 {
-		turn := store.Message{Role: "user", Content: extra}
-		for _, p := range attPaths {
-			turn.Attachments = append(turn.Attachments, store.Attachment{Path: p})
-		}
-		hist = append(hist, turn)
-	}
-	if !known {
-		// Open token gate (window unknown: the endpoint arbitrates),
-		// but the row-cap verdict above stands.
-		return &admission{hist: hist}, nil
-	}
-	msgs, specs := s.buildRequest(conv, userID, hist)
-	line, _ := s.overflowLine(s.thinkingModel(conv.Model))
-	if requestTokens(msgs, specs) >= line {
-		return &admission{full: true, reason: "context_full"}, nil
-	}
-	return &admission{hist: hist}, nil
-}
-
-// continuationFull re-measures a growing tool continuation against the same
-// overflow line admission applied (finding 7): by round N the transcript
-// carries every result so far, and no further check had ever run. roundTools
-// is what THIS round would advertise — nil once maxRounds forces the final
-// answer, whose schemas then leave the request.
-//
-// The line already subtracts the FULL output reserve, so a continuation
-// under it always leaves the request's max_tokens affordable — one figure,
-// gate and wire agree (review2 finding 6's consistency requirement). When
-// the reserve no longer fits the window at all, the line is at or below
-// zero and every send — first or continuation — is refused with
-// context_full instead of the reserve being silently dropped.
-func (s *Server) continuationFull(conv *store.Conversation, msgs []llm.ChatMessage, roundTools []llm.ToolSpec) bool {
-	line, known := s.overflowLine(s.thinkingModel(conv.Model))
-	return known && requestTokens(msgs, roundTools) >= line
 }
 
 // fullRefusal writes the gate's two 409s — identical wording wherever a

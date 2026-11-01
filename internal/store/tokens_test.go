@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,108 +10,57 @@ import (
 	"mullsmith/internal/auth"
 )
 
-// seedThrough0007 builds a database file exactly as it exists before this
-// feature ships: migrations 0001..0007 applied through the same DSN pragmas
-// the app uses (the FK-cascade landmine from the plan probe depends on
-// _pragma=foreign_keys(1) being live), plus seeded users and sessions.
-func seedThrough0007(t *testing.T, path string) {
-	t.Helper()
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=data_sync(NORMAL)",
-		filepath.Clean(path))
-	db, err := sql.Open("sqlite", dsn)
+// Startup must preserve existing data while the current schema retains its
+// email uniqueness, nullable pending addresses, and foreign-key constraints.
+func TestSchemaEmailConstraintsAndReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "current.db")
+	db, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
-		version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+	if _, err := db.sqlDB.Exec(`
+  INSERT INTO users(id,email,name,password_hash,status,default_system_prompt,created_at,updated_at)
+  VALUES ('u-ana','ana@example.com','Ana','h1','enabled','be brief',100,100),
+         ('u-bo','Bo@Example.com','Bo','h2','enabled','',200,200);
+  INSERT INTO sessions(id_hash,user_id,created_at,expires_at,remembered,last_seen_at)
+  VALUES (x'aa','u-ana',100,99999999999,0,100),
+         (x'bb','u-ana',100,99999999999,1,100),
+         (x'cc','u-bo',200,99999999999,0,200);`); err != nil {
+		db.Close()
 		t.Fatal(err)
 	}
-	entries, err := migrationsFS.ReadDir("migrations")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	now := time.Now().Unix()
-	for _, e := range entries {
-		var ver int
-		if _, err := fmt.Sscanf(e.Name(), "%04d_", &ver); err != nil {
-			t.Fatal(err)
-		}
-		if ver >= 8 {
-			continue // 0008 must be applied by Open/migrate, not seeded
-		}
-		body, err := migrationsFS.ReadFile("migrations/" + e.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		tx, err := db.Begin()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(string(body)); err != nil {
-			tx.Rollback()
-			t.Fatalf("seed %s: %v", e.Name(), err)
-		}
-		if _, err := tx.Exec(`INSERT INTO schema_version(version, applied_at) VALUES(?, ?)`, ver, now); err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`
-		INSERT INTO users(id, email, name, password_hash, status, default_system_prompt, created_at, updated_at)
-		VALUES ('u-ana', 'ana@example.com', 'Ana', 'h1', 'enabled', 'be brief', 100, 100),
-		       ('u-bo',  'Bo@Example.com',  'Bo',  'h2', 'enabled', '',          200, 200);
-		INSERT INTO sessions(id_hash, user_id, created_at, expires_at, remembered, last_seen_at)
-		VALUES (x'aa', 'u-ana', 100, 99999999999, 0, 100),
-		       (x'bb', 'u-ana', 100, 99999999999, 1, 100),
-		       (x'cc', 'u-bo',  200, 99999999999, 0, 200);`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestMigration0008Rebuild is the mandatory rehearsal from the plan: apply
-// 0008 through the real runner to a DB seeded through 0007 and prove the
-// users-table rebuild destroys nothing and keeps every constraint honest.
-// The naive variant (FK enforcement left on inside the tx) silently deletes
-// every session — this test is the regression gate for that landmine.
-func TestMigration0008Rebuild(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "upgraded.db")
-	seedThrough0007(t, path)
-
-	db, err := Open(path) // applies 0008 via the "+no-foreign-keys" runner path
-	if err != nil {
-		t.Fatalf("Open through 0008: %v", err)
 	}
 	defer db.Close()
 	ctx := context.Background()
 
 	var n int
 	if err := db.sqlDB.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n); err != nil || n != 3 {
-		t.Fatalf("sessions after rebuild = %d (err %v), want all 3 to survive", n, err)
+		t.Fatalf("sessions after reopen = %d (err %v), want all 3 to survive", n, err)
 	}
 
-	// Users data intact, including the 0007 column; statuses untouched
-	// (upgrade rule: enabling the feature never rewrites existing rows).
+	// Reopening preserves profile and account state.
 	ana, err := db.UserByEmail(ctx, "ana@example.com")
 	if err != nil || ana == nil {
-		t.Fatalf("ana missing after rebuild: %v", err)
+		t.Fatalf("ana missing after reopen: %v", err)
 	}
 	if ana.Name != "Ana" || ana.DefaultSystemPrompt != "be brief" || ana.Status != "enabled" {
-		t.Errorf("ana changed by rebuild: %+v", ana)
+		t.Errorf("ana changed on reopen: %+v", ana)
 	}
 	if ana.UnconfirmedEmail != "" {
 		t.Errorf("existing user must have no pending email, got %q", ana.UnconfirmedEmail)
 	}
-	// Case-insensitive lookup still works on the rebuilt table.
+	// Case-insensitive lookup still works on the current schema.
 	if bo, err := db.UserByEmail(ctx, "bo@example.com"); err != nil || bo == nil || bo.ID != "u-bo" {
-		t.Fatalf("NOCASE lookup broken after rebuild: %v %v", bo, err)
+		t.Fatalf("NOCASE lookup broken after reopen: %v %v", bo, err)
 	}
 
-	// FK enforcement still LIVE after the marker dance: ghost session rejected.
+	// Foreign-key enforcement remains enabled: a ghost session is rejected.
 	if _, err := db.sqlDB.Exec(
 		`INSERT INTO sessions(id_hash, user_id, created_at, expires_at, remembered, last_seen_at)
 		 VALUES (x'dd','ghost',1,99,0,1)`); err == nil {
@@ -132,7 +79,7 @@ func TestMigration0008Rebuild(t *testing.T) {
 	// Duplicate confirmed emails still rejected NOCASE.
 	dup := mkUser("ANA@example.com")
 	if err := db.CreateUser(ctx, dup); !errors.Is(err, ErrUserExists) {
-		t.Errorf("dup email after rebuild: got %v, want ErrUserExists", err)
+		t.Errorf("dup email after reopen: got %v, want ErrUserExists", err)
 	}
 	// Two pending (NULL email) sign-ups coexist — the reason '' could not
 	// have been used as the placeholder.

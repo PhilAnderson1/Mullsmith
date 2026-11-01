@@ -249,6 +249,27 @@ test("phantom repro: name arrives without an id, the id lands on the last fragme
   } finally { await ctx.close(); }
 });
 
+test("ID before name and two calls to the same tool retain distinct coherent cards", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession();
+  try {
+    const script=[];
+    for (const index of [0,1]) {
+      script.push({delta:{tool_calls:[{index,id:`early_${index}`,function:{arguments:'{"path":'}}]}});
+      script.push({delta:{tool_calls:[{index,function:{name:"fs_list",arguments:'"work"}'}}]}});
+    }
+    script.push({delta:{},finish:"tool_calls"});
+    llm.queueScripts(script,textScript("Both listed."));
+    await sendChat(page,"list twice with IDs before names");
+    await waitIdle(page);
+    const live=await digest(page);
+    const cards=assistants(live)[0].cards;
+    assert.equal(cards.length,2);
+    for(const card of cards) {assert.equal(card.state,"done");assert.equal(card.tool,"fs_list");}
+    await reloadAndWait(page);
+    assert.deepEqual(comparable(await digest(page)),comparable(live));
+  } finally {await ctx.close();}
+});
+
 test("abort mid-answer: the stopped note is the same string after reload", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
   try {
@@ -386,5 +407,59 @@ test("an output-limited tool proposal leaves no phantom card", { timeout: 120_00
     assert.equal(answer.bodyVisible, false);
     await reloadAndWait(page);
     assert.deepEqual(comparable(await digest(page)), comparable(live));
+  } finally { await ctx.close(); }
+});
+
+test("floating composer preserves scroll clearance as drafts and attachments grow", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession();
+  try {
+    llm.queueScripts(textScript("A readable line in a longer answer.\n\n".repeat(35)));
+    await sendChat(page, "give me a longer answer");
+    await waitIdle(page);
+    for (const width of [1280, 320]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.fill("#composer-input", "A draft line\n".repeat(14));
+      await page.locator("#attach-input").setInputFiles(
+        Array.from({ length: 4 }, (_, i) => ({
+          name: `supporting-notes-${width}-${i}.txt`, mimeType: "text/plain", buffer: Buffer.from("notes"),
+        })),
+      );
+      await page.waitForFunction(() => document.querySelectorAll(".attach-chip:not(.uploading)").length === 4);
+      await page.waitForFunction(() => {
+        const main = document.querySelector(".chat-main");
+        const stack = document.querySelector("#composer-stack");
+        return Math.abs(parseFloat(main.style.getPropertyValue("--composer-clearance")) - stack.getBoundingClientRect().height) < 1;
+      });
+      const geometry = await page.evaluate(() => {
+        const main = document.querySelector(".chat-main");
+        const thread = document.querySelector("#thread");
+        const stack = document.querySelector("#composer-stack");
+        thread.scrollTop = thread.scrollHeight;
+        return {
+          mainBottom: main.getBoundingClientRect().bottom,
+          threadBottom: thread.getBoundingClientRect().bottom,
+          stackTop: stack.getBoundingClientRect().top,
+          lastBottom: thread.lastElementChild.getBoundingClientRect().bottom,
+          overflow: document.documentElement.scrollWidth > innerWidth,
+          attachmentParent: document.querySelector("#pending-files").parentElement.id,
+        };
+      });
+      assert.ok(Math.abs(geometry.mainBottom - geometry.threadBottom) < 1, "thread must extend behind the composer");
+      assert.ok(geometry.lastBottom <= geometry.stackTop - 8, "end of answer was hidden beneath the floating controls");
+      assert.equal(geometry.overflow, false);
+      assert.equal(geometry.attachmentParent, "composer-stack");
+      // Leave the reader's scroll position alone when a draft changes.
+      await page.evaluate(() => { document.querySelector("#thread").scrollTop = 0; });
+      await page.fill("#composer-input", "short draft");
+      await page.waitForFunction(() => {
+        const main = document.querySelector(".chat-main");
+        return Math.abs(parseFloat(main.style.getPropertyValue("--composer-clearance")) - document.querySelector("#composer-stack").getBoundingClientRect().height) < 1;
+      });
+      assert.equal(await page.locator("#thread").evaluate((el) => el.scrollTop), 0);
+      while (await page.locator(".chip-remove").count()) await page.locator(".chip-remove").first().click();
+    }
+    await page.click("#btn-add");
+    await page.waitForSelector("#add-menu:visible");
+    assert.equal(await page.locator("#btn-attach").isVisible(), true);
   } finally { await ctx.close(); }
 });

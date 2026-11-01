@@ -37,7 +37,7 @@ func newBlockingChat(t *testing.T, release <-chan struct{}, arrived chan<- struc
 	cfg := chatCfg(t, fake.URL)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	a := newAuthTestOn(t, ts, db)
@@ -51,11 +51,11 @@ func newBlockingChat(t *testing.T, release <-chan struct{}, arrived chan<- struc
 func waitForNoGenerations(t *testing.T, s *Server) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for s.gens.Count() > 0 && time.Now().Before(deadline) {
+	for s.chat.Generations.Count() > 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if s.gens.Count() != 0 {
-		t.Fatalf("%d generation(s) still holding slots", s.gens.Count())
+	if s.chat.Generations.Count() != 0 {
+		t.Fatalf("%d generation(s) still holding slots", s.chat.Generations.Count())
 	}
 }
 
@@ -70,8 +70,8 @@ func TestConversationDeleteCancelsLiveGeneration(t *testing.T) {
 
 	resp := sendChat(t, a, c.ID, "hello") // returns once the SSE start is out
 	<-arrived
-	if s.gens.Count() != 1 {
-		t.Fatalf("generation never took its slot: %d", s.gens.Count())
+	if s.chat.Generations.Count() != 1 {
+		t.Fatalf("generation never took its slot: %d", s.chat.Generations.Count())
 	}
 
 	if r := a.do(http.MethodDelete, "/api/v1/conversations/"+c.ID, nil); r.StatusCode != 204 {
@@ -99,7 +99,7 @@ func TestAccountDeleteCancelsLiveGeneration(t *testing.T) {
 
 	resp := sendChat(t, a, c.ID, "hello")
 	<-arrived
-	if s.gens.Count() != 1 {
+	if s.chat.Generations.Count() != 1 {
 		t.Fatal("no live generation")
 	}
 	if r := a.do(http.MethodPost, "/api/v1/auth/me/delete", map[string]any{}); r.StatusCode != 204 {

@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"path"
 	"strings"
 	"sync"
 	"time"
 
 	"mullsmith/internal/config"
+	"mullsmith/internal/managed"
 	"mullsmith/internal/runner"
 	"mullsmith/internal/scratch"
 )
@@ -34,7 +34,7 @@ type CodeRun struct {
 	Runtimes  []config.Runtime
 	Timeout   time.Duration
 	MaxOutput int
-	UserQuota int64
+	Files     *managed.Service
 	// AllowNetwork mirrors scratchpad.code_execution.allow_network so the
 	// tool description tells the model what the jail actually enforces
 	// (§9.9): the Runner opens or closes the net namespace by this same flag.
@@ -45,10 +45,6 @@ type CodeRun struct {
 	// DiskFloor overrides the global free-space probe (test seam;
 	// nil = scratch.DiskFloorOK).
 	DiskFloor func(root string) bool
-	// QuotaMu is the quota lock shared with upload commits and fs_write
-	// (audit2 finding 3); nil leaves staging's quota decision unserialized
-	// (unit tests only).
-	QuotaMu *sync.Mutex
 }
 
 // storageWatchInterval is how often a running script's storage footprint is
@@ -116,24 +112,22 @@ func (c CodeRun) watchStorage(ctx context.Context, cancel context.CancelFunc, ro
 					}
 					return
 				}
-				if c.UserQuota > 0 {
-					over, err := scratch.DirSizeExceeds(root, userID, c.UserQuota)
-					if err != nil {
-						// An incomplete scan never reads as "within quota":
-						// the script may be hiding its output behind a
-						// chmod-000 directory (audit2 finding 3). Kill the
-						// run; partial output stays on disk as usual.
-						if w.fire("terminated: storage usage could not be verified; check scratchpad permissions") {
-							cancel()
-						}
-						return
+				over, err := c.Files.Exceeds(root, userID)
+				if err != nil {
+					// An incomplete scan never reads as "within quota":
+					// the script may be hiding its output behind a
+					// chmod-000 directory (audit2 finding 3). Kill the
+					// run; partial output stays on disk as usual.
+					if w.fire("terminated: storage usage could not be verified; check scratchpad permissions") {
+						cancel()
 					}
-					if over {
-						if w.fire("terminated: storage quota exceeded; partial output kept") {
-							cancel()
-						}
-						return
+					return
+				}
+				if over {
+					if w.fire("terminated: storage quota exceeded; partial output kept") {
+						cancel()
 					}
+					return
 				}
 			}
 		}
@@ -228,35 +222,15 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if !scratch.DiskFloorOK(root) {
 		return Result{}, errors.New("server storage is nearly full")
 	}
-	// Quota pre-flight, the staging size pre-check and the staging copies
-	// are one critical section with upload commits and fs_write: fresh
-	// usage only means something while the lock is held (audit2 finding 3).
-	unlock := lockQuota(c.QuotaMu)
-	if err := checkQuota(root, inv.UserID, c.UserQuota); err != nil {
-		unlock()
-		return Result{}, err
-	}
-
 	userRoot, err := scratch.UserRoot(root, inv.UserID)
 	if err != nil {
-		unlock()
 		return Result{}, fsErr("code_run", err)
 	}
 	workDir := path.Join(userRoot, "work")
-	if err := scratch.EnsureUserDirs(root, inv.UserID); err != nil {
-		unlock()
-		return Result{}, errors.New("code_run: could not prepare work directory")
-	}
 	if len(args.Files) > maxStagedFiles {
-		unlock()
 		return Result{}, fmt.Errorf("code_run: at most %d files may be staged", maxStagedFiles)
 	}
-	if err := precheckStagedSizes(root, inv.UserID, args.Files, c.UserQuota); err != nil {
-		unlock()
-		return Result{}, err
-	}
-	staged, err := stageFiles(root, inv.UserID, workDir, args.Files)
-	unlock()
+	staged, err := c.Files.Stage(root, inv.UserID, args.Files)
 	if err != nil {
 		return Result{}, err
 	}
@@ -291,14 +265,12 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	// until they clean up (audit2 finding 3). An unverifiable scan is an
 	// ERROR, never a silent pass: a script that chmods its output
 	// unreadable has hidden bytes from exactly this check.
-	if c.UserQuota > 0 {
-		over, derr := scratch.DirSizeExceeds(root, inv.UserID, c.UserQuota)
-		if derr != nil {
-			return Result{}, errors.New("code_run: run finished but storage usage could not be verified; check scratchpad permissions")
-		}
-		if over {
-			return Result{}, errors.New("code_run: storage quota exceeded during run; partial output kept — free space before the next run")
-		}
+	over, derr := c.Files.Exceeds(root, inv.UserID)
+	if derr != nil {
+		return Result{}, errors.New("code_run: run finished but storage usage could not be verified; check scratchpad permissions")
+	}
+	if over {
+		return Result{}, errors.New("code_run: storage quota exceeded during run; partial output kept — free space before the next run")
 	}
 
 	payload := map[string]any{
@@ -347,79 +319,4 @@ func runtimeIDs(rs []config.Runtime) []string {
 		ids = append(ids, r.ID)
 	}
 	return ids
-}
-
-// precheckStagedSizes sums staged sources BEFORE any copy: each staged file
-// doubles its bytes inside the user tree, so staging alone could overrun the
-// quota before a script ran (audit2 finding 3). Called with the quota lock
-// held, so "fresh usage" means what it says. Overwriting an existing
-// work/<name> is counted conservatively (against the safe direction).
-func precheckStagedSizes(root, userID string, rels []string, quota int64) error {
-	if quota <= 0 {
-		return nil
-	}
-	var add int64
-	for _, rel := range rels {
-		rel = strings.TrimSpace(rel)
-		if rel == "" {
-			continue
-		}
-		f, err := scratch.OpenFile(root, userID, rel) // same sandbox as the copy
-		if err != nil {
-			return fsErr("code_run stage", err)
-		}
-		fi, serr := f.Stat()
-		_ = f.Close()
-		if serr != nil {
-			return fsErr("code_run stage", serr)
-		}
-		add += fi.Size()
-	}
-	if add == 0 {
-		return nil
-	}
-	used, err := scratch.DirSize(root, userID)
-	if err != nil {
-		return errors.New("code_run: storage usage could not be verified; check scratchpad permissions")
-	}
-	if used+add > quota {
-		return fmt.Errorf("code_run: staging %s would exceed the storage quota (%s used)",
-			humanBytes(add), humanBytes(used))
-	}
-	return nil
-}
-
-// stageFiles copies scratchpad-relative source files into work/ so the
-// script also finds them as work/<base name> (they remain readable in place
-// under /scratchpad/uploads). Sources go through the sandbox (§9.7), so a
-// staged path can never escape the user's tree.
-func stageFiles(root, userID, workDir string, rels []string) ([]string, error) {
-	var done []string
-	for _, rel := range rels {
-		rel = strings.TrimSpace(rel)
-		if rel == "" {
-			continue
-		}
-		base := path.Base(path.Clean("/" + rel)) // last component only, always safe
-		if base == "." || base == "/" {
-			return done, fmt.Errorf("code_run: cannot stage %q", rel)
-		}
-		src, err := scratch.OpenFile(root, userID, rel)
-		if err != nil {
-			return done, fsErr("code_run stage", err)
-		}
-		dst, err := scratch.CreateFile(root, userID, path.Join("work", base), 0o600)
-		if err != nil {
-			_ = src.Close()
-			return done, fsErr("code_run stage", err)
-		}
-		_, cpErr := io.Copy(dst, src)
-		_ = src.Close()
-		_ = dst.Close()
-		if cpErr != nil {
-			return done, fmt.Errorf("code_run: staging %s failed", base)
-		}
-		done = append(done, base)
-	}
-	return done, nil
 }

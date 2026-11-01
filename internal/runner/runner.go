@@ -103,7 +103,7 @@ func (g *gate) acquire(ctx context.Context, userID string) (func(), error) {
 // code_run promises it cannot enforce, so a missing or non-functional
 // bwrap is a startup error, never a silent degradation.
 func NewForConfig(cfg *config.Config) (Runner, error) {
-	ce := &cfg.Scratchpad.CodeExec
+	ce := cfg.Scratchpad.CodeExec.WithDefaults()
 	if !ce.Enabled {
 		return nil, nil
 	}
@@ -111,17 +111,8 @@ func NewForConfig(cfg *config.Config) (Runner, error) {
 		return nil, err
 	}
 	timeout := ce.Timeout.D()
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	maxOut := int(ce.MaxOutput)
-	if maxOut <= 0 {
-		maxOut = 32 << 10
-	}
-	maxMem := uint64(ce.MaxMemory) // #nosec G115 -- config.Size parses only non-negative values
-	if maxMem == 0 {
-		maxMem = 512 << 20
-	}
+	maxMem := uint64(ce.MaxMemory) // #nosec G115 -- validated non-negative size
 	r, err := NewBwrap(Options{
 		Timeout:     timeout,
 		MaxOutput:   maxOut,

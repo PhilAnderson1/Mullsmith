@@ -142,6 +142,8 @@ export async function startApp(llmUrl, { repoRoot, binPath, approval } = {}) {
   const yaml = `
 server: { listen: "127.0.0.1:${port}", tls: { enabled: false }, shutdown_grace: "3s" }
 database: { dir: "${dir}/db" }
+# Rate limits are exercised separately; scenarios share one test account.
+limits: { requests_per_minute: -1, chat_messages_per_hour: -1 }
 scratchpad:
   root: "${dir}/scratch"
   code_execution: { enabled: false }

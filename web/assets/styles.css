@@ -10,12 +10,13 @@
   --fg-muted: #656d7b;
   --accent: #3b6cf5;
   --accent-press: #2f57c4;
+  --accent-ink: #ffffff;
   --danger: #c62f2f;
-  --border: #d8dce3;
-  --bubble-user: #dce7ff;
+  --border: #dfe3eb;
+  --bubble-user: #eaf0ff;
   --bubble-assistant: #ffffff;
-  --shadow: 0 1px 3px rgba(15, 20, 30, 0.12);
-  --radius: 10px;
+  --shadow: 0 2px 8px rgba(15, 20, 30, 0.05);
+  --radius: 12px;
   --thread-max: 72ch;
   --tap: 44px;
   color-scheme: light;
@@ -28,12 +29,13 @@
   --fg: #e7eaf0;
   --fg-muted: #99a1af;
   --accent: #6c8cff;
-  --accent-press: #5677e6;
+  --accent-press: #6180f0;
+  --accent-ink: #10182d;
   --danger: #e06060;
   --border: #333843;
-  --bubble-user: #2a3550;
+  --bubble-user: #26324b;
   --bubble-assistant: #1e2128;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
   color-scheme: dark;
 }
 
@@ -45,12 +47,13 @@
     --fg: #e7eaf0;
     --fg-muted: #99a1af;
     --accent: #6c8cff;
-    --accent-press: #5677e6;
+    --accent-press: #6180f0;
+    --accent-ink: #10182d;
     --danger: #e06060;
     --border: #333843;
-    --bubble-user: #2a3550;
+    --bubble-user: #26324b;
     --bubble-assistant: #1e2128;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
     color-scheme: dark;
   }
 }
@@ -86,6 +89,7 @@ body {
   background: var(--bg-raised);
   color: var(--fg);
   font: inherit;
+  font-weight: 500;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -94,10 +98,15 @@ body {
 }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.primary:active:not(:disabled) { background: var(--accent-press); }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.ghost { background: transparent; }
+@media (hover: hover) {
+  .btn:not(:disabled):hover { background: var(--bg-sunken); }
+  .btn.primary:not(:disabled):hover { background: var(--accent-press); border-color: var(--accent-press); }
+  .btn.danger:not(:disabled):hover { background: color-mix(in srgb, var(--danger) 88%, black); }
+}
 .btn.wide { width: 100%; }
 .btn svg { width: 1.1em; height: 1.1em; }
 
@@ -128,6 +137,11 @@ input, textarea, select {
   width: 100%;
 }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); outline: none; }
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+textarea::placeholder, input::placeholder { color: var(--fg-muted); opacity: 1; }
 
 label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
 
@@ -188,17 +202,18 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   grid-area: topbar;
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.35rem 0.6rem;
-  padding-top: calc(0.35rem + env(safe-area-inset-top));
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  padding-top: calc(0.5rem + env(safe-area-inset-top));
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
   min-width: 0; /* grid items default to min-width:auto: the nowrap topbar
                    children used to stretch the whole app past 320 px (§10.1) */
 }
 .topbar-title {
-  font-weight: 700;
-  flex: 0 1 auto;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -206,14 +221,15 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   /* the chat title runs up against the model picker without this */
   margin-inline-end: 14px;
 }
-.model-picker { width: auto; min-width: 0; max-width: 34vw; padding: 0.35rem 0.5rem; }
-.topbar > :nth-child(4) { margin-left: auto; }
-.user-chip {
-  color: var(--fg-muted);
-  max-width: 16ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.model-picker {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  min-height: var(--tap);
+  max-width: 34vw;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.88em;
+  background: var(--bg);
 }
 
 /* sidebar: slide-over drawer on phone/tablet (<1024) */
@@ -245,8 +261,10 @@ body.drawer-open #sidebar { transform: translateX(0); }
   z-index: 20;
 }
 
-.sidebar-head { display: flex; gap: 0.4rem; }
-.sidebar-search { margin: 0.6rem 0; }
+.sidebar-head { display: flex; gap: 0.5rem; }
+.sidebar-head .btn { padding-inline: 0.65rem; font-size: 0.88em; font-weight: 600; }
+.sidebar-search { margin: 0.85rem 0; }
+.sidebar-search input { background: var(--bg); font-size: 0.9em; }
 
 /* "Load older" pill: smaller muted text, centred, pill border — and it
    floats over the bottom of the chat list (above in .conv-window) rather
@@ -312,7 +330,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 /* Let the last row scroll clear of the floating pill. */
 .conv-window:has(.load-older:not([hidden])) .conv-list { padding-bottom: 2.1rem; }
@@ -336,7 +354,8 @@ body.drawer-open #sidebar { transform: translateX(0); }
   -webkit-touch-callout: default;
 }
 .conv-item:hover { background: var(--bg-sunken); }
-.conv-item.active { background: var(--bg-sunken); }
+.conv-item.active { background: color-mix(in srgb, var(--accent) 10%, var(--bg-raised)); }
+.conv-item.active .conv-title { font-weight: 600; }
 /* The row's actions hide behind "…": revealed on hover where hover exists;
    on touch devices the button yields to the long press entirely (below). */
 .conv-menu-btn { opacity: 0; flex: none; }
@@ -359,7 +378,8 @@ body.drawer-open #sidebar { transform: translateX(0); }
   color: inherit;
   font: inherit;
   text-align: left;
-  padding: 0.55rem 0.6rem;
+  padding: 0.65rem 0.7rem;
+  font-size: 0.92em;
   cursor: pointer;
 }
 .conv-title {
@@ -405,6 +425,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
 
 .chat-main {
   grid-area: main;
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -413,14 +434,15 @@ body.drawer-open #sidebar { transform: translateX(0); }
 
 .thread {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 1rem clamp(0.6rem, 3vw, 1.5rem);
-  /* scroll-end clearance for the floating ctx-meter chip (it hovers over
-     the stack's top edge, so the last line must not rest beneath it) */
-  padding-bottom: 2.4rem;
+  padding: 1.5rem clamp(0.75rem, 3vw, 1.75rem);
+  /* Measured from the floating stack, including attachments and the meter. */
+  padding-bottom: calc(var(--composer-clearance, 8rem) + 1rem);
+  scroll-padding-bottom: calc(var(--composer-clearance, 8rem) + 1rem);
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 1.35rem;
   scrollbar-gutter: stable;
 }
 
@@ -433,7 +455,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   background: var(--bubble-assistant);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 0.65rem 0.85rem;
+  padding: 0.85rem 1rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   box-shadow: var(--shadow);
@@ -443,11 +465,12 @@ body.drawer-open #sidebar { transform: translateX(0); }
   display: flex;
   gap: 0.6rem;
   align-items: baseline;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.4rem;
   color: var(--fg-muted);
   font-size: 0.82em;
 }
-.msg-role { font-weight: 700; }
+.msg-role { font-weight: 600; color: var(--fg); }
+.msg-meta time { font-size: 0.92em; font-variant-numeric: tabular-nums; }
 /* Footnote row under the answer, right-aligned: the round's tok/s and,
    furthest right, the regenerate button — both belong to the last
    assistant reply only, so older messages show neither. Hidden until it
@@ -475,22 +498,29 @@ body.drawer-open #sidebar { transform: translateX(0); }
   color: var(--fg-muted);
   max-width: 40ch;
 }
-.empty-state h2 { color: var(--fg); margin-bottom: 0.2rem; }
+.empty-state h2 { color: var(--fg); margin-bottom: 0.35rem; font-size: 1.65rem; font-weight: 600; letter-spacing: -0.035em; }
+.empty-state p { margin-top: 0; font-size: 0.95em; }
 
-/* Context-fullness line docked above the composer (app.js: updateCtxMeter). */
-/* The context meter owns no row of its own: it floats just above the
-   composer stack (which reserves the containing block) and the thread's
-   messages scroll underneath it. The old full-width bar shared the
-   composer's raised background and stood mostly empty — dead space. A
-   compact chip the width of its text keeps it legible over passing
-   content without drawing a band across the page. */
+/* The transparent stack overlays the thread; gaps still pass pointer
+   gestures through to the conversation underneath. */
 .composer-stack {
-  position: relative;
-}
-.ctx-meter {
   position: absolute;
-  bottom: calc(100% + 0.2rem);
-  right: clamp(0.6rem, 3vw, 1.5rem);
+  inset: auto 0 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+  max-width: calc(var(--thread-max) + 9.5rem);
+  margin-inline: auto;
+  padding: 0.3rem clamp(0.75rem, 3vw, 1.75rem);
+  padding-bottom: calc(0.85rem + env(safe-area-inset-bottom));
+  pointer-events: none;
+}
+.composer-stack > * { pointer-events: auto; }
+.ctx-meter {
+  align-self: flex-end;
+  max-width: 100%;
   margin: 0;
   padding: 0.1rem 0.55rem;
   background: var(--bg);
@@ -507,10 +537,18 @@ body.drawer-open #sidebar { transform: translateX(0); }
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
-  padding: 0.6rem clamp(0.6rem, 3vw, 1.5rem);
-  padding-bottom: calc(0.6rem + env(safe-area-inset-bottom));
+  width: 100%;
+  max-width: calc(var(--thread-max) + 6rem);
+  margin-inline: auto;
+  padding: 0.45rem;
   background: var(--bg-raised);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .composer textarea {
   flex: 1;
@@ -518,7 +556,11 @@ body.drawer-open #sidebar { transform: translateX(0); }
   resize: none;
   max-height: 30vh;
   min-height: var(--tap);
+  padding: 0.6rem 0.35rem;
+  border: none;
+  background: transparent;
 }
+.composer textarea:focus-visible { outline: none; } /* the composer provides the focus ring */
 .composer .btn { flex: none; }
 
 /* Composer "+" add-menu: a short vertical list (thinking level, attach
@@ -628,10 +670,7 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   .model-picker { max-width: 24vw; }
 }
 
-/* Phone: the identity chip and title compete for the same 320 px; the
-   sidebar (drawer) shows the user, so the chip yields. */
 @media (max-width: 639px) {
-  .user-chip { display: none; }
   .model-picker { max-width: 30vw; }
 }
 
@@ -911,9 +950,9 @@ details.tool-card summary::-webkit-details-marker { display: none; }
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
-  padding: 0.55rem clamp(0.6rem, 3vw, 1.5rem) 0;
-  background: var(--bg-raised);
-  border-top: 1px solid var(--border);
+  padding: 0 0.35rem;
+  max-height: min(20dvh, 10rem);
+  overflow-y: auto;
 }
 .attach-chip {
   display: inline-flex;

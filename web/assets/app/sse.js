@@ -8,7 +8,7 @@
 // used instead of EventSource because the requests are POSTs with a CSRF
 // header.
 
-import { ApiError, cookieValue } from "/assets/app/api.js";
+import { apiError, fetchAPI } from "/assets/app/api.js";
 import { handleFrame, splitFrames } from "/assets/app/sseparse.js";
 
 /**
@@ -17,29 +17,8 @@ import { handleFrame, splitFrames } from "/assets/app/sseparse.js";
  * or the abort/fetch failure.
  */
 export async function streamChat(path, body, handlers, signal) {
-  const headers = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  const csrf = cookieValue("mullsmith_csrf");
-  if (csrf) headers["X-Mullsmith-CSRF"] = csrf;
-
-  const resp = await fetch(path, {
-    method: "POST",
-    headers,
-    credentials: "same-origin",
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
-  });
-
-  if (!resp.ok) {
-    let data = null;
-    try {
-      data = await resp.json();
-    } catch {
-      /* non-JSON error body */
-    }
-    const err = (data && data.error) || {};
-    throw new ApiError(resp.status, err.code, err.message);
-  }
+  const resp = await fetchAPI(path, { method: "POST", json: body, signal });
+  if (!resp.ok) throw await apiError(resp);
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();

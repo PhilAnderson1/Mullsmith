@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"mullsmith/internal/config"
+	"mullsmith/internal/managed"
 	"mullsmith/internal/runner"
 	"mullsmith/internal/scratch"
 )
@@ -51,7 +52,7 @@ func codeTool(r runner.Runner, quota int64) CodeRun {
 		},
 		Timeout:   30 * time.Second,
 		MaxOutput: 32 << 10,
-		UserQuota: quota,
+		Files:     managed.New(quota),
 	}
 }
 
@@ -312,15 +313,15 @@ func TestCodeRunStagingRefusedBeforeCopy(t *testing.T) {
 // cheap stand-in for the three-way mix: final usage must never exceed quota.
 func TestSharedQuotaLockHoldsUnderConcurrentWrites(t *testing.T) {
 	root := toolRoot(t)
-	var mu sync.Mutex
 	const quota = 1000
+	files := managed.New(quota)
 	content := strings.Repeat("z", 100)
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			w := FsWrite{UserQuota: quota, QuotaMu: &mu}
+			w := FsWrite{Files: files}
 			args := argsJSON(t, map[string]string{
 				"path": fmt.Sprintf("work/f%02d.txt", i), "content": content,
 			})
@@ -541,7 +542,7 @@ func TestUnreadableTreeRefusesWritesUntilRestored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := run(t, FsWrite{UserQuota: 1 << 20}, root,
+	if _, err := run(t, FsWrite{Files: managed.New(1 << 20)}, root,
 		argsJSON(t, map[string]string{"path": "work/note.txt", "content": "hi"})); err == nil ||
 		!strings.Contains(err.Error(), "could not be verified") {
 		t.Errorf("fs_write over unreadable tree: %v, want refusal", err)
@@ -557,8 +558,24 @@ func TestUnreadableTreeRefusesWritesUntilRestored(t *testing.T) {
 	}
 
 	os.Chmod(work, 0o700)
-	if _, err := run(t, FsWrite{UserQuota: 1 << 20}, root,
+	if _, err := run(t, FsWrite{Files: managed.New(1 << 20)}, root,
 		argsJSON(t, map[string]string{"path": "work/note.txt", "content": "hi"})); err != nil {
 		t.Errorf("fs_write after restore: %v, want success", err)
+	}
+}
+
+func TestCodeRunStagingPreservesExistingSource(t *testing.T) {
+	root := toolRoot(t)
+	writeDirect(t, root, "work/input.csv", "valuable,data\n")
+	fr := &fakeRunner{}
+	if _, err := run(t, codeTool(fr, 100), root, `{"runtime":"sh","script":"true","files":["work/input.csv"]}`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, toolUser, "work/input.csv"))
+	if err != nil || string(got) != "valuable,data\n" {
+		t.Fatalf("source changed: %q (%v)", got, err)
+	}
+	if fr.calls != 1 {
+		t.Fatal("runner did not execute")
 	}
 }

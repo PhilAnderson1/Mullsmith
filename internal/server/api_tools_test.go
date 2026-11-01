@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mullsmith/internal/chat"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,8 +151,8 @@ func newToolServer(t *testing.T, cfg *config.Config, reg *tools.Registry,
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
-	s.tools = reg
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
+	s.chat.Tools = reg
 	ts := httptest.NewServer(s.Handler())
 
 	a := newAuthTestOn(t, ts, db)
@@ -423,9 +424,9 @@ func TestApprovalDenySkipsTool(t *testing.T) {
 }
 
 func TestApprovalTimeoutDenies(t *testing.T) {
-	old := approvalTimeout
-	approvalTimeout = 150 * time.Millisecond
-	defer func() { approvalTimeout = old }()
+	old := chat.ApprovalTimeout
+	chat.ApprovalTimeout = 150 * time.Millisecond
+	defer func() { chat.ApprovalTimeout = old }()
 
 	risky := &fakeTool{name: "code_run", content: "never"}
 	ac := startApprovalFlow(t, risky)
@@ -561,8 +562,8 @@ func TestToolResultTruncatedForModelAndStore(t *testing.T) {
 	if toolRow == nil {
 		t.Fatal("no tool row persisted")
 	}
-	if n := len([]rune(toolRow.Content)); n > toolResultBudgetRunes+100 {
-		t.Errorf("tool row %d runes, budget %d", n, toolResultBudgetRunes)
+	if n := len([]rune(toolRow.Content)); n > chat.ToolResultBudgetRunes+100 {
+		t.Errorf("tool row %d runes, budget %d", n, chat.ToolResultBudgetRunes)
 	}
 	if !strings.Contains(toolRow.Content, "elided") {
 		t.Error("tool row lacks elision marker")
@@ -607,7 +608,7 @@ func TestHistoryToLLMPairing(t *testing.T) {
 	}
 	s := &Server{cfg: testCfg()} // history here carries no attachments; the
 	// userID only roots their manifests
-	out := s.historyToLLM(hist, true, false, "")
+	out := s.chat.HistoryToLLM(hist, true, false, "")
 	// a1 survives; the unanswered a2 and the orphan tool row are dropped.
 	if len(out) != 4 {
 		t.Fatalf("out = %+v", out)
@@ -620,7 +621,7 @@ func TestHistoryToLLMPairing(t *testing.T) {
 	}
 	// Tools off: everything protocol-shaped disappears, but real assistant
 	// text survives; the empty call-only row drops out entirely.
-	plain := s.historyToLLM(hist, false, false, "")
+	plain := s.chat.HistoryToLLM(hist, false, false, "")
 	for _, m := range plain {
 		if m.Role == "tool" || len(m.ToolCalls) > 0 {
 			t.Errorf("tools-off replay leaked protocol row: %+v", m)

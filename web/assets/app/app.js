@@ -1,17 +1,12 @@
-// Mullsmith SPA — M3: auth, conversations and live streamed chat.
-// Tools and files arrive in M4/M5. No framework, no build step (spec §10).
-// DOM helpers are local; views are plain functions over a single state object.
+// Application shell: authentication, sidebar, composer, files and settings.
+// Navigation, generation and thread rendering have separate owners below.
 
 import { api, ApiError } from "/assets/app/api.js";
-import { streamChat } from "/assets/app/sse.js";
-import { renderMarkdown } from "/assets/app/markdown.js";
 import { LatestWins } from "/assets/app/ownership.js";
-// C7: the live view and the reloaded history render cards, statuses and
-// rounds through the SAME projection functions.
-import {
-  callFromEvent, callFromStored, buildCallCard, paintCallOutcome, toolCardNode,
-  toolCardsHost, formatToolArgs, sharedFileFor, roundStatusNote,
-} from "/assets/app/thread.js";
+import {createNavigationController} from "/assets/app/navigation.js";
+import {createGenerationController} from "/assets/app/generation.js";
+import {createThreadRenderer} from "/assets/app/thread-renderer.js";
+import {humanSize,fileApiUrl} from "/assets/app/file-presenter.js";
 
 const state = {
   meta: null,
@@ -19,28 +14,7 @@ const state = {
   convs: [],
   convCursor: "",
   query: "",
-  currentId: "",
-  // Navigation target with a loader still in flight (C5): the destination
-  // of a selectConversation whose metadata or first page has not landed.
-  // currentId stays on the fully rendered thread until both arrive, so a
-  // repeated intent can be recognised by this marker alone.
-  navPendingId: "",
-  // Conversation whose history is being RECONCILED after an uncertain loss
-  // (review3 finding 4): Send stays disabled and the send/regenerate paths
-  // stay shut until that reload settles, so a second send cannot complete
-  // underneath an older snapshot that is still on the wire.
-  reconcileId: "",
-  // Thread-activity counter (review3 finding 4): bumped whenever the client
-  // adds content the server snapshot may not contain (optimistic bubble,
-  // stream start, finished answer). A history page fetched before a bump
-  // must not replace what that bump made.
-  threadRev: 0,
-  // one-shot: set when entering chat / new chat so selectConversation focuses
-  // the composer once the conversation is actually open (spec §10 UX).
-  focusOnOpen: false,
-  currentConv: null,
-  inflight: null, // live generation: { controller, genId, msgId, raw, ... }
-  // uploads staged in the composer, sent as attachment_paths with the message
+  // uploads staged in the composer
   pending: [], // { path, download_url, name, size, uploading }
   filesOpen: false,
   filesKind: "",
@@ -141,19 +115,37 @@ function cycleTheme() {
 // and only the youngest token's work may commit shared state or paint.
 // Sign-out bumps both — a response that lands after logout must not paint
 // the auth screen with the previous identity's data, nor race the next one.
-const navOwner = new LatestWins();
+
 const listOwner = new LatestWins();
+
+let generation;
+const renderer = createThreadRenderer({
+  onRegenerate: (...args) => generation.regenerateFrom(...args),
+  onEarlier: (cursor) => navigation.earlierButton(cursor),
+  onApproval: (...args) => generation.resolveApproval(...args),
+  updateCtxMeter, recordActivity: () => navigation.recordActivity(), toast,
+});
+const navigation = createNavigationController({
+  view: renderer, getGeneration: () => generation.current,
+  abandon: () => generation.abandonInflight(), renderConversation,
+  syncComposerButtons, markActive, focusComposer, showAuth, toast, handleErr,
+});
+generation = createGenerationController({
+  navigation, view: renderer, getMeta: () => state.meta, syncComposerButtons,
+  toast, handleErr, applyTitle, showCtxFull, updateCtxMeter, promoteConversation,
+});
+const navOwner = navigation.owner;
+const { selectConversation, beginReconcile, earlierButton } = navigation;
+const { startGeneration, stopStream, regenerateFrom, abandonInflight } = generation;
+const { appendUserBubble, initialEmptyState } = renderer;
 
 // --- view switching ------------------------------------------------------------
 
 function showAuth() {
   abandonInflight();
-  navOwner.bump(); // nothing outstanding belongs to whoever signs in next
   listOwner.bump();
-  state.navPendingId = ""; // the pending navigation dies with this identity (C5)
-  state.reconcileId = ""; // and so does an in-flight recovery (finding 4)
   state.me = null;
-  state.currentId = "";
+  navigation.reset();
   state.pending = [];
   renderPending();
   closeFilesView();
@@ -168,17 +160,16 @@ async function enterChat(user) {
   state.me = user;
   show($("#view-auth"), false);
   show($("#view-chat"), true);
-  $("#user-chip").textContent = user.name || user.email;
   if (location.hash && !location.hash.startsWith("#/c/") && location.hash !== "#/files") {
     location.hash = ""; // drop #login/#register leftovers
   }
   if (location.hash.startsWith("#/c/")) {
     // Let the hash drive the initial selection (awaited: the auto-select
     // below must not race an in-flight deep-link open).
-    state.focusOnOpen = true;
+    navigation.requestFocus();
     await onHashChange();
   }
-  if (!state.currentId) {
+  if (!navigation.currentId) {
     location.hash = "";
     renderConversation();
   }
@@ -190,8 +181,8 @@ async function enterChat(user) {
   }
   // Fresh entry without a deep link: land in the most recent conversation
   // (the list is ordered by updated_at DESC) ready for typing.
-  if (!state.currentId && state.convs.length) {
-    state.focusOnOpen = true;
+  if (!navigation.currentId && state.convs.length) {
+    navigation.requestFocus();
     await selectConversation(state.convs[0].id);
     location.hash = `#/c/${state.convs[0].id}`;
   }
@@ -440,7 +431,9 @@ function applyMetaFlags() {
   for (const value of new Set([m.default_model, ...m.models].filter(Boolean))) {
     const opt = document.createElement("option");
     opt.value = value;
-    opt.textContent = value;
+    // Shorten the label only; selection and requests retain the full ID.
+    opt.textContent = value.slice(value.indexOf("/") + 1);
+    opt.title = value;
     sel.appendChild(opt);
   }
   populateThinkingChoices();
@@ -507,7 +500,7 @@ function convRow(c) {
   const li = clone("tpl-conv-item");
   li.dataset.id = c.id;
   li.querySelector(".conv-title").textContent = c.title;
-  if (c.id === state.currentId) li.classList.add("active");
+  if (c.id === navigation.currentId) li.classList.add("active");
 
   li.querySelector(".conv-open").addEventListener("click", () => {
     // The long-press echo (see strayClickGuardUntil) must not open the chat.
@@ -516,7 +509,7 @@ function convRow(c) {
     // selectConversation focus the composer once it has loaded (skipped on
     // phones, and on re-clicks of the open chat, which fire no hashchange —
     // an unconsumed flag would focus unexpectedly on the next navigation).
-    if (c.id !== state.currentId) state.focusOnOpen = true;
+    if (c.id !== navigation.currentId) navigation.requestFocus();
     location.hash = `#/c/${c.id}`;
     if (isPhone()) closeDrawer();
   });
@@ -549,7 +542,7 @@ function convRow(c) {
       const updated = await api.patchConversation(c.id, { title });
       c.title = updated.title;
       li.querySelector(".conv-title").textContent = updated.title;
-      if (c.id === state.currentId) renderConversation();
+      if (c.id === navigation.currentId) renderConversation();
     } catch (err) {
       handleErr(err, "rename");
     }
@@ -561,12 +554,12 @@ function convRow(c) {
   const confirmDelete = async () => {
     const ok = await confirmDialog(`Delete "${c.title}"?`);
     if (!ok) return;
-    if (c.id === state.currentId) await abandonInflight();
+    if (c.id === navigation.currentId) await abandonInflight();
     try {
       await api.deleteConversation(c.id);
       li.remove();
-      if (c.id === state.currentId) {
-        state.currentId = "";
+      if (c.id === navigation.currentId) {
+        navigation.reset();
         location.hash = "";
         renderConversation();
       }
@@ -667,7 +660,7 @@ function applyTitle(id, title) {
   if (c) c.title = title;
   const row = document.querySelector(`#conv-list .conv-item[data-id="${CSS.escape(id)}"]`);
   if (row) row.querySelector(".conv-title").textContent = title;
-  if (id === state.currentId) $("#topbar-title").textContent = title;
+  if (id === navigation.currentId) $("#topbar-title").textContent = title;
 }
 
 // promoteConversation is a LOCAL mirror of server-side ordering: posting a
@@ -724,69 +717,8 @@ async function loadMoreConversations() {
 
 function markActive() {
   for (const li of $("#conv-list").children) {
-    li.classList.toggle("active", li.dataset.id === state.currentId);
+    li.classList.toggle("active", li.dataset.id === navigation.currentId);
   }
-}
-
-// --- messages ---------------------------------------------------------------------------
-
-function msgNode(m) {
-  const el = clone("tpl-message");
-  el.classList.add(m.role === "user" ? "from-user" : "from-assistant");
-  el.dataset.id = m.id || "";
-  el.dataset.gen = m.generation_id || ""; // the turn this bubble belongs to (C7)
-  el.querySelector(".msg-role").textContent = m.role === "user" ? "You" : "Mullsmith";
-  const time = el.querySelector("time");
-  time.dateTime = m.created_at;
-  time.textContent = new Date(m.created_at).toLocaleString();
-  // tok/s only rates text the user can read — tool-only turns stay silent.
-  if (m.role === "assistant" && m.content && m.content.trim()) {
-    tpsNote(el, m.completion_tokens, m.duration_ms);
-  }
-
-  const body = el.querySelector(".msg-body");
-  // Tool/status UI lives outside this prose bubble. Empty or whitespace-only
-  // assistant content must not leave a padded, bordered rectangle behind it.
-  if (m.role === "assistant") body.hidden = !(m.content || "").trim();
-  if (m.role === "assistant" && m.content) {
-    // Same prose wrapper the live view streams into (.stream-text): the
-    // views must be indistinguishable, cards and notes excluded.
-    const prose = document.createElement("div");
-    prose.className = "stream-text";
-    prose.classList.add("md");
-    prose.append(renderMarkdown(m.content)); // XSS-safe: DOM-only builder
-    body.append(prose);
-  } else {
-    body.textContent = m.content;
-  }
-
-  // Tool cards from the audit projection (§10.2): collapsed by default,
-  // placed above the answer like their live counterparts. A calls-only
-  // assistant row has no prose: the empty body folds away.
-  if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-    const host = toolCardsHost(el);
-    for (const c of m.tool_calls) {
-      const view = callFromStored(c);
-      host.append(buildCallCard(view, c.arguments));
-      const file = sharedFileFor(view); // files_share ⇒ visible download card
-      if (file) host.append(artifactCard(file));
-    }
-  }
-  if (m.role === "user" && Array.isArray(m.files) && m.files.length) {
-    appendFileChips(el, m.files);
-  }
-
-  const note = roundStatusNote(m.status, m.status_note);
-  if (note) showStatusNote(el, note);
-
-  if (m.role === "assistant") attachRegen(el);
-  return el;
-}
-
-function showStatusNote(el, text) {
-  const st = el.querySelector(".msg-status");
-  st.textContent = text;
-  show(st, true);
 }
 
 // --- context meter + per-message speed ---------------------------------------
@@ -817,9 +749,9 @@ function fmtTokens(n) {
 function updateCtxMeter(used) {
   const el = $("#ctx-meter");
   if (!el) return;
-  if (used > 0) state.lastCtxUsed = used; // remembered for a model switch
+  if (used > 0) navigation.rememberUsage(used); // remembered for a model switch
   el.classList.remove("ctx-meter-full"); // a live figure replaces any refusal
-  const max = (state.currentConv && state.currentConv.max_context_tokens) || 0;
+  const max = (navigation.currentConv && navigation.currentConv.max_context_tokens) || 0;
   if (!(used > 0)) {
     el.hidden = true;
     return;
@@ -850,250 +782,12 @@ function showCtxFull(message) {
   el.hidden = false;
 }
 
-// lastContextUsed scans a page of messages (chronological) from the end for
-// the assistant total that best represents how full the context is now.
-function lastContextUsed(items) {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const m = items[i];
-    if (m.role === "assistant" && m.token_count > 0) return m.token_count;
-  }
-  return 0;
-}
-
-// msgTps is the reply's output tokens per second (completion ÷ model-round
-// time, tool runs excluded), or null when either figure is missing — rows
-// predating per-message timing stay silent rather than show a lie.
-function msgTps(completion, durationMS) {
-  if (!(completion > 0) || !(durationMS > 0)) return null;
-  const tps = (completion / durationMS) * 1000;
-  return tps >= 100 ? String(Math.round(tps)) : tps.toFixed(1);
-}
-
-// tpsNote prints the reply's generation rate in the message footer — the
-// bottom-right corner under the answer, where a report on the round reads
-// better than in the who/when header. Callers pass only text-bearing turns
-// (a tool card alone has nothing to rate). Missing figures (rows from before
-// the feature, or an endpoint that reported nothing) print nothing.
-function tpsNote(el, completion, durationMS) {
-  const tps = msgTps(completion, durationMS);
-  if (!tps) return;
-  const foot = el.querySelector(".msg-foot");
-  const span = el.querySelector(".msg-tps");
-  if (!foot || !span || span.textContent) return;
-  span.textContent = `${tps} tok/s`;
-  foot.classList.add("on"); // the row shows when it has a figure or a button
-}
-
-async function selectConversation(id) {
-  // A repeated intent for the conversation a navigation is ALREADY loading
-  // (C5): while its metadata or first page is in flight, currentId is not
-  // yet id, so the committed check below cannot recognise the target — and
-  // calling begin() here would orphan the one loader in flight (it loses
-  // ownership, the early return starts no replacement, and the chosen
-  // thread never renders). The pending navigation goes to this same place;
-  // make sure the address names it and let that loader finish.
-  if (id === state.navPendingId) {
-    if (location.hash !== `#/c/${id}`) location.hash = `#/c/${id}`;
-    return;
-  }
-  // Every other click is a navigation intent, including a repeat click on
-  // the conversation already on screen (review2 finding 3): begin() runs
-  // FIRST, so a still-pending request from an older click loses its
-  // ownership. Returning before it let "select B, then click A again"
-  // end with B's late response taking over the screen.
-  const tok = navOwner.begin();
-  // Any intent replaces or clears the pending marker (C5): it must never
-  // outlive its loader, because ownership just moved and that loader will
-  // not commit. The marker also drives Send's enablement (review3 issue
-  // 2), so the buttons follow it in BOTH directions — set (a new
-  // destination) and cleared (a repeat click on the visible thread).
-  state.navPendingId = id === state.currentId ? "" : id;
-  syncComposerButtons();
-  if (id === state.currentId) return;
-  // Ownership is captured BEFORE the first await (finding 1): with two
-  // chats clicked in quick succession, only the youngest may commit. The
-  // confirmed bug wrote currentConv/currentId from whichever response
-  // landed LAST — the visible destination could differ from the user's
-  // choice, and sends follow state.currentId, so this was more than a
-  // flicker.
-  await abandonInflight(); // a live stream belongs to the old thread
-  try {
-    const conv = await api.getConversation(id);
-    if (!navOwner.isCurrent(tok)) return; // superseded by a newer navigation
-    // Metadata alone must not commit identity (C5): the FIRST PAGE rides
-    // with it so conversation row, identity and rendered thread land
-    // together. Committing on the metadata opened an interval where the
-    // old thread stayed on screen while sends were already addressed to
-    // id and the pickers pointed at its model.
-    const page = await api.listMessages(id, "");
-    if (!navOwner.isCurrent(tok)) return;
-    // A generation this commit REPLACES must die with the old view
-    // (review3 issue 2) — including work started after navigation began,
-    // whose late `start`/token events would otherwise append into the
-    // thread painted just now. Ownership is the pair (conversation, view
-    // epoch): a generation belongs here only if both still match the
-    // destination being committed.
-    const gen = state.inflight;
-    if (gen && (gen.convId !== id || gen.epoch !== tok)) abandonInflight();
-    state.currentConv = conv;
-    state.currentId = id;
-    state.navPendingId = "";
-    if (state.reconcileId === id) state.reconcileId = ""; // this page IS the reconcile
-    markActive();
-    renderConversation();
-    renderThread(page);
-    if (state.focusOnOpen) {
-      state.focusOnOpen = false;
-      focusComposer();
-    }
-  } catch (err) {
-    if (navOwner.isCurrent(tok)) state.navPendingId = ""; // ours to clear
-    if (!navOwner.isCurrent(tok)) return; // a superseded request's failure is not this screen's
-    // Failed navigation: the OLD thread is still the whole truth, so
-    // enablement follows it back (review3 issue 2 — composer and committed
-    // thread must never disagree).
-    syncComposerButtons();
-    if (err instanceof ApiError && err.status === 404) {
-      toast("That conversation no longer exists.");
-      state.currentId = "";
-      location.hash = "";
-      renderConversation();
-      return;
-    }
-    // Nothing committed — the previous thread is still the whole truth,
-    // so the address returns to what is on screen rather than stranding
-    // a hash for a conversation that never rendered (C5).
-    location.hash = state.currentId ? `#/c/${state.currentId}` : "";
-    handleErr(err, "open conversation");
-  }
-}
-
-// loadFirstMessages fetches the newest page for convId — captured BEFORE
-// the await, never re-read after it (finding 1: the global current ID can
-// change mid-flight) — and only the youngest owner paints. A caller inside
-// a navigation passes its token; a standalone reload (regenerate's
-// rollback) joins the current sequence.
-async function loadFirstMessages(tok = navOwner.current(), convId = state.currentId) {
-  // "Newer thread activity" is the activity counter, not only the epoch
-  // (review3 finding 4): a second send does not bump the navigation owner,
-  // yet the answer it produces must never be replaced by this snapshot.
-  const rev = state.threadRev;
-  const data = await api.listMessages(convId, "");
-  if (!navOwner.isCurrent(tok) || state.currentId !== convId) return;
-  if (state.threadRev !== rev) return;
-  renderThread(data);
-}
-
-// beginReconcile reloads the thread after an uncertain loss and OWNS the
-// composer until the answer arrives (review3 finding 4): without the
-// recovery marker Send reopens while the snapshot is still on the wire,
-// and a second send completing before it lands gets painted away by the
-// older history. A failed reconcile is ANNOUNCED — the user must not be
-// left believing the thread on screen is the whole truth.
-function beginReconcile(convId, view) {
-  state.reconcileId = convId;
-  syncComposerButtons();
-  loadFirstMessages(view, convId).then(
-    () => endReconcile(convId),
-    (err) => {
-      if (err instanceof ApiError && err.status === 401) showAuth();
-      else if (state.reconcileId === convId) {
-        toast("Could not reload the thread — refresh the page to check what was saved.", false);
-      }
-      endReconcile(convId);
-    },
-  );
-}
-
-function endReconcile(convId) {
-  if (state.reconcileId !== convId) return; // a newer marker or commit owns this now
-  state.reconcileId = "";
-  syncComposerButtons();
-}
-
-function renderThread(data) {
-  const thread = $("#thread");
-  thread.replaceChildren();
-  if (data.items.length === 0) {
-    thread.appendChild(initialEmptyState());
-  } else {
-    if (data.next_cursor) thread.appendChild(earlierButton(data.next_cursor));
-    // role='tool' rows carry model-facing payloads; the UI shows them as
-    // tool cards attached to the assistant message that proposed the call.
-    for (const m of data.items) thread.appendChild(msgNode(m));
-  }
-  refreshLastAssistant();
-  updateCtxMeter(lastContextUsed(data.items));
-  scrollThreadToBottom();
-}
-
-function earlierButton(cursor) {
-  const btn = document.createElement("button");
-  btn.className = "btn ghost wide load-earlier";
-  btn.textContent = "Load earlier messages";
-  btn.addEventListener("click", async () => {
-    const convId = state.currentId; // the page belongs to THIS thread
-    // The view EPOCH, not just the ID (C5): leaving for B and returning to
-    // A restores ID equality, but this page was requested against the
-    // earlier visit — its rows may already be stale. Any navigation since
-    // the click advances the token, and the page is dropped.
-    const epoch = navOwner.current();
-    try {
-      const data = await api.listMessages(convId, cursor);
-      if (state.currentId !== convId || !navOwner.isCurrent(epoch)) return; // navigated away mid-page
-      const host = $("#thread");
-      const nextBtn = data.next_cursor ? earlierButton(data.next_cursor) : null;
-      if (nextBtn) btn.replaceWith(nextBtn);
-      else btn.remove();
-      // The page is chronological (oldest first); insert each item before the
-      // same ref so the whole page lands between the button and what was there.
-      const ref = nextBtn ? nextBtn.nextSibling : host.firstChild;
-      for (const m of data.items) host.insertBefore(msgNode(m), ref);
-      refreshLastAssistant();
-    } catch (err) {
-      handleErr(err, "load earlier messages");
-    }
-  }, { once: true });
-  return btn;
-}
-
-function scrollThreadToBottom() {
-  const t = $("#thread");
-  t.scrollTop = t.scrollHeight;
-}
-
-// --- live generation (spec §6.1 streaming, §6.2 abort) ------------------------
-
-function isNearBottom() {
-  const t = $("#thread");
-  return t.scrollHeight - t.scrollTop - t.clientHeight < 90;
-}
-
-function maybeScroll(force = false) {
-  if (force || isNearBottom()) scrollThreadToBottom();
-}
-
-// Only the newest finished assistant bubble offers regenerate.
-function refreshLastAssistant() {
-  const thread = $("#thread");
-  for (const el of thread.querySelectorAll(".msg")) el.classList.remove("last-assistant");
-  const msgs = thread.querySelectorAll(".msg");
-  const last = msgs[msgs.length - 1];
-  if (
-    last &&
-    last.classList.contains("from-assistant") &&
-    !last.querySelector(".msg-body.streaming")
-  ) {
-    last.classList.add("last-assistant");
-  }
-}
-
 // The Enter/Shift+Enter hint is desktop-only furniture: phones have no
 // Shift key to spare, and the long string wraps the composer to two
 // lines on narrow screens. Width is re-checked whenever mqPhone flips,
 // not just at render — a resized window should behave like CSS does.
 function syncPlaceholder() {
-  $("#composer-input").placeholder = state.currentId
+  $("#composer-input").placeholder = navigation.currentId
     ? (isPhone()
         ? "Message Mullsmith…"
         : "Message Mullsmith… (Enter sends, Shift+Enter newline)")
@@ -1101,15 +795,15 @@ function syncPlaceholder() {
 }
 
 function syncComposerButtons() {
-  const busy = Boolean(state.inflight);
+  const busy = Boolean(generation.current);
   // A pending navigation owns the screen (review3 issue 2): the thread on
   // display is about to be replaced, so neither Send may address it. The
   // draft stays untouched while the destination loads or fails.
-  const nav = Boolean(state.navPendingId);
+  const nav = Boolean(navigation.navPendingId);
   // Recovery from an uncertain send (review3 finding 4): until the reconcile
   // lands, this thread's true contents are unknown — nothing new may be
   // addressed to it.
-  const rec = state.reconcileId !== "" && state.reconcileId === state.currentId;
+  const rec = navigation.reconcileId !== "" && navigation.reconcileId === navigation.currentId;
   const send = $("#btn-send");
   const stop = $("#btn-stop");
   // Stop swaps into Send's slot while generating: a disabled-but-present
@@ -1119,7 +813,7 @@ function syncComposerButtons() {
   // width (measured live, because "Send" is font- and locale-dependent).
   if (busy && !send.hidden) stop.style.minWidth = send.offsetWidth + "px";
   send.hidden = busy;
-  send.disabled = busy || nav || rec || !state.currentId;
+  send.disabled = busy || nav || rec || !navigation.currentId;
   stop.hidden = !busy;
 }
 
@@ -1137,6 +831,21 @@ function autosizeComposer() {
   el.style.height = Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.3)) + "px";
 }
 
+// Reserve only scroll-end space: the thread itself fills the whole chat
+// area and scrolls behind the floating controls. Observe the entire stack
+// so wrapped attachments, context notices and multiline drafts stay clear.
+function observeComposerSize() {
+  const stack = $("#composer-stack");
+  const thread = $("#thread");
+  const main = $(".chat-main");
+  const observer = new ResizeObserver(() => {
+    const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 90;
+    main.style.setProperty("--composer-clearance", stack.getBoundingClientRect().height + "px");
+    if (atBottom) thread.scrollTop = thread.scrollHeight;
+  });
+  observer.observe(stack);
+}
+
 // The composer entry point: optimistic user bubble, then the streamed reply.
 // The rollback restores the draft (and the attachment chips) if the server
 // rejects before starting.
@@ -1149,8 +858,8 @@ async function sendFromComposer() {
   // arrive here too — reject them, and the draft stays untouched.
   // A reconcile in flight (review3 finding 4): the thread on display is not
   // known to be the whole truth yet, so a send would be aimed at a fiction.
-  if (!state.currentId || state.navPendingId || state.inflight ||
-      state.reconcileId === state.currentId || !text.trim()) return;
+  if (!navigation.currentId || navigation.navPendingId || generation.current ||
+      navigation.reconcileId === navigation.currentId || !text.trim()) return;
   if (state.pending.some((f) => f.uploading)) {
     toast("Still uploading — give it a moment.", false);
     return;
@@ -1158,7 +867,7 @@ async function sendFromComposer() {
   // Capture the addressee BEFORE anything async (finding 1): the URL, the
   // tray clear, the reorder and the uncertain-acceptance reconcile all
   // speak of THIS conversation, never of whatever is on screen by then.
-  const convId = state.currentId;
+  const convId = navigation.currentId;
   const view = navOwner.current();
   const attachments = state.pending.slice();
   const placeholder = $("#thread .empty-state");
@@ -1197,7 +906,7 @@ async function sendFromComposer() {
       // and give the draft back: a lost typing is worse than a visible
       // possible duplicate the toast justifies.
       userEl.remove();
-      if (state.currentId === convId && navOwner.isCurrent(view)) {
+      if (navigation.currentId === convId && navOwner.isCurrent(view)) {
         input.value = text;
         autosizeComposer();
       }
@@ -1207,205 +916,6 @@ async function sendFromComposer() {
   );
 }
 
-function appendUserBubble(text, files) {
-  const el = msgNode({
-    role: "user",
-    content: text,
-    status: "complete",
-    created_at: new Date().toISOString(),
-  });
-  if (files && files.length) appendFileChips(el, files);
-  state.threadRev++; // newer than any history page already on the wire
-  $("#thread").append(el);
-  maybeScroll(true);
-  return el;
-}
-
-// --- busy spinner (pure-CSS dots) ------------------------------------------------
-
-// spinnerNode returns an inline three-dot span animated entirely by CSS
-// (styles.css .spinner). The old version cycled braille glyphs from a JS
-// timer and drew a FROZEN glyph when prefers-reduced-motion matched — on
-// iPads (iOS turns Reduce Motion on for several accessibility features)
-// the "thinking" icon therefore displayed but never moved and read as
-// broken. CSS keyframes need no timers, no exotic glyphs, and under
-// reduced motion the dots fade softly instead of going dead still.
-function spinnerNode(st) {
-  const span = document.createElement("span");
-  span.className = "spinner";
-  span.setAttribute("aria-hidden", "true");
-  for (let i = 0; i < 3; i++) span.appendChild(document.createElement("i"));
-  st.spinNode = span; // stopSpinner removes it from the DOM
-  return span;
-}
-
-// stopSpinner unmounts the dots. Called on the first streamed answer token
-// (the dots only mean "waiting") and on every exit path, so a stale bubble
-// can never keep spinning. The animation lives and dies with the node.
-function stopSpinner(st) {
-  if (!st) return;
-  if (st.spinNode) {
-    st.spinNode.remove();
-    st.spinNode = 0;
-  }
-}
-
-function streamNode() {
-  const el = clone("tpl-message");
-  el.classList.add("from-assistant");
-  el.querySelector(".msg-role").textContent = "Mullsmith";
-  const time = el.querySelector("time");
-  const now = new Date();
-  time.dateTime = now.toISOString();
-  time.textContent = now.toLocaleString();
-  el.querySelector(".msg-body").classList.add("streaming");
-  return el;
-}
-
-// Collapsed-by-default chain-of-thought disclosure (only when the server
-// streams reasoning at all — llm.show_reasoning, spec §6.2).
-function ensureThinking(st) {
-  if (st.nodes.think) return;
-  const d = document.createElement("details");
-  d.className = "thinking";
-  d.open = true;
-  const summary = document.createElement("summary");
-  summary.textContent = "Thinking…";
-  const pre = document.createElement("pre");
-  d.append(summary, pre);
-  st.nodes.body.parentNode.insertBefore(d, st.nodes.body);
-  st.nodes.think = d;
-  st.nodes.thinkPre = pre;
-  st.nodes.thinkSummary = summary;
-}
-
-// --- tool cards (spec §7, §10.2) ------------------------------------------------
-// One card per model-proposed tool call, attached to the assistant
-// <article> — deliberately OUTSIDE .msg-body, which finishGeneration
-// clears when the markdown answer lands. The card NODES, the outcome
-// painting and the state labels live in thread.js — the single projection
-// shared by the live SSE events and the persisted tool_calls projection on
-// reload (C7). This file only wires events to bubbles.
-
-function attachApproval(card, st, d) {
-  card.classList.remove("st-running");
-  card.classList.add("st-awaiting");
-  card.open = true;
-  card.querySelector(".tool-state").textContent = "needs approval";
-  const argsEl = card.querySelector(".tool-args");
-  argsEl.textContent = formatToolArgs(d.arguments);
-  argsEl.hidden = false;
-  if (card.querySelector(".approval-row")) return; // duplicate event: idempotent
-
-  const row = document.createElement("div");
-  row.className = "approval-row";
-  const label = document.createElement("span");
-  label.className = "approval-label";
-  label.textContent = `Allow ${d.tool || "the tool"} to run?`;
-  const allow = document.createElement("button");
-  allow.type = "button";
-  allow.className = "btn small primary";
-  allow.textContent = "Allow";
-  const deny = document.createElement("button");
-  deny.type = "button";
-  deny.className = "btn small ghost";
-  deny.textContent = "Deny";
-  // §6.1/§9.9: code_run offers "always allow in this conversation".
-  let rememberBox = null;
-  if (d.rememberable) {
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    const txt = document.createElement("span");
-    txt.textContent = " Always allow in this conversation";
-    rememberBox = document.createElement("label");
-    rememberBox.className = "approval-remember";
-    rememberBox.append(cb, txt);
-  }
-  const decide = async (approve) => {
-    for (const b of row.querySelectorAll("button, input")) b.disabled = true;
-    const remember = Boolean(rememberBox && rememberBox.querySelector("input").checked);
-    try {
-      await api.resolveApproval(st.genId, d.approval_id, approve, remember);
-    } catch {
-      toast("That approval is no longer pending.");
-    }
-  };
-  allow.addEventListener("click", () => decide(true));
-  deny.addEventListener("click", () => decide(false));
-  row.append(label, allow, deny);
-  if (rememberBox) row.append(rememberBox);
-  card.append(row);
-}
-
-// --- attachments, artifact cards & files view (spec §10.2, M5) -------------------
-
-function humanSize(n) {
-  if (typeof n !== "number" || !isFinite(n) || n < 0) return "";
-  if (n >= 1 << 30) return (n / 2 ** 30).toFixed(1) + " GiB";
-  if (n >= 1 << 20) return (n / 2 ** 20).toFixed(1) + " MiB";
-  if (n >= 1 << 10) return (n / 2 ** 10).toFixed(1) + " KiB";
-  return n + " B";
-}
-
-// File URLs are ONLY ever our own API paths; anything else (a hostile tool
-// result included) never reaches an href.
-function fileApiUrl(u) {
-  return typeof u === "string" && u.startsWith("/api/v1/files/") && !/[\s"']/.test(u) ? u : null;
-}
-
-function fileChip(f) {
-  const href = fileApiUrl(f.download_url || f.url);
-  if (!href) return null;
-  const a = document.createElement("a");
-  a.className = "file-chip";
-  a.href = href;
-  a.download = f.name || "";
-  const name = document.createElement("span");
-  name.className = "chip-name";
-  name.textContent = f.name || "file";
-  const size = document.createElement("span");
-  size.className = "chip-size";
-  size.textContent = humanSize(f.size ?? f.bytes);
-  a.append(name, size);
-  return a;
-}
-
-function appendFileChips(msgEl, files) {
-  const host = document.createElement("div");
-  host.className = "msg-files";
-  for (const f of files) {
-    const chip = fileChip(f);
-    if (chip) host.append(chip);
-  }
-  if (host.childElementCount) msgEl.querySelector(".msg-body").after(host);
-}
-
-function artifactCard(file) {
-  const href = fileApiUrl(file.url);
-  if (!href) return null;
-  const card = document.createElement("div");
-  card.className = "artifact-card";
-  const icon = document.createElement("span");
-  icon.className = "artifact-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "📄";
-  const meta = document.createElement("div");
-  meta.className = "artifact-meta";
-  const name = document.createElement("div");
-  name.className = "artifact-name";
-  name.textContent = file.name || "download";
-  const sub = document.createElement("div");
-  sub.className = "artifact-sub muted";
-  sub.textContent = [humanSize(file.bytes), file.note].filter(Boolean).join(" — ");
-  meta.append(name, sub);
-  const dl = document.createElement("a");
-  dl.className = "btn small primary artifact-dl";
-  dl.href = href;
-  dl.download = file.name || "";
-  dl.textContent = "Download";
-  card.append(icon, meta, dl);
-  return card;
-}
 
 function renderPending() {
   const tray = $("#pending-files");
@@ -1551,7 +1061,7 @@ function fillSettingsForm() {
 // chat the user was reading comes back (same navigation as the X button).
 // A failed save deliberately keeps the panel open so nothing typed is lost.
 function leaveSettings() {
-  location.hash = state.currentId ? `#/c/${state.currentId}` : "";
+  location.hash = navigation.currentId ? `#/c/${navigation.currentId}` : "";
 }
 
 async function onSettingsSave(ev) {
@@ -1562,7 +1072,6 @@ async function onSettingsSave(ev) {
       email: $("#settings-email").value.trim(),
       default_system_prompt: $("#settings-prompt").value.trim(),
     });
-    $("#user-chip").textContent = state.me.name || state.me.email;
     leaveSettings();
     if (state.me.unconfirmed_email) {
       toast("Confirmation link sent to " + state.me.unconfirmed_email, false);
@@ -1707,449 +1216,11 @@ function fileRow(f) {
   return li;
 }
 
-/**
- * Run one assistant turn against `url` and stream it into the thread.
- * `rollback` undoes optimistic UI when the server rejects before starting;
- * `onAccepted` fires the moment the stream starts (attachments: the server
- * has taken ownership, empty the composer tray).
- */
-async function startGeneration(url, body, rollback, onAccepted, onUncertain) {
-  const controller = new AbortController();
-  const st = {
-    controller,
-    genId: "",
-    msgId: "", // id of the round currently streaming (C7)
-    started: false,
-    errorData: null,
-    nodes: null, // = st.cur.nodes: thinking/spinner helpers read this
-    // Rounds in row order (C7): one entry per announced model round,
-    // { id, nodes, raw, reasoning }. The bubble boundaries here ARE the
-    // stored row boundaries — that is the whole live/reload agreement.
-    rounds: [],
-    byId: new Map(), // message_id → round, the target every event names
-    cur: null, // the round currently streaming
-    cards: {}, // call_id → { card, args } for the live tool cards
-    // The ownership pair (review3 issue 2): WHICH conversation this
-    // request addresses and WHICH view epoch owned the screen when it
-    // started — the pair a navigation commit compares against before
-    // disposing a generation the new thread replaces.
-    convId: state.currentId,
-    epoch: navOwner.current(),
-  };
-  state.inflight = st;
-  syncComposerButtons();
-  // One ownership rule for every live callback (finding 5, extended by
-  // review3 issue 2): events belong on screen only while this is still
-  // the live generation AND the conversation it addresses is the one on
-  // display. The epoch is deliberately NOT part of live(): a repeat click
-  // on the CURRENT conversation bumps navOwner without orphaning a stream
-  // that still belongs there.
-  const live = () => state.inflight === st && state.currentId === st.convId;
-  // openRound opens one bubble per model round (C7). The `start` and
-  // `round` events each name the row that round streams into, so a
-  // tool-only round keeps its own (empty) prose and its own cards instead
-  // of merging everything into one bubble stamped with the final row's id.
-  const openRound = (msgId) => {
-    stopSpinner(st); // the previous round stops "waiting" as the next begins
-    if (st.cur) syncRoundBody(st.cur);
-    const el = streamNode();
-    el.dataset.gen = st.genId || ""; // the turn marker C7 uses to retire rounds
-    $("#thread").append(el);
-    const nodes = { el, body: el.querySelector(".msg-body") };
-    // Dedicated text node so tokens never clobber the container; the
-    // spinner rides along until the first answer token lands, then
-    // settleRound swaps everything for rendered markdown.
-    nodes.text = document.createElement("div"); // prose only: cards live outside it
-    nodes.text.className = "stream-text";
-    nodes.body.append(nodes.text, spinnerNode(st));
-    const r = { id: msgId || "", nodes, raw: "", reasoning: "" };
-    st.rounds.push(r);
-    if (r.id) st.byId.set(r.id, r);
-    st.cur = r;
-    st.nodes = nodes;
-  };
-  // Every tool event names the round that owns its card.
-  const cardHost = (d) => {
-    const r = st.byId.get(d.message_id);
-    if (!r) return null;
-    // The tool card is now the progress indicator. Retire this round's
-    // waiting dots without leaving their empty answer bubble underneath.
-    if (r === st.cur) stopSpinner(st);
-    syncRoundBody(r);
-    return toolCardsHost(r.nodes.el);
-  };
-  // One terminal transition for the UNCERTAIN pre-start outcome (review3
-  // issue 4): the request may have been accepted before the connection
-  // died, so a rollback that ASSUMES refusal is not safe — the caller
-  // reconciles against the server instead (reload, draft, toast).
-  const settleUncertain = (err) => {
-    if (state.inflight !== st) return;
-    state.inflight = null;
-    syncComposerButtons();
-    if (onUncertain) onUncertain(err);
-    else if (rollback) rollback();
-  };
-  try {
-    await streamChat(
-      url,
-      body,
-      {
-        onStart(d) {
-          if (!live()) return;
-          state.threadRev++; // a live stream IS newer activity (finding 4)
-          st.started = true;
-          st.genId = d.generation_id || "";
-          st.msgId = d.message_id || "";
-          if (onAccepted) onAccepted();
-          openRound(st.msgId); // `start` names round 1's own row (C7)
-          maybeScroll(true);
-        },
-        onRound(d) {
-          if (!live()) return;
-          // A fresh assistant row exists for the next model round (C7):
-          // open the bubble it names, so the live split matches history.
-          st.msgId = d.message_id || "";
-          openRound(st.msgId);
-          maybeScroll(true);
-        },
-        onToken(t) {
-          if (!live()) return;
-          stopSpinner(st); // output is flowing: the "waiting" dots are done
-          if (!st.cur) return;
-          st.cur.raw += t;
-          st.cur.nodes.text.textContent = st.cur.raw; // plain text while streaming
-          syncRoundBody(st.cur);
-          maybeScroll();
-        },
-        onReasoning(t) {
-          if (!live()) return;
-          if (!st.cur) return;
-          st.cur.reasoning += t;
-          if (!state.meta || !state.meta.show_reasoning || !st.nodes) return;
-          ensureThinking(st);
-          st.nodes.thinkPre.textContent = st.cur.reasoning;
-          maybeScroll();
-        },
-        onToolStart(d) {
-          if (!live()) return;
-          if (!st.cur) return;
-          const host = cardHost(d);
-          if (!host) return;
-          const card = toolCardNode(d.call_id, d.tool);
-          host.append(card);
-          st.cards[d.call_id] = { card, args: "" };
-          maybeScroll();
-        },
-        onToolArgs(d) {
-          if (!live()) return;
-          const c = st.cards[d.call_id];
-          if (!c) return;
-          c.args += d.t || "";
-          const pre = c.card.querySelector(".tool-args");
-          pre.textContent = formatToolArgs(c.args);
-          pre.hidden = false;
-        },
-        onToolEnd(d) {
-          if (!live()) return;
-          let c = st.cards[d.call_id];
-          if (!c) {
-            // The card announced at tool_start carries a different id than
-            // the audit row's terminal event (an endpoint may fragment a
-            // call's id differently than the accumulator stitches it). The
-            // outcome belongs on the round that ran it: settle that round's
-            // still-running card of this tool, so the live view agrees with
-            // the reload instead of dropping the event.
-            const r = st.byId.get(d.message_id);
-            if (r) {
-              for (const other of Object.values(st.cards)) {
-                if (other.card.classList.contains("st-running") &&
-                    (other.card.querySelector(".tool-name").textContent || "") === (d.tool || "") &&
-                    r.nodes.el.contains(other.card)) { c = other; break; }
-              }
-            }
-            if (!c) return; // no matching round on screen: the reload will show it
-            delete st.cards[d.call_id];
-            st.cards[d.call_id] = c; // later events for this id find it too
-          }
-          // The SAME projection a reload renders from tool_calls.display
-          // (C7): one paintCallOutcome for both views.
-          const view = callFromEvent(d);
-          paintCallOutcome(c.card, view);
-          // files_share ⇒ a visible download card next to the card (§10.2).
-          const file = sharedFileFor(view);
-          if (file) {
-            const host = cardHost(d);
-            if (host) host.append(artifactCard(file));
-          }
-          maybeScroll();
-        },
-        onAwaitingApproval(d) {
-          if (!live()) return;
-          if (!st.cur) return;
-          const host = cardHost(d);
-          if (!host) return;
-          let c = st.cards[d.call_id];
-          if (!c) {
-            const card = toolCardNode(d.call_id, d.tool);
-            host.append(card);
-            c = st.cards[d.call_id] = { card, args: d.arguments || "" };
-          }
-          attachApproval(c.card, st, d);
-          maybeScroll(true);
-        },
-        onError(d) {
-          st.errorData = d;
-        },
-        onTitle(d) {
-          if (d.title) applyTitle(d.conversation_id || state.currentId, d.title);
-        },
-        onDone(d) {
-          finishGeneration(st, d);
-        },
-      },
-      controller.signal
-    );
-    // Upstream closed cleanly but never said done. After start the answer
-    // was interrupted; BEFORE start the outcome is uncertain (review3
-    // issue 4) — the request may have been accepted and the reply is
-    // already durable — so reconcile exactly like a network death.
-    if (state.inflight === st) {
-      if (st.started) finishGeneration(st, { status: "lost" });
-      else settleUncertain(new Error("The connection closed before the reply started."));
-    }
-  } catch (err) {
-    if (err.name === "AbortError") {
-      // One idempotent terminal transition (finding 5): finishGeneration
-      // is the single owner of cleanup, and its own staleness check makes
-      // it a no-op once the stream was abandoned. The old bare `return`
-      // left state.inflight SET whenever Stop's abort API failed and the
-      // fetch abort arrived here — the composer refused every later send.
-      finishGeneration(st, { status: "aborted" });
-      return;
-    }
-    if (err instanceof ApiError && err.status === 401) {
-      // A late 401 from an ABANDONED request is not the current screen's
-      // verdict (review2 finding 4): clearing state.inflight here erased a
-      // newer live generation's bookkeeping. The generation that owns the
-      // screen will meet its own auth failure if the session is really
-      // gone.
-      if (!live()) return;
-      state.inflight = null;
-      syncComposerButtons();
-      handleErr(err, "send");
-      return;
-    }
-    if (st.started) {
-      finishGeneration(st, { status: "lost" });
-    } else {
-      // Pre-start rollback is screen-mutating (restores the draft, may
-      // pin the ctx-full panel): an abandoned generation must not run it
-      // against a composer that belongs to the newer one (review2
-      // finding 4's reproduced sequence).
-      if (!live()) return;
-      // A DEFINITE refusal versus an uncertain loss (review3 issue 4): a
-      // code in the envelope is this API's own rejection, written before
-      // anything was accepted or persisted — rollback is honest. Without
-      // a code the death came from transport or proxy, and whether the
-      // POST landed is unknown: reconcile instead of hiding a durable
-      // message behind a restored draft.
-      if (err instanceof ApiError && err.code) {
-        if (rollback) rollback();
-        if (err.code === "context_full" || err.code === "history_limit") {
-          // The thread can take no more turns (or no more MESSAGES — the
-          // replay cap): pin the explanation where the fullness figures
-          // live instead of a toast that fades in five seconds.
-          showCtxFull(err.message);
-        } else {
-          toast(err.message || "Could not start a reply.");
-        }
-        state.inflight = null;
-        syncComposerButtons();
-      } else {
-        settleUncertain(err);
-      }
-    }
-  }
-}
-
-function finishGeneration(st, done) {
-  stopSpinner(st); // every exit path must end the animation
-  retireStrandedCards(st, done.rounds || []);
-  if (state.inflight !== st) return; // abandoned mid-flight; bubble is gone
-  state.inflight = null;
-  state.threadRev++; // the finished answer outranks any history on the wire
-  syncComposerButtons();
-  if (!st.rounds.length) return; // nothing ever streamed onto the screen
-  const err = (st.errorData && st.errorData.message) || "";
-  const outcomes = new Map((done.rounds || []).map((entry) => [entry.message_id, entry]));
-  for (const r of st.rounds) {
-    const entry = outcomes.get(r.id);
-    if (entry) {
-      settleRound(r, entry.status, entry.note,
-        entry.completion_tokens, entry.duration_ms, err);
-    } else {
-      // Transport loss or a failed save can leave an announced round
-      // without a durable outcome. Keep its identity and mark it interrupted.
-      settleRound(r, done.status === "complete" ? "lost" : (done.status || "lost"),
-        "", 0, 0, err);
-    }
-  }
-  if (done.usage_tokens > 0) updateCtxMeter(done.usage_tokens); // freshest fullness figure
-  for (const r of st.rounds) {
-    // the button becomes visible now — make it work, per settled row
-    if (r.nodes.el.dataset.id) {
-      if (st.genId) r.nodes.el.dataset.gen = st.genId; // the shared turn marker (C7)
-      attachRegen(r.nodes.el);
-    }
-  }
-  refreshLastAssistant();
-  maybeScroll();
-}
-
-// settleRound closes one streamed bubble: markdown replaces the raw text,
-// the terminal note lands, and speed rates the prose. The note comes from
-// the server's durable text when there is one (rounds[].note /
-// status_note — the same string either way); otherwise roundStatusNote
-// supplies the exact line a reload will derive from the row's status.
-function syncRoundBody(r) {
-  // Keep a new round's waiting indicator and actual prose visible; tool
-  // cards, reasoning and status notes have their own containers.
-  r.nodes.body.hidden = !r.raw.trim() && !r.nodes.body.querySelector(".spinner");
-}
-
-function settleRound(r, status, note, completion, durationMS, errorMessage) {
-  const nodes = r.nodes;
-  if (nodes.think) {
-    nodes.think.open = false;
-    nodes.thinkSummary.textContent = "Thought process";
-  }
-  nodes.body.classList.remove("streaming");
-  // Markdown replaces the raw text INSIDE the prose wrapper: the reloaded
-  // bubble (msgNode) puts its markdown in the same .stream-text, so the
-  // two views are structurally identical.
-  nodes.text.classList.add("md");
-  nodes.text.replaceChildren(renderMarkdown(r.raw)); // full markdown once done
-  syncRoundBody(r);
-  // Any approval prompt still on screen is dead: the loop moved on
-  // (timeout, deny or abort). Retire the buttons.
-  for (const ctl of nodes.el.querySelectorAll(".approval-row button, .approval-row input")) ctl.disabled = true;
-  if (r.id) nodes.el.dataset.id = r.id;
-  const text = roundStatusNote(status, note, status === "error" ? errorMessage : "");
-  if (text) showStatusNote(nodes.el, text);
-  // Rate the prose only: a turn whose body is empty (tool card alone) shows nothing.
-  if (r.raw.trim()) tpsNote(nodes.el, completion, durationMS);
-}
-
-// retireStrandedCards is the generation's last word on its own DOM: a tool
-// card still marked running when the stream ended never received its
-// tool_end — the outcome landed on the RELOAD projection instead (ids can
-// disagree between the streaming announcement and the stored audit row).
-// Relabel it exactly what the reload will say — "interrupted" — rather
-// than leave a perpetual running… card on screen; a card still asking for
-// an approval the generation no longer has is retired the same way.
-function retireStrandedCards(st, outcomes) {
-  const incomplete = new Set(outcomes.filter((r) => r.status !== "complete").map((r) => r.message_id));
-  for (const key of Object.keys(st.cards || {})) {
-    const c = st.cards[key];
-    if (!c || !c.card.isConnected) continue;
-    if (!c.card.classList.contains("st-running") &&
-        !c.card.classList.contains("st-awaiting")) continue;
-    // A failed model round never reached tool execution. Its streamed
-    // proposals have no audit rows and must not survive as phantom cards.
-    const round = st.rounds.find((r) => r.nodes.el.contains(c.card));
-    if (round && incomplete.has(round.id)) {
-      c.card.remove();
-      continue;
-    }
-    c.card.classList.remove("st-running", "st-awaiting");
-    c.card.classList.add("st-lost");
-    const state = c.card.querySelector(".tool-state");
-    if (state) state.textContent = "interrupted";
-    for (const ctl of c.card.querySelectorAll(".approval-row button, .approval-row input")) ctl.disabled = true;
-  }
-}
-
-async function stopStream() {
-  const st = state.inflight;
-  if (!st) return;
-  $("#btn-stop").disabled = true;
-  try {
-    // Server-side abort persists the partial answer and closes with done.
-    await api.abortGeneration(st.genId);
-  } catch {
-    st.controller.abort(); // endpoint gone anyway: just detach the stream
-  } finally {
-    $("#btn-stop").disabled = false;
-  }
-}
-
-// The regen button only exists on an assistant bubble once it is the
-// .last-assistant (CSS), but the LISTENER must be attached wherever a
-// bubble becomes regenerateable — both when loaded from the server
-// (msgNode) and when a live generation completes (finishGeneration).
-// Without the finishGeneration path the button on the just-streamed
-// bubble was decorative: the first click (on a server-loaded bubble)
-// worked, every later click did nothing. dataset.bound keeps double
-// wiring impossible if a bubble is ever re-rendered in place.
-function attachRegen(el) {
-  const regen = el.querySelector(".regen-btn");
-  if (!regen || regen.dataset.bound) return;
-  regen.dataset.bound = "1";
-  regen.addEventListener("click", () => regenerateFrom(el, el.dataset.id));
-}
-
-async function regenerateFrom(el, msgId) {
-  // Same screen ownership as Send (review3 issue 2): while a navigation
-  // is loading, this bubble may not even be on the thread that commits.
-  if (state.inflight || state.navPendingId || state.reconcileId === state.currentId || !msgId) return;
-  // Captured before the removal and the request: reloads and the reorder
-  // belong to THIS thread, under THIS view epoch (review3 issues 2 and 4
-  // meet here — a definite refusal and an uncertain death both reconcile
-  // against the server, and neither may paint a screen we left).
-  const convId = state.currentId;
-  const view = navOwner.current();
-  // Both terminal paths RELOAD, and both go through the recovery state:
-  // while the truth is being re-fetched nothing else may address this
-  // thread, an older snapshot can never paint over a newer answer, and a
-  // failed reload is announced rather than swallowed (review3 finding 4).
-  const reload = () => beginReconcile(convId, view);
-  // Retire the WHOLE turn from the screen, not just the clicked bubble:
-  // the server deletes every row of the generation, and the same marker
-  // groups the streamed rounds.
-  const gen = el.dataset.gen;
-  for (const bubble of document.querySelectorAll(`#thread .msg[data-gen="${gen}"]`)) bubble.remove();
-  await startGeneration(
-    `/api/v1/messages/${encodeURIComponent(msgId)}/regenerate`,
-    undefined,
-    reload,
-    () => promoteConversation(convId), // a fresh reply is a post too
-    reload // uncertain acceptance: the deleted row may have been replaced — the server holds the truth
-  );
-}
-
-// Stop the running generation because the UI thread is going away. Detach
-// LOCALLY first (finding 5): state is cleared and the fetch aborted before
-// anything is awaited, so navigation is never held hostage by the abort
-// API, and the old stream's callbacks are already dead by the time the
-// next screen paints. The server abort stays — best-effort persistence
-// coordination for the partial answer, fire-and-forget.
-function abandonInflight() {
-  const st = state.inflight;
-  if (!st) return;
-  stopSpinner(st); // the bubble is going away; don't spin on a detached node
-  state.inflight = null;
-  st.controller.abort(); // kills the fetch; its AbortError lands on a dead token
-  syncComposerButtons();
-  if (st.genId) {
-    api.abortGeneration(st.genId).catch(() => { /* already finished or gone */ });
-  }
-}
-
 function renderConversation() {
-  const c = state.currentId ? state.currentConv : null;
+  const c = navigation.currentId ? navigation.currentConv : null;
   $("#topbar-title").textContent = c ? c.title : "Mullsmith";
   const sel = $("#model-picker");
-  sel.disabled = !state.currentId;
+  sel.disabled = !navigation.currentId;
   if (c) {
     // Show the model ACTUALLY in use. The server already resolves a
     // model the config no longer offers to the default, so the name is
@@ -2159,9 +1230,9 @@ function renderConversation() {
   }
 
   const input = $("#composer-input");
-  input.disabled = !state.currentId;
+  input.disabled = !navigation.currentId;
   syncPlaceholder();
-  if (!state.currentId) input.value = "";
+  if (!navigation.currentId) input.value = "";
   syncComposerButtons();
   // Each dropdown entry describes ITS model: opening a conversation on
   // another model must rebuild the choice list, not just re-point the
@@ -2169,27 +1240,14 @@ function renderConversation() {
   populateThinkingChoices();
   syncThinkingSelect();
 
-  if (!state.currentId) {
-    state.currentConv = null;
-    state.lastCtxUsed = 0; // the meter speaks for one thread only
+  if (!navigation.currentId) {
+    navigation.updateConversation(null);
+    navigation.rememberUsage(0); // the meter speaks for one thread only
     $("#thread").replaceChildren(initialEmptyState());
     updateCtxMeter(0); // no thread: no meter
   }
 }
 
-function initialEmptyState() {
-  const el = document.createElement("div");
-  el.className = "empty-state";
-  const h = document.createElement("h2");
-  h.textContent = "Mullsmith";
-  const p1 = document.createElement("p");
-  p1.textContent = "Pick a conversation on the left or start a new one.";
-  const p2 = document.createElement("p");
-  p2.className = "muted";
-  p2.textContent = "Everything stays on this server, yours alone.";
-  el.append(h, p1, p2);
-  return el;
-}
 
 // --- new chat / model picker -------------------------------------------------------------
 
@@ -2210,7 +1268,7 @@ async function newChat() {
     markActive();
     // Open directly (awaited) so the composer is enabled and focused before
     // the hashchange round-trip; the later handler call is a no-op.
-    state.focusOnOpen = true;
+    navigation.requestFocus();
     await selectConversation(c.id);
     location.hash = `#/c/${c.id}`;
     if (isPhone()) closeDrawer();
@@ -2226,13 +1284,13 @@ async function newChat() {
 let settingsPatch = Promise.resolve();
 
 async function onModelChange(ev) {
-  if (!state.currentId) return;
-  const convId = state.currentId; // the PATCH targets the chat on screen
+  if (!navigation.currentId) return;
+  const convId = navigation.currentId; // the PATCH targets the chat on screen
   const model = ev.target.value;
   const epoch = navOwner.current(); // view epoch at click time (C5)
   // Identity equality alone admits an obsolete commit after A → B → A;
   // the epoch moves on every navigation, return included.
-  const owns = () => navOwner.isCurrent(epoch) && state.currentId === convId;
+  const owns = () => navOwner.isCurrent(epoch) && navigation.currentId === convId;
   // .catch(…) before .then: one block's unexpected throw must not poison
   // the queue for every later pick.
   settingsPatch = settingsPatch.catch(() => {}).then(async () => {
@@ -2241,7 +1299,7 @@ async function onModelChange(ev) {
       // A PATCH that lands after navigation describes ANOTHER conversation —
       // committing it would put that row's payload on this screen (finding 1).
       if (!owns()) return;
-      state.currentConv = updated;
+      navigation.updateConversation(updated);
       toast(`Model: ${model || "default"}`, false);
     } catch (err) {
       if (!owns()) return;
@@ -2255,7 +1313,7 @@ async function onModelChange(ev) {
     syncThinkingSelect();
     // The meter's denominator is the NEW model's window — redraw the
     // figure it already has against it.
-    updateCtxMeter(state.lastCtxUsed || 0);
+    updateCtxMeter(navigation.lastCtxUsed || 0);
   });
   await settingsPatch;
 }
@@ -2269,7 +1327,7 @@ async function onModelChange(ev) {
 function thinkingChoices() {
   const th = state.meta && state.meta.thinking;
   if (!th || !th.choices_by_model) return [];
-  const active = (state.currentConv && state.currentConv.model)
+  const active = (navigation.currentConv && navigation.currentConv.model)
     || state.meta.default_model || "";
   return th.choices_by_model[active] || [];
 }
@@ -2300,31 +1358,31 @@ function populateThinkingChoices() {
 function syncThinkingSelect() {
   const sel = $("#thinking-select");
   const choices = thinkingChoices();
-  sel.disabled = !state.currentId || choices.length < 2;
-  sel.title = (state.currentId && choices.length < 2)
+  sel.disabled = !navigation.currentId || choices.length < 2;
+  sel.title = (navigation.currentId && choices.length < 2)
     ? "this model has no thinking to choose — switch to a thinking model"
     : "Thinking level for this conversation";
-  if (!state.currentId) return;
-  const want = (state.currentConv && state.currentConv.thinking) || "default";
+  if (!navigation.currentId) return;
+  const want = (navigation.currentConv && navigation.currentConv.thinking) || "default";
   sel.value = [...sel.options].some((o) => o.value === want) ? want : "default";
 }
 
 async function onThinkingChange(ev) {
-  if (!state.currentId) return;
-  const convId = state.currentId; // identity guard, as in onModelChange
+  if (!navigation.currentId) return;
+  const convId = navigation.currentId; // identity guard, as in onModelChange
   const choice = ev.target.value;
-  const before = (state.currentConv && state.currentConv.thinking) || "default";
+  const before = (navigation.currentConv && navigation.currentConv.thinking) || "default";
   const label = ev.target.selectedOptions[0]
     ? ev.target.selectedOptions[0].textContent : choice;
   const epoch = navOwner.current(); // view epoch at click time (C5)
-  const owns = () => navOwner.isCurrent(epoch) && state.currentId === convId;
+  const owns = () => navOwner.isCurrent(epoch) && navigation.currentId === convId;
   // Same single queue as the model picker (C5): model and thinking picks
   // for one conversation commit in click order, never racing each other.
   settingsPatch = settingsPatch.catch(() => {}).then(async () => {
     try {
       const updated = await api.patchConversation(convId, { thinking: choice });
       if (!owns()) return; // navigated mid-PATCH (same ID under a newer epoch too)
-      state.currentConv = updated;
+      navigation.updateConversation(updated);
       syncThinkingSelect();
       toast(`Thinking: ${label}`, false);
     } catch (err) {
@@ -2390,7 +1448,6 @@ function onHashChange() {
     consumeEmailToken().then((handled) => {
       if (!handled || handled === "auth") return;
       state.me = handled;
-      $("#user-chip").textContent = handled.name || handled.email;
       if (state.settingsOpen) fillSettingsForm();
     });
     return;
@@ -2408,22 +1465,22 @@ function onHashChange() {
   const m = location.hash.match(/^#\/c\/([A-Za-z0-9]{1,40})$/);
   if (m) {
     selectConversation(m[1]);
-  } else if ((state.currentId || state.navPendingId) && location.hash === "") {
+  } else if ((navigation.currentId || navigation.navPendingId) && location.hash === "") {
     // Leaving for the blank route retires EVERYTHING aimed at a thread:
     // a navigation whose metadata or page is still in flight would
     // otherwise commit an identity the user has just walked away from,
     // with the URL showing nothing (C5). bump() kills those loaders;
     // the pending marker goes with them.
     navOwner.bump();
-    state.navPendingId = "";
-    abandonInflight();
-    state.currentId = "";
+      abandonInflight();
+    navigation.reset();
     renderConversation();
   }
 }
 
 async function boot() {
   applyTheme();
+  observeComposerSize();
   $("#btn-theme").addEventListener("click", cycleTheme);
   $("#form-login").addEventListener("submit", onLogin);
   $("#form-register").addEventListener("submit", onRegister);
@@ -2471,8 +1528,8 @@ async function boot() {
     try {
       const res = await api.pruneConversations(choice);
       await loadConversations();
-      if (state.currentId && res.ids.includes(state.currentId)) {
-        state.currentId = "";
+      if (navigation.currentId && res.ids.includes(navigation.currentId)) {
+        navigation.reset();
         location.hash = "";
         renderConversation();
       }
@@ -2531,13 +1588,13 @@ async function boot() {
     location.hash = "#/files";
   });
   $("#btn-files-close").addEventListener("click", () => {
-    location.hash = state.currentId ? `#/c/${state.currentId}` : "";
+    location.hash = navigation.currentId ? `#/c/${navigation.currentId}` : "";
   });
   $("#btn-settings").addEventListener("click", () => {
     location.hash = "#/settings";
   });
   $("#btn-settings-close").addEventListener("click", () => {
-    location.hash = state.currentId ? `#/c/${state.currentId}` : "";
+    location.hash = navigation.currentId ? `#/c/${navigation.currentId}` : "";
   });
   $("#form-profile").addEventListener("submit", onSettingsSave);
   $("#form-password").addEventListener("submit", onPasswordSave);
@@ -2634,6 +1691,6 @@ if (!globalThis.__MULLSMITH_TEST__) boot();
 
 // Test-only exports for the lifecycle suite; the browser ignores them.
 export {
-  state, navOwner, listOwner, selectConversation, startGeneration, abandonInflight,
+  state, navigation, generation, navOwner, listOwner, selectConversation, startGeneration, abandonInflight,
   sendFromComposer, regenerateFrom, onHashChange, onModelChange, onThinkingChange, earlierButton,
 };

@@ -123,7 +123,6 @@
       <button id="btn-theme" class="icon-btn" aria-label="Toggle color theme">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2m9-9h-2M5 12H3m14.5-6.5-1.4 1.4M7.9 16.1l-1.4 1.4m11 0-1.4-1.4M7.9 7.9 6.5 6.5M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
       </button>
-      <span class="user-chip" id="user-chip" title="Signed-in user"></span>
       <button id="btn-logout" class="icon-btn" aria-label="Sign out">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 12H4m0 0 4-4m-4 4 4 4M10 4h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
       </button>
@@ -173,15 +172,12 @@
         <div class="empty-state" id="empty-state">
           <h2>Mullsmith</h2>
           <p>Pick a conversation on the left or start a new one.</p>
-          <p class="muted">Everything stays on this server, yours alone.</p>
         </div>
       </div>
-      <div id="pending-files" class="pending-files" hidden></div>
       <div class="composer-stack" id="composer-stack">
-        <!-- The context meter floats above the stack's top edge (messages
-             scroll underneath it) instead of owning a grey row — the bar
-             was dead space. -->
+        <!-- These controls float together over the scrolling conversation. -->
         <p id="ctx-meter" class="ctx-meter" hidden></p>
+        <div id="pending-files" class="pending-files" hidden></div>
         <div class="composer">
         <!-- "+" opens a vertical add-menu (thinking level + attach files)
              instead of a paperclip and a row under the prompt box — one

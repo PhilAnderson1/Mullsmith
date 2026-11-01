@@ -13,81 +13,34 @@ import (
 	"sync"
 	"time"
 
-	"mullsmith/internal/agent"
 	"mullsmith/internal/auth"
+	"mullsmith/internal/chat"
 	"mullsmith/internal/config"
-	"mullsmith/internal/llm"
 	"mullsmith/internal/mail"
+	"mullsmith/internal/managed"
 	"mullsmith/internal/runner"
 	"mullsmith/internal/store"
-	"mullsmith/internal/thinking"
 	"mullsmith/internal/tools"
 	"mullsmith/web"
 )
 
-// resolveThinking resolves the thinking-control runtime before anything
-// reads it (the llm client takes its route from it). A config that came
-// through config.Load already carries the built runtime — startup would
-// have failed otherwise; it only gets its hidden-choice warnings logged.
-// Struct-literal configs (tests) that selected an endpoint type/profile
-// are resolved here from the configured catalogue files so the feature
-// works exactly as the loader would run it.
-func resolveThinking(cfg *config.Config, logger *slog.Logger) {
-	if cfg.Thinking == nil {
-		prof := cfg.LLM.ThinkingProfileFor(cfg.LLM.DefaultModelID())
-		anyProfile := prof != "" && prof != "none"
-		for _, p := range cfg.LLM.ModelProfiles() {
-			if p != "" && p != "none" {
-				anyProfile = true
-			}
-		}
-		if cfg.LLM.EndpointType == "" && !anyProfile {
-			return // no selector, existing transport
-		}
-		rt, err := thinking.Build(thinking.Settings{
-			EndpointURL:   cfg.LLM.Endpoint,
-			EndpointType:  cfg.LLM.EndpointType,
-			ProfileID:     prof,
-			ModelProfiles: cfg.LLM.ModelProfiles(),
-			MaxOutput:     cfg.LLM.MaxTokensResponse,
-			EndpointsFile: cfg.LLM.EndpointsFile,
-			ProfilesFile:  cfg.LLM.ProfilesFile,
-		})
-		if err != nil {
-			logger.Error("thinking control misconfigured; running without it", "error", err)
-			return
-		}
-		cfg.Thinking = rt
-	}
-	for _, w := range cfg.Thinking.Warnings() {
-		logger.Warn("thinking control", "warning", w)
-	}
-}
-
 // Server is the assembled mullsmith HTTP application.
 type Server struct {
-	cfg        *config.Config
-	store      *store.DB
-	logger     *slog.Logger
-	appVer     string
-	indexHTML  []byte // app shell with build-versioned asset URLs, built once
-	limiter    *auth.Limiter
-	locks      *auth.LoginLocks
-	gens       *genRegistry
-	generator  *agent.Generator
-	tools      *tools.Registry
-	remembered *approvalMemory
-	httpSrv    *http.Server
+	cfg       *config.Config
+	store     *store.DB
+	logger    *slog.Logger
+	appVer    string
+	indexHTML []byte // app shell with build-versioned asset URLs, built once
+	limiter   *auth.Limiter
+	locks     *auth.LoginLocks
+	chat      *chat.Service
+	httpSrv   *http.Server
 	// hashGate bounds concurrent Argon2 work globally (audit finding 4).
 	hashGate *auth.HashGate
-	// uploadSem bounds in-flight uploads across ALL users — temp files and
-	// quota decisions together; nil = unbounded (limits.concurrent_uploads:
-	// 0). commitMu serializes every application-managed quota decision —
-	// each upload's fresh-usage-check-then-rename, fs_write's write
-	// section, and code_run staging — so concurrent writers can never spend
-	// the same bytes twice (audit finding 5, extended by audit2 finding 3).
+	// uploadSem bounds in-flight multipart bodies. files owns the shared
+	// quota critical section for all application-managed writes.
 	uploadSem chan struct{}
-	commitMu  sync.Mutex
+	files     *managed.Service
 	// mailer is the async SMTP outbox for confirmation/reset mail; nil
 	// when email.enabled is false. Every email handler gates on the config
 	// switch first, so the nil mailer is unreachable; sendConfirmMail and
@@ -112,17 +65,9 @@ type Server struct {
 // queue drains in a blink and a deep one means a flood worth refusing.
 const hashQueue = 32
 
-// buildHashGate maps limits.hash_concurrency (house cap syntax:
-// absent→default, -1→disabled, 0/other negatives rejected at load) onto a
-// gate. Reading the raw field matters: 0 (struct-literal test configs,
-// never passed through Load) selects the safe default, while a negative is
-// a disabled — unbounded — gate, so unrelated tests never meet a surprise
-// 429.
+// buildHashGate consumes the prepared cap: a negative value disables it.
 func buildHashGate(cfg *config.Config) *auth.HashGate {
 	n := cfg.Limits.HashConcurrency
-	if n == 0 {
-		n = config.DefaultHashConcurrency
-	}
 	if n < 0 {
 		return nil
 	}
@@ -136,9 +81,6 @@ func buildHashGate(cfg *config.Config) *auth.HashGate {
 // matter what the per-minute request bucket allows.
 func buildUploadGate(cfg *config.Config) chan struct{} {
 	n := cfg.Limits.ConcurrentUploads
-	if n == 0 {
-		n = config.DefaultConcurrentUploads
-	}
 	if n < 0 {
 		return nil
 	}
@@ -150,27 +92,28 @@ func buildUploadGate(cfg *config.Config) chan struct{} {
 // bodyLimit → mux. mailer may be nil (email features disabled).
 func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	code runner.Runner, mailer *mail.Outbox,
-) *Server {
-	resolveThinking(cfg, logger)
-	s := &Server{
-		cfg:        cfg,
-		store:      db,
-		logger:     logger,
-		appVer:     appVer,
-		limiter:    auth.NewLimiter(logger),
-		locks:      auth.NewLoginLocks(logger),
-		gens:       newGenRegistry(),
-		generator:  &agent.Generator{LLM: llm.NewClient(cfg, nil)},
-		remembered: newApprovalMemory(),
-		hashGate:   buildHashGate(cfg),
-		uploadSem:  buildUploadGate(cfg),
-		indexHTML:  versionedIndex(appVer),
-		mailer:     mailer,
+) (*Server, error) {
+	if err := cfg.Prepare(); err != nil {
+		return nil, err
 	}
-	// Built after s so the tool layer shares commitMu: upload commits,
-	// fs_write, files_share copies and code_run staging make their quota
-	// decisions under one lock (audit2 finding 3).
-	s.tools = tools.BuildFor(cfg, logger, nil, code, &s.commitMu)
+	for _, warning := range cfg.Thinking.Warnings() {
+		logger.Warn("thinking control", "warning", warning)
+	}
+	s := &Server{
+		cfg:       cfg,
+		store:     db,
+		logger:    logger,
+		appVer:    appVer,
+		limiter:   auth.NewLimiter(logger),
+		locks:     auth.NewLoginLocks(logger),
+		hashGate:  buildHashGate(cfg),
+		uploadSem: buildUploadGate(cfg),
+		indexHTML: versionedIndex(appVer),
+		mailer:    mailer,
+	}
+	s.files = managed.New(int64(cfg.Scratchpad.UserQuota))
+	s.chat = chat.New(cfg, db, logger, tools.BuildFor(cfg, logger, nil, code, s.files))
+	s.chat.Window = s.overflowLine
 
 	// Auto window (§2.2 llm.max_context_tokens: -1): the seam is set here;
 	// the first probe itself belongs to StartContextWindowProbe so tests
@@ -236,28 +179,14 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
-	return s
+	return s, nil
 }
 
 func (s *Server) Serve(ln net.Listener) error { return s.httpSrv.Serve(ln) }
 
-// artifactTTL / workTTL: the configured expiry ages with a defensive
-// floor — struct-literal configs (tests, embedders) that never ran
-// config.Load must not mean "expire instantly" or "never expires"
-// (fail-closed doctrine: generated output always expires).
-func (s *Server) artifactTTL() time.Duration {
-	if d := time.Duration(s.cfg.Scratchpad.ArtifactTTL); d > 0 {
-		return d
-	}
-	return 168 * time.Hour
-}
-
-func (s *Server) workTTL() time.Duration {
-	if d := time.Duration(s.cfg.Scratchpad.WorkTTL); d > 0 {
-		return d
-	}
-	return 24 * time.Hour
-}
+// Expiry ages have already been defaulted and validated by config.Prepare.
+func (s *Server) artifactTTL() time.Duration { return s.cfg.Scratchpad.ArtifactTTL.D() }
+func (s *Server) workTTL() time.Duration     { return s.cfg.Scratchpad.WorkTTL.D() }
 
 // Handler exposes the assembled handler chain (used by tests).
 func (s *Server) Handler() http.Handler { return s.httpSrv.Handler }
@@ -272,12 +201,12 @@ func (s *Server) Shutdown(ctx context.Context) error { return s.httpSrv.Shutdown
 // SSE handlers observe ctx.Done, persist partial answers like an abort and
 // return, which lets Shutdown finish inside the grace period instead of
 // timing out on still-open streams.
-func (s *Server) AbortGenerations() int { return s.gens.abortAll() }
+func (s *Server) AbortGenerations() int { return s.chat.Generations.AbortAll() }
 
 // WaitIdle blocks until in-flight generations have finished (or ctx is
 // done). Called after Shutdown so streams can persist partial answers
 // before the database closes.
-func (s *Server) WaitIdle(ctx context.Context) { s.gens.waitIdle(ctx) }
+func (s *Server) WaitIdle(ctx context.Context) { s.chat.Generations.WaitIdle(ctx) }
 
 // --- handlers ---------------------------------------------------------------
 

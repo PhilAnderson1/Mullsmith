@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"mullsmith/internal/id"
+	"mullsmith/internal/managed"
 	"mullsmith/internal/scratch"
 )
 
@@ -138,7 +139,6 @@ func uploadExtension(name string, blocked []string) (string, bool) {
 const (
 	uploadMultipartAllowance = 64 << 10
 	uploadMaxParts           = 64
-	nameCollisionTries       = 200 // bump attempts before admitting defeat
 )
 
 // uploadTooLarge answers the 413 shared by the budget-exhausted paths.
@@ -178,15 +178,12 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	// The authoritative decision is commitUpload, against fresh usage.
 	// An unverifiable scan REFUSES the upload (audit2 finding 3): unknown
 	// usage never authorizes a write; raw scan errors stay in the log.
-	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
-	if err != nil {
-		s.logger.Error("quota read failed", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInsufficientStorage, "storage_unverified",
-			"Storage usage could not be verified; check scratchpad permissions")
-		return
-	}
-	if used >= int64(s.cfg.Scratchpad.UserQuota) {
-		writeAPIError(w, r, http.StatusInsufficientStorage, "quota_exceeded", "storage quota exceeded")
+	if err := s.files.Check(s.cfg.Scratchpad.Root, user.ID); err != nil {
+		code, message := "quota_exceeded", "storage quota exceeded"
+		if errors.Is(err, managed.ErrUnverified) {
+			code, message = "storage_unverified", "Storage usage could not be verified; check scratchpad permissions"
+		}
+		writeAPIError(w, r, http.StatusInsufficientStorage, code, message)
 		return
 	}
 
@@ -300,51 +297,25 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// commitUpload is the atomic quota decision for an upload (audit finding
-// 5): usage is re-read FRESH and the placement executed while holding
-// commitMu, shared by every upload commit — so N concurrent requests can
-// no longer all spend the same stale "used" figure (the audit stored
-// 1,400 bytes under a 1,024-byte quota). The name is chosen by colliding
-// onto the disk: PlaceNoReplace lands the temp under
-// sanitize→BumpName(display) atomically or reports ErrExists, so two
-// same-named uploads become "report.pdf" and "report (1).pdf" with no
-// overwrite window. Returns the FINAL rel path.
+// commitUpload translates managed-storage outcomes into HTTP responses.
 func (s *Server) commitUpload(w http.ResponseWriter, r *http.Request,
 	userID, tempName, display string, n int64,
 ) (rel string, ok bool) {
-	s.commitMu.Lock()
-	defer s.commitMu.Unlock()
-	// Fail closed (audit2 finding 3): if usage cannot be walked, the
-	// upload is refused — not treated as zero — until the tree is readable
-	// again. No bytes move, so no cleanup is needed beyond temp removal by
-	// the caller.
-	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, userID)
-	if err != nil {
-		s.logger.Error("quota read failed", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInsufficientStorage, "storage_unverified",
-			"Storage usage could not be verified; check scratchpad permissions")
-		return "", false
+	rel, err := s.files.CommitUpload(s.cfg.Scratchpad.Root, userID, tempName, display, n)
+	if err == nil {
+		return rel, true
 	}
-	if used+n > int64(s.cfg.Scratchpad.UserQuota) {
+	switch {
+	case errors.Is(err, managed.ErrUnverified):
+		writeAPIError(w, r, http.StatusInsufficientStorage, "storage_unverified", "Storage usage could not be verified; check scratchpad permissions")
+	case errors.Is(err, managed.ErrQuota):
 		writeAPIError(w, r, http.StatusInsufficientStorage, "quota_exceeded", "storage quota exceeded")
-		return "", false
+	case errors.Is(err, managed.ErrConflict):
+		writeAPIError(w, r, http.StatusConflict, "name_conflict", "too many files already share this name; rename the file and try again")
+	default:
+		s.logger.Error("upload place", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 	}
-	for i := 0; i < nameCollisionTries; i++ {
-		cand := "uploads/" + scratch.BumpName(display, i)
-		perr := scratch.PlaceNoReplace(s.cfg.Scratchpad.Root, userID, cand, tempName)
-		if perr == nil {
-			return cand, true
-		}
-		if !errors.Is(perr, scratch.ErrExists) {
-			s.logger.Error("upload place", "error", perr, "rid", RequestIDFrom(r.Context()))
-			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-			return "", false
-		}
-	}
-	// 200 same-named uploads is a flood or a pathological tree; asking the
-	// user to rename is the only honest answer.
-	writeAPIError(w, r, http.StatusConflict, "name_conflict",
-		"too many files already share this name; rename the file and try again")
 	return "", false
 }
 

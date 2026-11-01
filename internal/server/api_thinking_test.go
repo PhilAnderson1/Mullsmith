@@ -18,9 +18,7 @@ import (
 	"mullsmith/internal/store"
 )
 
-// thinkingCfg: the gufo/qwen3_8 combination resolved by server.New from
-// the repo's catalogue files (struct-literal configs carry no runtime,
-// and the catalogues only ever come from files).
+// thinkingCfg prepares gufo/qwen3_8 using the repository catalogues.
 func thinkingCfg(t *testing.T, endpoint string) *config.Config {
 	cfg := chatCfg(t, endpoint)
 	cfg.LLM.Models = []config.LLMModel{
@@ -400,8 +398,8 @@ func TestThinkingSnapshotSurvivesToolRounds(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
-	s.tools = registryFor(map[string]string{}) // nothing registered: the call is unknown
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
+	s.chat.Tools = registryFor(map[string]string{}) // nothing registered: the call is unknown
 	ts := httptest.NewServer(s.Handler())
 	a := newAuthTestOn(t, ts, db)
 	a.invite("gk-code-1")
@@ -464,7 +462,7 @@ func TestThinkingPerUserIsolation(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
 	ts := httptest.NewServer(s.Handler())
 
 	a := newAuthTestOn(t, ts, db)

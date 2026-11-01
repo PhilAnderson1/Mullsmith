@@ -18,9 +18,7 @@ import (
 	"mullsmith/internal/scratch"
 )
 
-// scratchCfg is authCfg plus the scratchpad knobs (test configs bypass
-// config.Load, so defaults must be set by hand — the server helpers floor
-// zero TTLs to 168h/24h, but the sweep tests want the values explicit).
+// scratchCfg overrides prepared application defaults for small isolated fixtures.
 func scratchCfg(t *testing.T) *config.Config {
 	t.Helper()
 	cfg := authCfg(t)

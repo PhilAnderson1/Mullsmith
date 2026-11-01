@@ -1,10 +1,7 @@
 package server
 
 import (
-	"slices"
-
 	"mullsmith/internal/store"
-	"mullsmith/internal/thinking"
 )
 
 // Server-side thinking-control plumbing (thinking-control-specification.md
@@ -24,12 +21,7 @@ import (
 // dead name onto the wire or into the picker — it silently rides the
 // default instead. The stored choice survives, so a config that later
 // re-adds the model adopts it back.
-func (s *Server) thinkingModel(convModel string) string {
-	if convModel != "" && slices.Contains(s.cfg.LLM.ModelNames(), convModel) {
-		return convModel
-	}
-	return s.cfg.LLM.DefaultModelID()
-}
+func (s *Server) thinkingModel(convModel string) string { return s.chat.Model(convModel) }
 
 // thinkingMeta is the meta endpoint's slice of the feature: the choice
 // list PER MODEL (a picker entry's dropdown describes its model), or
@@ -51,16 +43,7 @@ func (s *Server) thinkingMeta() any {
 // the saved choice when it is still available under a matching
 // endpoint/model/profile context, otherwise the built-in Default — the
 // visible reset of §5, rendered rather than hidden.
-func (s *Server) thinkingChoice(c *store.Conversation) string {
-	rt := s.cfg.Thinking
-	if !rt.SelectorVisible() {
-		return thinking.DefaultID
-	}
-	if id, ok := rt.ResolveSaved(c.Thinking, c.ThinkingCtx, s.thinkingModel(c.Model)); ok {
-		return id
-	}
-	return thinking.DefaultID
-}
+func (s *Server) thinkingChoice(c *store.Conversation) string { return s.chat.ThinkingChoice(c) }
 
 // validateThinkingChoice checks a client-submitted choice ID for the
 // conversation (model = the model it will run on after any same-request
@@ -69,45 +52,5 @@ func (s *Server) thinkingChoice(c *store.Conversation) string {
 // false for stale/invalid input — the API answers a validation error and
 // never silently translates (§5).
 func (s *Server) validateThinkingChoice(model, id string) (choice, fingerprint string, ok bool) {
-	rt := s.cfg.Thinking
-	if id == "" || id == thinking.DefaultID {
-		return "", "", true
-	}
-	if !rt.SelectorVisible() {
-		return "", "", false
-	}
-	if _, found := rt.ResolveFor(model, id); !found {
-		return "", "", false
-	}
-	return id, rt.Fingerprint(model), true
-}
-
-// thinkingSnapshot renders the conversation's thinking choice into the
-// request fragment ONCE, at generation start. Tool continuations of that
-// generation reuse the snapshot: changing the selector afterwards affects
-// the next request, never an in-flight stream (§5).
-func (s *Server) thinkingSnapshot(conv *store.Conversation) map[string]any {
-	rt := s.cfg.Thinking
-	if !rt.SelectorVisible() {
-		return nil
-	}
-	model := s.thinkingModel(conv.Model)
-	id, ok := rt.ResolveSaved(conv.Thinking, conv.ThinkingCtx, model)
-	if !ok {
-		id = thinking.DefaultID // stale context: this generation runs Default
-	}
-	ch, ok := rt.ResolveFor(model, id)
-	if !ok {
-		return nil
-	}
-	frag, err := rt.Fragment(model, ch)
-	if err != nil {
-		// Load-time validation makes this unreachable for configured
-		// choices; should it ever fire, the safe send is no override.
-		s.logger.Warn("thinking fragment render failed; sending without override",
-			"choice", id, "endpoint_type", s.cfg.LLM.EndpointType,
-			"profile", s.cfg.LLM.ThinkingProfileFor(model), "error", err)
-		return nil
-	}
-	return frag
+	return s.chat.ValidateThinkingChoice(model, id)
 }

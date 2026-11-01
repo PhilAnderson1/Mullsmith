@@ -22,7 +22,7 @@ func pwTestApp(t *testing.T, cfg *config.Config) (*authTest, *Server) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	return newAuthTestOn(t, ts, db), s
 }

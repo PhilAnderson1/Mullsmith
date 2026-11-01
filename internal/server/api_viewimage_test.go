@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/base64"
+	"mullsmith/internal/chat"
 	"net/http"
 	"slices"
 	"strings"
@@ -129,7 +130,7 @@ func TestChatViewImageAttachesPictureTurn(t *testing.T) {
 		m, _ := it.(map[string]any)
 		s, isUser := m["synthetic"]
 		switch {
-		case strings.HasPrefix(m["content"].(string), viewTurnMarker):
+		case strings.HasPrefix(m["content"].(string), chat.ViewTurnMarker):
 			if !isUser || s != true {
 				t.Errorf("view turn projected without synthetic=true: %v", m)
 			}

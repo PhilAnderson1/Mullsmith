@@ -332,13 +332,18 @@ root. Copy `configs/config.yaml` and point it at your endpoint. The UI lives
 in `web/` and is embedded into the binary at build time — rebuild and
 hard-refresh after editing assets.
 
+The database schema lives in `internal/store/schema.sql` and is initialized
+atomically on startup. There is no upgrade path for older database schemas
+during development: recreate a development database after structural schema
+changes. Startup can reopen databases already using the current schema.
+
 ### Layout
 
 ```text
 cmd/mullsmith/        main: flags, config load, startup wiring, graceful shutdown, admin CLI
 internal/config/    YAML schema, env expansion, strict validation, startup warnings
 internal/auth/      argon2id, sessions, CSRF tokens, invite codes, login limiter
-internal/store/     SQLite (modernc.org) + migrations; users/conversations/messages/tool_calls (no files table — the disk is the file state)
+internal/store/     SQLite (modernc.org) + schema.sql; users/conversations/messages/tool_calls (no files table — the disk is the file state)
 internal/server/    routing, middleware, SSE chat, files API, maintenance sweeps
 internal/llm/       OpenAI-compatible streaming client (tools + reasoning channels)
 internal/agent/     context budgeting + turn grouping fed to the model

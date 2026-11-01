@@ -136,3 +136,20 @@ func countEvent(es eventStream, name string) int {
 	}
 	return n
 }
+
+func TestToolIDBeforeNamePublishesCoherentStart(t *testing.T) {
+	es, stored, _ := phantomExchange(t, []string{
+		fragmentChunk(0, "call_first", "", ""),
+		fragmentChunk(0, "", "", `{"path":`),
+		fragmentChunk(0, "", "fs_read", `"work/input.csv"}`), finishChunk("tool_calls"),
+	})
+	if es.data["tool_start"]["tool"] != "fs_read" || countEvent(es, "tool_start") != 1 {
+		t.Fatalf("bad start: %v", es.data["tool_start"])
+	}
+	if len(stored) != 1 || es.data["tool_start"]["call_id"] != stored[0].LLMCallID {
+		t.Fatalf("ID mismatch: %v %v", es.data["tool_start"], stored)
+	}
+	if es.data["tool_args"]["t"] != `{"path":"work/input.csv"}` {
+		t.Fatalf("arguments lost: %v", es.data["tool_args"])
+	}
+}

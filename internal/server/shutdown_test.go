@@ -38,7 +38,7 @@ func TestAbortGenerationsLetsShutdownFinish(t *testing.T) {
 	cfg.Tools.Agent.MaxToolRounds = 2
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db := testStore(t)
-	s := New(cfg, db, logger, "test", nil, nil)
+	s := newPreparedServer(t, cfg, db, logger, "test", nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	a := newAuthTestOn(t, ts, db)
 	a.invite("gk-code-1") // register() replays exactly this code
@@ -52,7 +52,7 @@ func TestAbortGenerationsLetsShutdownFinish(t *testing.T) {
 
 	// Park the generation mid-stream: read events until one token landed.
 	<-llmStreaming
-	if got := s.gens.Count(); got != 1 {
+	if got := s.chat.Generations.Count(); got != 1 {
 		t.Fatalf("live generations = %d, want 1", got)
 	}
 
@@ -88,7 +88,7 @@ func TestAbortGenerationsLetsShutdownFinish(t *testing.T) {
 		}
 	}
 drained:
-	if got := s.gens.Count(); got != 0 {
+	if got := s.chat.Generations.Count(); got != 0 {
 		t.Fatalf("generation still registered after abort: %d", got)
 	}
 

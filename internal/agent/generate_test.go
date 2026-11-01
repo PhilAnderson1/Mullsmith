@@ -47,8 +47,8 @@ func TestRoundAccumulatesToolCallsByIndex(t *testing.T) {
 
 	var deltaEvents int
 	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil },
-		func(_ int, d llm.ToolCallDelta) {
-			if d.ID != "" || d.Name != "" || d.Arguments != "" {
+		func(e ToolEvent) {
+			if e.Kind == "tool_args" {
 				deltaEvents++
 			}
 		})
@@ -167,7 +167,7 @@ func TestRoundFreezesPublishedToolCallID(t *testing.T) {
 
 	var published []string
 	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil },
-		func(_ int, d llm.ToolCallDelta) { published = append(published, d.ID) })
+		func(e ToolEvent) { published = append(published, e.CallID) })
 	if len(res.ToolCalls) != 1 {
 		t.Fatalf("calls = %+v, want 1", res.ToolCalls)
 	}

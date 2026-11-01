@@ -348,12 +348,12 @@ func (s *Server) handleConversationDelete(w http.ResponseWriter, r *http.Request
 	// final writes racing this delete read as cancellation (ErrRowGone /
 	// ErrConversationNotFound) rather than as a saved state the browser
 	// will never load. No wait: the cancel does not hold anything up.
-	s.gens.AbortConv(convID, user.ID)
+	s.chat.Generations.AbortConv(convID, user.ID)
 	if err := s.store.DeleteConversation(r.Context(), user.ID, convID); err != nil {
 		s.writeConvErr(w, r, err)
 		return
 	}
-	s.remembered.forget(convID) // consent dies with the conversation (§9.9)
+	s.chat.Approvals.Forget(convID) // consent dies with the conversation (§9.9)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -395,8 +395,8 @@ func (s *Server) handleConversationsPrune(w http.ResponseWriter, r *http.Request
 		// of letting their final writes race the prune. ids are exactly
 		// the ownership-filtered rows PruneConversations deleted (review3
 		// issue 1), and the registry double-checks the owner anyway.
-		s.gens.AbortConv(convID, user.ID)
-		s.remembered.forget(convID) // consent dies with the conversation (§9.9)
+		s.chat.Generations.AbortConv(convID, user.ID)
+		s.chat.Approvals.Forget(convID) // consent dies with the conversation (§9.9)
 	}
 	if ids == nil {
 		ids = []string{} // a JSON contract: ids is always an array, never null
