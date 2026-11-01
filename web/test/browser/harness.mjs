@@ -209,7 +209,31 @@ export async function registerAndOpen(page, base, email) {
     throw new Error(`register failed: ${resp.status()} ${await resp.text()}`);
   }
   await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("#btn-new-chat:visible");
+  await waitForConversation(page);
+}
+
+// Visibility of the shell alone does not mean its initial navigation has
+// committed. Wait for the hash, selected sidebar row and composer to agree.
+export async function waitForConversation(page, conversationID = null) {
+  await page.waitForFunction((expected) => {
+    const id = location.hash.startsWith("#/c/") ? location.hash.slice(4) : "";
+    return id && (!expected || id === expected) &&
+      document.querySelector("#conv-list .conv-item.active")?.dataset.id === id &&
+      !document.querySelector("#composer-input").disabled;
+  }, conversationID);
+}
+
+// The old conversation remains usable during the create request. Its
+// enabled textbox therefore cannot signal that the new chat is ready.
+export async function newConversation(page) {
+  const [response] = await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/conversations" && response.request().method() === "POST"),
+    page.click("#btn-new-chat"),
+  ]);
+  if (!response.ok()) throw new Error(`create conversation failed: ${response.status()} ${await response.text()}`);
+  const conversation = await response.json();
+  await waitForConversation(page, conversation.id);
+  return conversation.id;
 }
 
 // --- DOM digests -------------------------------------------------------------------
@@ -261,12 +285,14 @@ export async function sendChat(page, text) {
   await page.click("#btn-send");
 }
 
-// waitIdle resolves once no bubble is streaming any more — the same signal a
-// user reads as "the reply finished".
+// Streaming bubbles exist only after acceptance. The Stop/Send controls
+// cover the entire request, including pre-start and reconciliation, so an
+// empty thread or a slow first SSE event must not be mistaken for completion.
 export async function waitIdle(page, timeout = 30_000) {
   await page.waitForFunction(
-    () => !document.querySelector(".msg-body.streaming"), null, { timeout },
+    () => document.querySelector("#btn-stop").hidden &&
+      !document.querySelector("#btn-send").hidden &&
+      !document.querySelector("#btn-send").disabled &&
+      !document.querySelector(".msg-body.streaming"), null, { timeout },
   );
-  // A beat for the terminal events' DOM writes (notes, buttons) to settle.
-  await sleep(150);
 }

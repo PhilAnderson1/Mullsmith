@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  startFakeLLM, startApp, registerAndOpen, threadDigest, sendChat, waitIdle,
+  startFakeLLM, startApp, registerAndOpen, waitForConversation, newConversation, threadDigest, sendChat, waitIdle,
   textScript, toolScript, phantomScript,
 } from "./harness.mjs";
 
@@ -96,10 +96,9 @@ async function newSession() {
     sessionState = await ctx.storageState();
   } else {
     await page.goto(`${app.base}/`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#btn-new-chat:visible");
+    await waitForConversation(page);
   }
-  await page.click("#btn-new-chat");
-  await page.waitForFunction(() => !document.querySelector("#composer-input").disabled);
+  await newConversation(page);
   return { ctx, page };
 }
 const digest = (page) => page.evaluate(threadDigest);
@@ -530,5 +529,33 @@ test("older-chat pagination follows the list without covering rows or skipping l
       const after = await page.locator(".conv-window").evaluate((el) => el.scrollTop);
       assert.ok(Math.abs(before.scrollTop - after) < 2, "pagination jumped past newly loaded chats");
     }
+  } finally { await ctx.close(); }
+});
+
+test("slow chat creation and acceptance cannot masquerade as readiness or completion", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession();
+  try {
+    await page.route("**/api/v1/conversations", async (route) => {
+      if (route.request().method() === "POST") await new Promise((resolve) => setTimeout(resolve, 600));
+      await route.continue();
+    });
+    const previous = await page.evaluate(() => location.hash);
+    const created = await newConversation(page);
+    assert.equal(await page.evaluate(() => location.hash), `#/c/${created}`);
+    assert.notEqual(`#/c/${created}`, previous);
+    assert.equal(await page.locator("#thread .msg").count(), 0);
+
+    await page.route("**/api/v1/conversations/*/messages", async (route) => {
+      if (route.request().method() === "POST") await new Promise((resolve) => setTimeout(resolve, 600));
+      await route.continue();
+    });
+    llm.queueScripts(textScript("The delayed reply finished."));
+    await sendChat(page, "wait for acceptance and the actual reply");
+    await waitIdle(page);
+    const replies = assistants(await digest(page));
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].text, "The delayed reply finished.");
+    assert.equal(replies[0].streaming, false);
+    assert.equal(replies[0].lastAssistant, true);
   } finally { await ctx.close(); }
 });
