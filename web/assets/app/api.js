@@ -57,7 +57,8 @@ async function uploadFile(file) {
 }
 
 export const api = {
-  meta: () => request("GET", "/api/v1/meta"),
+  authConfig: () => request("GET", "/api/v1/auth/config"),
+  clientConfig: () => request("GET", "/api/v1/client-config"),
   me: () => request("GET", "/api/v1/auth/me"),
   login: (email, password, rememberMe) =>
     request("POST", "/api/v1/auth/login", { email, password, remember_me: rememberMe }),

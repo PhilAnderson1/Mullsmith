@@ -43,6 +43,77 @@ func aged(t *testing.T, path string, age time.Duration) {
 	}
 }
 
+func TestRunMaintenanceImmediateTickAndAuthCleanup(t *testing.T) {
+	s, root := maintServer(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	// The startup pass performs all three auth cleanups.
+	activeID := maintUser(t, s.store, root)
+	if err := s.store.SetUnconfirmedEmail(ctx, activeID, "expired-change@test.io", now); err != nil {
+		t.Fatal(err)
+	}
+	resetToken, err := s.store.CreateToken(ctx, store.TokenResetPassword, activeID,
+		"maint@test.io", now.Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := &store.User{ID: id.New(), Name: "Pending", PasswordHash: "x",
+		Status: store.StatusUnconfirmed, UnconfirmedEmail: "old-pending@test.io",
+		CreatedAt: now.Add(-store.ConfirmationTTL - time.Hour), UpdatedAt: now.Add(-time.Hour)}
+	if err := s.store.CreateUser(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	startupTemp := filepath.Join(root, ".upload-startup")
+	if err := os.WriteFile(startupTemp, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aged(t, startupTemp, 48*time.Hour)
+
+	ticks := make(chan time.Time, 1)
+	done := make(chan struct{})
+	go func() {
+		s.runMaintenance(ctx, ticks)
+		close(done)
+	}()
+
+	// A second old temp, created after the immediate pass has completed,
+	// proves that a supplied tick causes another complete pass.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(startupTemp); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("startup maintenance pass did not run")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	tickTemp := filepath.Join(root, ".share-tick")
+	if err := os.WriteFile(tickTemp, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aged(t, tickTemp, 48*time.Hour)
+	ticks <- now.Add(time.Hour)
+	close(ticks)
+	<-done
+
+	if _, err := os.Stat(tickTemp); !os.IsNotExist(err) {
+		t.Fatalf("tick maintenance left old temp: %v", err)
+	}
+	if got, err := s.store.UserByID(ctx, pending.ID); err != nil || got != nil {
+		t.Fatalf("expired pending user = (%+v, %v), want deleted", got, err)
+	}
+	active, err := s.store.UserByID(ctx, activeID)
+	if err != nil || active == nil || active.UnconfirmedEmail != "" {
+		t.Fatalf("expired email reservation = (%+v, %v), want cleared", active, err)
+	}
+	if valid, err := s.store.PasswordResetValid(ctx, resetToken, now); err != nil || valid {
+		t.Fatalf("expired reset token valid = %v, err = %v", valid, err)
+	}
+}
+
 // The sweep is pure mtime arithmetic now (disk-as-truth, spec §8): work/
 // ages at work_ttl, artifacts/ at artifact_ttl, uploads/ NEVER. Files at
 // any depth age on their own mtime — sweeping never reorganizes.

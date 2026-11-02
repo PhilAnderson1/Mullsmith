@@ -55,18 +55,6 @@ func getJSON(t *testing.T, a *authTest, path string, dst any) {
 	resp.Body.Close()
 }
 
-func TestConversationsRequireAuth(t *testing.T) {
-	a := newAuthTest(t, authCfg(t)) // no login
-	resp := a.do(http.MethodGet, "/api/v1/conversations", nil)
-	if resp.StatusCode != 401 || apiErrCode(t, resp) != "unauthenticated" {
-		t.Errorf("unauth list: %d", resp.StatusCode)
-	}
-	resp = a.do(http.MethodPost, "/api/v1/conversations", map[string]any{})
-	if resp.StatusCode != 401 {
-		t.Errorf("unauth create: %d", resp.StatusCode)
-	}
-}
-
 func TestConversationLifecycle(t *testing.T) {
 	a := signedIn(t)
 

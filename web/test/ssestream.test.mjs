@@ -83,14 +83,6 @@ test("LF frames arrive whole", async () => {
   ]);
 });
 
-test("CRLF frames arrive whole too (spec §6.1 accepts both)", async () => {
-  const { seen, h } = recorder();
-  serve(transcript("\r\n\r\n"), []);
-  await streamChat("/x", {}, h);
-  assert.equal(seen.length, 5, JSON.stringify(seen));
-  assert.deepEqual(seen[2], ["round", "m2"]);
-});
-
 test("chunk boundaries cutting frames and terminators mid-sequence still stream everything", async () => {
   const { seen, h } = recorder();
   const text = transcript("\r\n\r\n");

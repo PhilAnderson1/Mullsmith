@@ -251,6 +251,7 @@ func TestStreamNoRetryAfterDeltaSeen(t *testing.T) {
 
 func TestStreamCancelAborts(t *testing.T) {
 	release := make(chan struct{})
+	deltaSeen := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n")
@@ -265,10 +266,21 @@ func TestStreamCancelAborts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan error, 1)
 	go func() {
-		err := clientFor(ts, nil).StreamTools(ctx, "", nil, nil, nil, func(Delta) error { return nil })
+		err := clientFor(ts, nil).StreamTools(ctx, "", nil, nil, nil, func(Delta) error {
+			select {
+			case <-deltaSeen:
+			default:
+				close(deltaSeen)
+			}
+			return nil
+		})
 		got <- err
 	}()
-	time.Sleep(100 * time.Millisecond) // let the first delta arrive
+	select {
+	case <-deltaSeen:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first stream delta did not arrive")
+	}
 	cancel()
 
 	select {

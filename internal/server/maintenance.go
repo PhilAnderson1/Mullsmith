@@ -60,15 +60,26 @@ const (
 // hourly until ctx ends. Safe to run as a goroutine. Signature unchanged
 // from the registry era on purpose.
 func (s *Server) RunMaintenance(ctx context.Context) {
-	s.sweepScratchpad(ctx)
-	s.sweepAuthDB(ctx)
 	t := time.NewTicker(maintenanceInterval)
 	defer t.Stop()
+	s.runMaintenance(ctx, t.C)
+}
+
+// runMaintenance owns the observable loop contract while RunMaintenance owns
+// only the real clock. Keeping the tick source injectable makes the startup
+// pass, repeated passes and cancellation testable without sleeping for an
+// hour or weakening the production interval.
+func (s *Server) runMaintenance(ctx context.Context, ticks <-chan time.Time) {
+	s.sweepScratchpad(ctx)
+	s.sweepAuthDB(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case _, ok := <-ticks:
+			if !ok {
+				return
+			}
 			s.sweepScratchpad(ctx)
 			s.sweepAuthDB(ctx)
 		}

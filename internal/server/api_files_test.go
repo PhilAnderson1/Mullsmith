@@ -433,9 +433,13 @@ func TestListKindsFiltersAndFolders(t *testing.T) {
 	uid := meID(a)
 	userRoot := filepath.Join(cfg.Scratchpad.Root, uid)
 
+	oldPath := filepath.Join(userRoot, "work", "old.txt")
 	seedFile(t, cfg, uid, "work/old.txt", []byte("older"))
 	seedFile(t, cfg, uid, "work/proj/deep.txt", []byte("nested"))
-	time.Sleep(20 * time.Millisecond) // guarantee distinct mtimes
+	oldTime := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(oldPath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
 	seedFile(t, cfg, uid, "work/newer.csv", []byte("a,b\n"))
 	seedFile(t, cfg, uid, "work/.hidden", []byte("secret-ish"))
 	seedFile(t, cfg, uid, "artifacts/deliver.md", []byte("# done\n"))
@@ -679,23 +683,6 @@ func TestFilePurgeByAge(t *testing.T) {
 		t.Errorf("missing-root purge: %d, want 200", resp.StatusCode)
 	} else {
 		resp.Body.Close()
-	}
-}
-
-func TestFileAPIRequiresAuth(t *testing.T) {
-	cfg := scratchCfg(t)
-	a := newAuthTest(t, cfg) // logged out
-	for _, call := range []struct{ method, path string }{
-		{http.MethodGet, "/api/v1/files"},
-		{http.MethodGet, "/api/v1/files/download?path=work%2Fx"},
-		{http.MethodDelete, "/api/v1/files?path=work%2Fx"},
-		{http.MethodPost, "/api/v1/files"},
-	} {
-		resp := a.raw(call.method, call.path, nil, "")
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("%s %s: %d, want 401", call.method, call.path, resp.StatusCode)
-		}
 	}
 }
 

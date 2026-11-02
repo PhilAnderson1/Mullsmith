@@ -756,25 +756,12 @@ func TestChatValidation(t *testing.T) {
 	}
 }
 
-func TestChatRequiresAuthAndCSRF(t *testing.T) {
+func TestChatRequiresCSRF(t *testing.T) {
 	fake := newFakeLLM(t, scriptReply("x"))
 	a := signedInChat(t, chatCfg(t, fake.URL))
 	c := createConv(t, a, map[string]any{"title": "Sec"})
 
-	// Logged out.
-	logout := a.do(http.MethodPost, "/api/v1/auth/logout", nil)
-	logout.Body.Close()
-	resp := a.do(http.MethodPost, "/api/v1/conversations/"+c.ID+"/messages",
-		map[string]any{"content": "hi"})
-	if resp.StatusCode != 401 || apiErrCode(t, resp) != "unauthenticated" {
-		t.Errorf("logged-out chat = %d, want 401", resp.StatusCode)
-	}
-
-	// Signed in again, then a request without the CSRF header.
-	if r := a.do(http.MethodPost, "/api/v1/auth/login", map[string]any{
-		"email": "chat@b.io", "password": "uncommon-password-9"}); r.StatusCode != 200 {
-		t.Fatalf("re-login: %d %s", r.StatusCode, dumpBody(r))
-	}
+	// Send while signed in, but without the CSRF header.
 	body, _ := json.Marshal(map[string]any{"content": "hi"})
 	req, _ := http.NewRequest(http.MethodPost,
 		a.ts.URL+"/api/v1/conversations/"+c.ID+"/messages", strings.NewReader(string(body)))

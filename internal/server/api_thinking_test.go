@@ -106,7 +106,7 @@ func TestThinkingMetaAndDefaultProjection(t *testing.T) {
 			} `json:"choices_by_model"`
 		} `json:"thinking"`
 	}
-	getJSON(t, a, "/api/v1/meta", &meta)
+	getJSON(t, a, "/api/v1/client-config", &meta)
 	if meta.Thinking == nil {
 		t.Fatal("meta.thinking = null with a visible profile")
 	}
@@ -153,7 +153,7 @@ func TestThinkingMetaAndDefaultProjection(t *testing.T) {
 	var meta2 struct {
 		Thinking any `json:"thinking"`
 	}
-	getJSON(t, a2, "/api/v1/meta", &meta2)
+	getJSON(t, a2, "/api/v1/client-config", &meta2)
 	if meta2.Thinking != nil {
 		t.Errorf("legacy meta.thinking = %v, want null", meta2.Thinking)
 	}

@@ -132,12 +132,3 @@ func TestDeleteAccountCascadesEverything(t *testing.T) {
 		t.Errorf("me after delete = %d, want 401", resp.StatusCode)
 	}
 }
-
-func TestDeleteAccountRequiresAuth(t *testing.T) {
-	a := newAuthTest(t, authCfg(t))
-	resp := a.do(http.MethodPost, "/api/v1/auth/me/delete", map[string]any{})
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("unauth delete = %d, want 401", resp.StatusCode)
-	}
-}

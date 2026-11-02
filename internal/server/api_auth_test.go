@@ -667,8 +667,17 @@ func TestUnauthenticatedEndpoints(t *testing.T) {
 	a := newAuthTest(t, authCfg(t))
 	for _, e := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/auth/me"},
+		{http.MethodGet, "/api/v1/client-config"},
 		{http.MethodPost, "/api/v1/auth/logout"},
 		{http.MethodPost, "/api/v1/auth/password"},
+		{http.MethodPost, "/api/v1/auth/me/delete"},
+		{http.MethodGet, "/api/v1/conversations"},
+		{http.MethodPost, "/api/v1/conversations"},
+		{http.MethodPost, "/api/v1/conversations/00000000000000000000000000/messages"},
+		{http.MethodGet, "/api/v1/files"},
+		{http.MethodGet, "/api/v1/files/download?path=work%2Fx"},
+		{http.MethodDelete, "/api/v1/files?path=work%2Fx"},
+		{http.MethodPost, "/api/v1/files"},
 	} {
 		resp := a.do(e.method, e.path, map[string]any{"current": "x", "new": "y"})
 		if resp.StatusCode != http.StatusUnauthorized || apiErrCode(t, resp) != "unauthenticated" {

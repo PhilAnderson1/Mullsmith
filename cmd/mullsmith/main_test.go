@@ -4,13 +4,23 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"mullsmith/internal/auth"
+	"mullsmith/internal/config"
 	"mullsmith/internal/scratch"
 	"mullsmith/internal/store"
 )
@@ -51,6 +61,226 @@ func TestDefaultConfigPath(t *testing.T) {
 	if defaultConfigPath != "/etc/mullsmith/config.yaml" {
 		t.Errorf("defaultConfigPath = %q, want /etc/mullsmith/config.yaml", defaultConfigPath)
 	}
+}
+
+func TestExpireSessionsOnTicks(t *testing.T) {
+	db := testDB(t)
+	u := putUser(t, db, "expiry@cli.io", "", store.StatusEnabled)
+	now := time.Now().Truncate(time.Second)
+	hash := auth.HashToken("expired-session")
+	if err := db.CreateSession(context.Background(), &store.Session{
+		IDHash: hash, UserID: u.ID, CreatedAt: now.Add(-time.Hour),
+		LastSeenAt: now.Add(-time.Hour), ExpiresAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ticks := make(chan time.Time, 1)
+	done := make(chan struct{})
+	go func() {
+		expireSessionsOnTicks(context.Background(), db,
+			slog.New(slog.NewTextHandler(io.Discard, nil)), ticks)
+		close(done)
+	}()
+	ticks <- now
+	close(ticks)
+	<-done
+
+	if got, err := db.SessionByHash(context.Background(), hash); err != nil || got != nil {
+		t.Fatalf("expired session after tick = (%+v, %v), want nil, nil", got, err)
+	}
+}
+
+func TestAdminCreateUserAndResetPassword(t *testing.T) {
+	db := testDB(t)
+	cfg := &config.Config{
+		Scratchpad: config.Scratchpad{Root: t.TempDir()},
+		Auth:       config.Auth{Argon2: config.Argon2{Time: 1, Memory: 1024, Threads: 1}},
+	}
+	ctx := context.Background()
+	const oldPassword = "initial-secret-42"
+	if code := adminCreateUser(ctx, cfg, db, []string{
+		"-email", "CLI@Example.Test", "-name", "CLI User", "-password", oldPassword,
+	}); code != 0 {
+		t.Fatalf("create-user exit = %d", code)
+	}
+	u, err := db.UserByEmail(ctx, "cli@example.test")
+	if err != nil || u == nil {
+		t.Fatalf("created user = (%+v, %v)", u, err)
+	}
+	if !auth.VerifyPassword(oldPassword, u.PasswordHash) {
+		t.Fatal("created user's password does not verify")
+	}
+	for _, dir := range []string{"uploads", "work", "artifacts"} {
+		if st, err := os.Stat(filepath.Join(cfg.Scratchpad.Root, u.ID, dir)); err != nil || !st.IsDir() {
+			t.Fatalf("scratchpad %s = (%v, %v), want directory", dir, st, err)
+		}
+	}
+
+	sessionHash := auth.HashToken("cli-reset-session")
+	if err := db.CreateSession(ctx, &store.Session{
+		IDHash: sessionHash, UserID: u.ID, CreatedAt: time.Now(),
+		LastSeenAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const newPassword = "replacement-secret-84"
+	if code := adminResetPassword(ctx, cfg, db,
+		[]string{u.Email, "-password", newPassword}); code != 0 {
+		t.Fatalf("reset-password exit = %d", code)
+	}
+	u, err = db.UserByID(ctx, u.ID)
+	if err != nil || u == nil || !auth.VerifyPassword(newPassword, u.PasswordHash) {
+		t.Fatalf("reset password did not verify: user=%+v err=%v", u, err)
+	}
+	if session, err := db.SessionByHash(ctx, sessionHash); err != nil || session != nil {
+		t.Fatalf("session after password reset = (%+v, %v), want revoked", session, err)
+	}
+}
+
+func TestAdminInvitePersistsRequestedCodes(t *testing.T) {
+	db := testDB(t)
+	var out, errOut bytes.Buffer
+	if code := adminInviteTo(context.Background(), db, []string{"3"}, &out, &errOut); code != 0 {
+		t.Fatalf("invite exit = %d, stderr = %s", code, errOut.String())
+	}
+	lines := strings.Fields(out.String())
+	if len(lines) != 3 {
+		t.Fatalf("invite output = %q, want three codes", out.String())
+	}
+	for _, code := range lines {
+		if ok, err := db.InviteAvailable(context.Background(), code); err != nil || !ok {
+			t.Errorf("printed invite %q available = %v, err = %v", code, ok, err)
+		}
+	}
+	if code := adminInviteTo(context.Background(), db, []string{"101"}, io.Discard, &errOut); code != 2 {
+		t.Errorf("invite count 101 exit = %d, want 2", code)
+	}
+}
+
+func TestCheckConfigChecksEveryConfiguredModel(t *testing.T) {
+	models := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"one","context_length":8192},{"id":"two","context_length":16384}]}`)
+	}))
+	defer models.Close()
+
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "check.yaml")
+	body := "server:\n  listen: \"127.0.0.1:0\"\n" +
+		"database:\n  dir: " + strconv.Quote(filepath.Join(root, "db")) + "\n" +
+		"scratchpad:\n  root: " + strconv.Quote(filepath.Join(root, "scratch")) + "\n" +
+		"llm:\n  endpoint: " + strconv.Quote(models.URL+"/v1") + "\n" +
+		"  models:\n    - id: one\n    - id: two\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if code := checkConfig(cfg, logger); code != 0 {
+		t.Fatalf("check-config with all models served exit = %d", code)
+	}
+	cfg.LLM.Models = append(cfg.LLM.Models, config.LLMModel{ID: "missing"})
+	if code := checkConfig(cfg, logger); code != 1 {
+		t.Fatalf("check-config with a missing configured model exit = %d", code)
+	}
+}
+
+func TestRunServesHealthAndShutsDownOnSIGTERM(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "config.yaml")
+	body := "server:\n" +
+		"  listen: " + strconv.Quote(addr) + "\n" +
+		"  shutdown_grace: 2s\n" +
+		"database:\n  dir: " + strconv.Quote(filepath.Join(root, "db")) + "\n" +
+		"scratchpad:\n  root: " + strconv.Quote(filepath.Join(root, "scratch")) + "\n" +
+		"llm:\n  endpoint: \"http://127.0.0.1:1/v1\"\n" +
+		"  models:\n    - id: test-model\n      context_size: 8192\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunProcessHelper$", "--", "-config", cfgPath)
+	cmd.Env = append(os.Environ(), "MULLSMITH_RUN_PROCESS_HELPER=1")
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := client.Get("http://" + addr + "/healthz")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not become healthy: %v\n%s", err, output.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	select {
+	case err := <-wait:
+		if err != nil {
+			t.Fatalf("server shutdown: %v\n%s", err, output.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("server did not stop after SIGTERM\n%s", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "db", "mullsmith.db")); err != nil {
+		t.Fatalf("startup did not create database: %v", err)
+	}
+}
+
+// TestRunProcessHelper runs the production assembly path in a subprocess;
+// the parent test above owns its signal and observes the real HTTP listener.
+func TestRunProcessHelper(t *testing.T) {
+	if os.Getenv("MULLSMITH_RUN_PROCESS_HELPER") != "1" {
+		return
+	}
+	sep := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 {
+		t.Fatal("helper arguments missing separator")
+	}
+	os.Exit(run(os.Args[sep+1:]))
 }
 
 func TestAdminListUsersShowsPendingRows(t *testing.T) {

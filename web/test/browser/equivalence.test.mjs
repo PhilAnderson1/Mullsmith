@@ -174,6 +174,47 @@ test("files load more preserves tabs and supports retries after a failed page", 
   } finally { await ctx.close(); }
 });
 
+test("file purge confirms and stays scoped to the active tab", async () => {
+  const { ctx, page } = await newSession();
+  try {
+    const me = await (await page.request.get(`${app.base}/api/v1/auth/me`)).json();
+    const work = join(app.dir, "scratch", me.id, "work", "purge-old.txt");
+    const upload = join(app.dir, "scratch", me.id, "uploads", "keep-old.txt");
+    writeFileSync(work, "old work");
+    writeFileSync(upload, "old upload");
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    utimesSync(work, old, old);
+    utimesSync(upload, old, old);
+
+    await page.click("#btn-files");
+    await page.click('.files-filter[data-kind="work"]');
+    await page.selectOption("#files-purge-select", "1d");
+    await page.waitForSelector("#confirm-dialog[open]");
+    assert.match(await page.locator("#confirm-text").textContent(), /Delete files in Work older than/);
+    await page.click("#confirm-ok");
+    const deadline = Date.now() + 5000;
+    while (existsSync(work) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(existsSync(work), false);
+    assert.equal(existsSync(upload), true, "a Work purge touched Uploads");
+  } finally { await ctx.close(); }
+});
+
+test("account deletion cannot proceed without confirmation", async () => {
+  const { ctx, page } = await newSession();
+  try {
+    await page.click("#btn-settings");
+    await page.waitForSelector("#settings-panel:not([hidden])");
+    await page.click("#btn-delete-account");
+    await page.waitForSelector("#confirm-dialog[open]");
+    assert.match(await page.locator("#confirm-text").textContent(), /Delete your account permanently/);
+    await page.click('#confirm-dialog button[value="cancel"]');
+    assert.equal((await page.request.get(`${app.base}/api/v1/auth/me`)).status(), 200);
+    assert.equal(await page.locator("#settings-panel").isVisible(), true);
+  } finally { await ctx.close(); }
+});
+
 test("tool turn with a late call ID: live DOM equals reloaded DOM", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
   try {

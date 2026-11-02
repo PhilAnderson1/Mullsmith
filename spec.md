@@ -494,20 +494,18 @@ the chip behind as a historical record whose download 404s (by design).
 
 ### 5.4 Misc
 
-`GET /healthz` (no auth: liveness), `GET /api/v1/meta` (model picker list + `default_model`,
-`registration` mode, `remember_login`/`show_reasoning` flags, `email_features`
-(§9.17), `thinking` (`{choices_by_model: {<model id>: [{id, label}]}}` — one list per picker
-model, since a choice list describes a model; `null` when no entry names a profile at all.
-The SPA reads
-the row for the conversation's active model — its own pick, else `default_model`; only ids
-and labels cross the wire, §6.3. A pick the deployment's `models` no longer lists (endpoint
-swapped, entry removed) resolves to `default_model` everywhere the active model appears —
-API projection, picker, wire request, thinking, window — while the stored name survives a
-config that later restores it),
-char limit, tools
-map — `web_search`/`web_fetch`/`web_download`/`code_run` — and file caps: max size, max attachments,
-`blocked_extensions` — used by the login/register screens, composer and upload UI),
-everything else behind auth.
+`GET /healthz` is the unauthenticated liveness check. `GET /api/v1/auth/config`
+is also public, but contains only the login/register options: `registration`,
+`remember_login` and `email_features` (§9.17).
+
+`GET /api/v1/client-config` is authenticated and supplies the chat UI's model
+picker list, `default_model`, `show_reasoning`, file caps (maximum size and
+attachments plus `blocked_extensions`) and `thinking` as
+`{choices_by_model: {<model id>: [{id, label}]}}`. Each picker model has its
+own choice list; the value is `null` when no model names a thinking profile.
+Only ids and labels cross the wire (§6.3). A stored model the deployment no
+longer lists resolves to `default_model` everywhere the active model appears,
+while the stored name survives in case a later configuration restores it.
 
 ---
 

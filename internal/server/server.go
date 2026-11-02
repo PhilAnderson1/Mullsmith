@@ -132,7 +132,8 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("GET /api/v1/meta", s.handleMeta)
+	mux.HandleFunc("GET /api/v1/auth/config", s.handleAuthConfig)
+	mux.Handle("GET /api/v1/client-config", s.authRequired(s.handleClientConfig))
 	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.Handle("POST /api/v1/auth/logout", s.authRequired(s.handleLogout))
@@ -235,20 +236,24 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleMeta exposes only what the login/register screens need.
-func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+// handleAuthConfig is public and exposes only what the login/register screens need.
+func (s *Server) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"app":     "mullsmith",
-		"version": s.appVer,
-		"models":  s.cfg.LLM.ModelNames(),
+		"registration":   s.cfg.Auth.Registration,
+		"remember_login": s.cfg.Auth.RememberLogin,
+		"email_features": s.cfg.Email.Enabled,
+	})
+}
+
+// handleClientConfig returns configuration used only by the authenticated
+// application. Keeping it behind auth avoids advertising the deployment's
+// model catalogue, thinking controls and file policy to anonymous scanners.
+func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models": s.cfg.LLM.ModelNames(),
 		// default_model lets the picker name the model a conversation with
 		// no explicit choice actually runs on.
 		"default_model":  s.cfg.LLM.DefaultModelID(),
-		"registration":   s.cfg.Auth.Registration,
-		"remember_login": s.cfg.Auth.RememberLogin,
-		// email_features drives the SPA's forgot-link / confirmation copy
-		// exactly like remember_login and registration drive theirs.
-		"email_features": s.cfg.Email.Enabled,
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
 		// Thinking selector: the choice list per picker model (a model's
 		// dropdown describes its model), or null when the feature is off —
@@ -256,17 +261,8 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// Only id+label cross the wire: request
 		// templates and credentials stay server-side.
 		"thinking": s.thinkingMeta(),
-		// (The context window no longer rides meta: it is a model
+		// (The context window does not ride client config: it is a model
 		// property, so each conversation carries its own — §6.1.)
-		"limits": map[string]any{
-			"max_message_chars": s.cfg.AppLimits.MaxMessageChars,
-		},
-		"tools": map[string]bool{
-			"web_search":   s.cfg.Tools.WebSearch.Enabled,
-			"web_fetch":    s.cfg.Tools.WebFetch.Enabled,
-			"web_download": s.cfg.Tools.WebDownload.Enabled,
-			"code_run":     s.cfg.Scratchpad.CodeExec.Enabled,
-		},
 		"files": map[string]any{
 			"max_file_size":      int64(s.cfg.Scratchpad.MaxFileSize),
 			"max_attachments":    s.cfg.AppLimits.MaxAttachments,

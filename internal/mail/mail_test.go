@@ -560,12 +560,14 @@ func TestSMTPDeliverCancellationInterruptsParkedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan struct{}, 1)
 	go func() { // accept and stay silent: a 220 greeting never arrives
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
+			accepted <- struct{}{}
 			defer conn.Close()
 		}
 	}()
@@ -575,7 +577,11 @@ func TestSMTPDeliverCancellationInterruptsParkedRead(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() { errCh <- c.Deliver(ctx, "u@d.io", "s", "b") }()
-	time.Sleep(100 * time.Millisecond) // by now the greeting read is parked
+	select {
+	case <-accepted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("SMTP client did not connect")
+	}
 	cancel()
 	select {
 	case err := <-errCh:

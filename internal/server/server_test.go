@@ -94,7 +94,7 @@ func TestSecurityHeadersAlwaysPresent(t *testing.T) {
 	ts := newTestServer(t, testCfg())
 	defer ts.Close()
 
-	for _, path := range []string{"/", "/healthz", "/api/v1/meta", "/nope/missing", "/assets/"} {
+	for _, path := range []string{"/", "/healthz", "/api/v1/auth/config", "/nope/missing", "/assets/"} {
 		resp, err := http.Get(ts.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -140,11 +140,11 @@ func TestTLSConfigAddsHSTSAndUpgrade(t *testing.T) {
 	}
 }
 
-func TestMetaStub(t *testing.T) {
+func TestPublicAuthConfigContainsOnlyAuthenticationUIFlags(t *testing.T) {
 	cfg := testCfg()
 	ts := newTestServer(t, cfg)
 	defer ts.Close()
-	resp, err := http.Get(ts.URL + "/api/v1/meta")
+	resp, err := http.Get(ts.URL + "/api/v1/auth/config")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,16 +153,40 @@ func TestMetaStub(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta["app"] != "mullsmith" || meta["registration"] != "invite-only" {
+	if meta["registration"] != "invite-only" {
 		t.Errorf("meta = %v", meta)
 	}
-	// The context window no longer rides meta: it is a model property,
-	// carried per conversation (§6.1).
-	if _, present := meta["max_context_tokens"]; present {
-		t.Error("meta still carries max_context_tokens")
+	want := map[string]bool{
+		"registration": true, "remember_login": true, "email_features": true,
 	}
-	if _, leaked := meta["api_key"]; leaked {
-		t.Error("meta must not expose api_key")
+	for key := range meta {
+		if !want[key] {
+			t.Errorf("public auth config unnecessarily exposes %q", key)
+		}
+	}
+	for key := range want {
+		if _, ok := meta[key]; !ok {
+			t.Errorf("public auth config is missing %q", key)
+		}
+	}
+}
+
+func TestClientConfigIsAvailableAfterAuthentication(t *testing.T) {
+	a := signedIn(t)
+	resp := a.do(http.MethodGet, "/api/v1/client-config", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("client config = %d, want 200", resp.StatusCode)
+	}
+	meta := decodeBody(t, resp)
+	for _, key := range []string{"models", "default_model", "show_reasoning", "thinking", "files"} {
+		if _, ok := meta[key]; !ok {
+			t.Errorf("client config is missing %q", key)
+		}
+	}
+	for _, key := range []string{"app", "version", "tools", "limits", "registration", "remember_login", "email_features"} {
+		if _, ok := meta[key]; ok {
+			t.Errorf("client config unnecessarily contains %q", key)
+		}
 	}
 }
 
@@ -534,7 +558,7 @@ func TestAssetCachingPolicy(t *testing.T) {
 		{"/assets/styles.css", "public, max-age=3600"},
 		{"/assets/app/app.js?v=somebuild", "public, max-age=3600"}, // stamp rotates the key, not the policy
 		{"/", "no-store"},
-		{"/api/v1/meta", "no-store"},
+		{"/api/v1/auth/config", "no-store"},
 	} {
 		resp, err := ts.Client().Get(ts.URL + tc.path)
 		if err != nil {

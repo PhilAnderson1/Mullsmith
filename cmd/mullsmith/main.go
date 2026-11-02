@@ -271,12 +271,22 @@ func shutdownWithin(grace time.Duration, stages ...func(context.Context)) {
 func expireSessionsLoop(ctx context.Context, db *store.DB, logger *slog.Logger) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
+	expireSessionsOnTicks(ctx, db, logger, t.C)
+}
+
+// expireSessionsOnTicks is the clock-free loop contract. Production supplies
+// the hourly ticker above; tests can drive an exact tick and cancellation
+// without a timing sleep.
+func expireSessionsOnTicks(ctx context.Context, db *store.DB, logger *slog.Logger, ticks <-chan time.Time) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			if n, err := db.DeleteExpired(context.Background(), time.Now()); err != nil {
+		case now, ok := <-ticks:
+			if !ok {
+				return
+			}
+			if n, err := db.DeleteExpired(context.Background(), now); err != nil {
 				logger.Warn("session purge failed", "error", err)
 			} else if n > 0 {
 				logger.Info("purged expired sessions", "count", n)
@@ -333,7 +343,12 @@ func adminMain(cfgPath string, args []string) int {
 }
 
 func adminInvite(ctx context.Context, cfg *config.Config, db *store.DB, args []string) int {
+	return adminInviteTo(ctx, db, args, os.Stdout, os.Stderr)
+}
+
+func adminInviteTo(ctx context.Context, db *store.DB, args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("admin invite", flag.ContinueOnError)
+	fs.SetOutput(errOut)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -342,21 +357,21 @@ func adminInvite(ctx context.Context, cfg *config.Config, db *store.DB, args []s
 		var err error
 		n, err = strconv.Atoi(fs.Arg(0))
 		if err != nil || n < 1 || n > 100 {
-			fmt.Fprintln(os.Stderr, "invite count must be 1..100")
+			fmt.Fprintln(errOut, "invite count must be 1..100")
 			return 2
 		}
 	}
 	for i := 0; i < n; i++ {
 		code, err := auth.NewInviteCode()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "mullsmith:", err)
+			fmt.Fprintln(errOut, "mullsmith:", err)
 			return 1
 		}
 		if err := db.CreateInvite(ctx, code, time.Now()); err != nil {
-			fmt.Fprintln(os.Stderr, "mullsmith: create invite:", err)
+			fmt.Fprintln(errOut, "mullsmith: create invite:", err)
 			return 1
 		}
-		fmt.Println(code)
+		fmt.Fprintln(out, code)
 	}
 	return 0
 }

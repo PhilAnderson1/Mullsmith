@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -319,24 +318,24 @@ func TestAdmitSendReadFailureIsTyped(t *testing.T) {
 // starts the flight and the rest join it.
 func TestContextWindowProbesCoalesce(t *testing.T) {
 	gate, open := gate()
+	started := make(chan struct{}, 2)
 	var probes int32
 	_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
 		atomic.AddInt32(&probes, 1)
+		started <- struct{}{}
 		<-gate // slow endpoint: every other refresh lands mid-flight
 		return map[string]int{"m1": 9999}, true
 	}, config.LLMModel{ID: "m1", Default: true})
 
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			s.refreshContextWindowFor("m1")
-		}()
+	first := s.ensureProbe()
+	<-started
+	for i := 1; i < 10; i++ {
+		if joined := s.ensureProbe(); joined != first {
+			t.Fatalf("caller %d started a separate probe instead of joining", i)
+		}
 	}
-	time.Sleep(100 * time.Millisecond) // all waiters have joined the flight
 	open()
-	wg.Wait()
+	<-first
 	if n := atomic.LoadInt32(&probes); n != 1 {
 		t.Errorf("probes = %d, want the ten refreshes to share one", n)
 	}
@@ -345,13 +344,47 @@ func TestContextWindowProbesCoalesce(t *testing.T) {
 	}
 
 	// The marker resets with the flight: a later refresh probes again.
-	// The probe runs in its goroutine — give it a moment to land.
-	s.refreshContextWindowFor("m1")
-	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt32(&probes) != 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	second := s.ensureProbe()
+	<-started
+	<-second
 	if n := atomic.LoadInt32(&probes); n != 2 {
 		t.Errorf("probes after completion = %d, want a fresh probe (marker reset)", n)
 	}
+}
+
+func TestStartContextWindowProbe(t *testing.T) {
+	t.Run("pinned models do not probe", func(t *testing.T) {
+		called := make(chan struct{}, 1)
+		_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
+			called <- struct{}{}
+			return nil, false
+		}, config.LLMModel{ID: "pinned", Default: true, ContextSize: 8192})
+		s.StartContextWindowProbe()
+		select {
+		case <-called:
+			t.Fatal("boot probe ran for an all-pinned configuration")
+		default:
+		}
+	})
+
+	t.Run("auto model is warmed in background", func(t *testing.T) {
+		probed := make(chan struct{})
+		_, s, _ := newWindowTest(t, func(context.Context) (map[string]int, bool) {
+			close(probed)
+			return map[string]int{"auto": 12288}, true
+		}, config.LLMModel{ID: "auto", Default: true})
+		s.StartContextWindowProbe()
+		select {
+		case <-probed:
+		case <-time.After(2 * time.Second):
+			t.Fatal("boot context-window probe did not run")
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for s.contextWindow("auto") != 12288 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if got := s.contextWindow("auto"); got != 12288 {
+			t.Fatalf("boot-probed window = %d, want 12288", got)
+		}
+	})
 }

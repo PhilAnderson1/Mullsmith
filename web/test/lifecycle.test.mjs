@@ -149,7 +149,7 @@ globalThis.__MULLSMITH_TEST__ = true;
 const {
   state, navigation, generation, navOwner, selectConversation, startGeneration,
   sendFromComposer, regenerateFrom,
-  onHashChange, onModelChange, earlierButton,
+  onHashChange, onModelChange, earlierButton, newChat, renderConversation,
 } = await import("../assets/app/app.js");
 
 // reset gives each test a clean, logged-in-looking session.
@@ -175,6 +175,42 @@ const CHAT_OK = (url) =>
 // tick drains the microtask queue AND one macrotask round, so chained
 // awaits inside the code under test (fetch → json → next fetch) progress.
 const tick = () => new Promise((r) => setImmediate(r));
+
+test("new chat carries the model currently selected in the picker", async () => {
+  reset("A");
+  elFor("#model-picker").value = "model-two";
+  let createBody;
+  fetcher = async (url, opts = {}) => {
+    if (url.endsWith("/api/v1/conversations") && opts.method === "POST") {
+      createBody = JSON.parse(opts.body);
+      return ok({ id: "NEW", model: "model-two", title: "New chat" });
+    }
+    return CHAT_OK(url);
+  };
+  await newChat();
+  assert.equal(createBody.model, "model-two");
+  assert.equal(navigation.currentId, "NEW");
+});
+
+test("rendering a conversation rebuilds thinking choices for its model", () => {
+  reset("A");
+  state.meta = {
+    default_model: "model-one",
+    thinking: { choices_by_model: {
+      "model-one": [{ id: "default", label: "Default" }],
+      "model-two": [
+        { id: "default", label: "Default" },
+        { id: "high", label: "High" },
+      ],
+    } },
+  };
+  navigation.reset({ id: "A", model: "model-two", thinking: "high" });
+  renderConversation();
+  const select = elFor("#thinking-select");
+  assert.deepEqual(select.options.map((o) => o.value), ["default", "high"]);
+  assert.equal(select.value, "high");
+  assert.equal(select.disabled, false);
+});
 
 // --- finding 3: navigation ownership -----------------------------------------
 

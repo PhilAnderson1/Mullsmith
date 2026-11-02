@@ -131,7 +131,7 @@ function freePort() {
 }
 
 // startApp builds a config against the fake endpoint, boots the binary and
-// waits for /api/v1/meta. `approval` overrides the per-tool policy map.
+// waits for the public auth config. `approval` overrides the per-tool policy map.
 export async function startApp(llmUrl, { repoRoot, binPath, approval } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "mullsmith-browser-"));
   const port = await freePort();
@@ -173,7 +173,7 @@ tools:
   for (;;) {
     if (proc.exitCode !== null) throw new Error(`server exited early:\n${logs}`);
     try {
-      const r = await fetch(`${base}/api/v1/meta`);
+      const r = await fetch(`${base}/api/v1/auth/config`);
       if (r.ok) break;
     } catch { /* not listening yet */ }
     if (Date.now() > deadline) throw new Error(`server never came up:\n${logs}`);

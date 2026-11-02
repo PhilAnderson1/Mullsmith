@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,15 +48,15 @@ func TestHashGateSerializesAndRefuses(t *testing.T) {
 			if c := running.Add(1); c > peak.Load() {
 				peak.Store(c)
 			}
-			time.Sleep(5 * time.Millisecond)
 			running.Add(-1)
 			return nil
 		})
 	}()
 
-	// Give the waiter a moment to park, then arrive over capacity:
+	// Wait until the queue ticket itself proves the waiter is parked, then
+	// arrive over capacity:
 	// 1 running + 1 waiting = quota full ⇒ immediate ErrHashBusy.
-	time.Sleep(30 * time.Millisecond)
+	waitForHashQuota(t, g, 2)
 	if err := g.Run(context.Background(), func() error { return nil }); !errors.Is(err, ErrHashBusy) {
 		t.Errorf("over-capacity Run = %v, want ErrHashBusy", err)
 	}
@@ -95,7 +96,7 @@ func TestHashGateCancelReleasesSpot(t *testing.T) {
 		defer wg.Done()
 		canceled <- g.Run(ctx, func() error { return nil })
 	}()
-	time.Sleep(30 * time.Millisecond) // let the waiter park on the slot
+	waitForHashQuota(t, g, 2)
 
 	cancel()
 	if err := <-canceled; !errors.Is(err, context.Canceled) {
@@ -121,6 +122,17 @@ func TestHashGateCancelReleasesSpot(t *testing.T) {
 	wg.Wait()
 	if err := <-second; err != nil {
 		t.Errorf("post-cancel waiter: %v", err)
+	}
+}
+
+func waitForHashQuota(t *testing.T, g *HashGate, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(g.quota) != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("hash quota occupancy = %d, want %d", len(g.quota), want)
+		}
+		runtime.Gosched()
 	}
 }
 

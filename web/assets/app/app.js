@@ -157,6 +157,13 @@ function showAuth() {
 }
 
 async function enterChat(user) {
+  try {
+    state.meta = { ...state.meta, ...await api.clientConfig() };
+    applyMetaFlags();
+  } catch (err) {
+    handleErr(err, "load application configuration");
+    return;
+  }
   state.me = user;
   show($("#view-auth"), false);
   show($("#view-chat"), true);
@@ -428,7 +435,7 @@ function applyMetaFlags() {
   // conversation's selection resolves to a real one (default_model covers
   // those that never chose explicitly). The Set dedupes the common case
   // where models already contains the default.
-  for (const value of new Set([m.default_model, ...m.models].filter(Boolean))) {
+  for (const value of new Set([m.default_model, ...(m.models || [])].filter(Boolean))) {
     const opt = document.createElement("option");
     opt.value = value;
     // Shorten the label only; selection and requests retain the full ID.
@@ -450,7 +457,7 @@ async function onLogin(ev) {
       $("#login-password").value,
       $("#login-remember").checked
     );
-    enterChat(me);
+    await enterChat(me);
   } catch (err) {
     errEl.textContent = err.message;
     show(errEl, true);
@@ -478,7 +485,7 @@ async function onRegister(ev) {
       routeAuthForm();
       return;
     }
-    enterChat(me);
+    await enterChat(me);
   } catch (err) {
     errEl.textContent = err.message;
     show(errEl, true);
@@ -1382,7 +1389,7 @@ function thinkingChoices() {
   return th.choices_by_model[active] || [];
 }
 
-// Build the dropdown from /api/v1/meta. The row APPEARS whenever the
+// Build the dropdown from authenticated /api/v1/client-config. The row APPEARS whenever the
 // deployment has thinking somewhere (meta.thinking is non-null): a model
 // with nothing to choose then shows a DISABLED dropdown whose tooltip
 // points at the fix — hiding it would leave the feature undiscoverable
@@ -1720,7 +1727,7 @@ async function boot() {
   window.addEventListener("hashchange", onHashChange);
 
   try {
-    state.meta = await api.meta();
+    state.meta = await api.authConfig();
   } catch {
     state.meta = { registration: "open", remember_login: true, email_features: false,
       models: [], default_model: "" };
@@ -1734,7 +1741,7 @@ async function boot() {
     // would otherwise wipe the token hash as a leftover.
     const handled = await consumeEmailToken();
     if (handled === "auth") return;
-    enterChat(handled || me);
+    await enterChat(handled || me);
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 401) {
       toast(`Cannot reach the server: ${err.message}`);
@@ -1753,4 +1760,5 @@ if (!globalThis.__MULLSMITH_TEST__) boot();
 export {
   state, navigation, generation, navOwner, listOwner, selectConversation, startGeneration, abandonInflight,
   sendFromComposer, regenerateFrom, onHashChange, onModelChange, onThinkingChange, earlierButton,
+  newChat, renderConversation,
 };

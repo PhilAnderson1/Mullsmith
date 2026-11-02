@@ -169,13 +169,13 @@ func TestEmailRoutesGatedWhenDisabled(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// meta advertises the switch both ways.
-	off := decodeBody(t, a.do(http.MethodGet, "/api/v1/meta", nil))
+	// Public auth config advertises the switch both ways.
+	off := decodeBody(t, a.do(http.MethodGet, "/api/v1/auth/config", nil))
 	if off["email_features"] != false {
 		t.Errorf("meta email_features off = %v, want false", off["email_features"])
 	}
 	on, _ := emailTestApp(t)
-	onMeta := decodeBody(t, on.do(http.MethodGet, "/api/v1/meta", nil))
+	onMeta := decodeBody(t, on.do(http.MethodGet, "/api/v1/auth/config", nil))
 	if onMeta["email_features"] != true {
 		t.Errorf("meta email_features on = %v, want true", onMeta["email_features"])
 	}
