@@ -333,13 +333,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   /* Keep overlay scrollbars out of conversation titles and row actions,
      with a little breathing room before the track. */
   scrollbar-gutter: stable;
-  padding-inline-end: 0.3rem;
-}
-
-/* Android's overlay scroll indicator sits inside the scrolling box instead
-   of consuming the stable gutter, so the drawer needs a wider visual gap. */
-@media (max-width: 1023px) {
-  .conv-window { padding-inline-end: 0.65rem; }
+  padding-inline-end: 0.8rem;
 }
 
 .conv-list {
