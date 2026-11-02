@@ -342,13 +342,13 @@ func TestCodeRunRegistrationGating(t *testing.T) {
 	fr := &fakeRunner{}
 	base := func() *config.Config {
 		cfg := &config.Config{}
-		cfg.Scratchpad.CodeExec.Enabled = true
-		cfg.Scratchpad.CodeExec.AllowedRuntimes = []config.Runtime{{ID: "sh", Binary: "/bin/sh"}}
+		cfg.Tools.CodeRun.Enabled = true
+		cfg.Tools.CodeRun.AllowedRuntimes = []config.Runtime{{ID: "sh", Binary: "/bin/sh"}}
 		return cfg
 	}
 
 	cfg := base()
-	cfg.Scratchpad.CodeExec.Enabled = false
+	cfg.Tools.CodeRun.Enabled = false
 	if _, ok := BuildFor(cfg, discardLogger(), nil, fr, nil).Get("code_run"); ok {
 		t.Error("code_run registered while code execution is disabled (§9.9 layer 1)")
 	}

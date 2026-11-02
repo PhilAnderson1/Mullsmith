@@ -40,9 +40,9 @@ audit artifacts stay with the operator as machine-local files (untracked
 
 * 64-bit Linux (amd64/arm64). Anything else that runs Go works too.
 * The `bubblewrap` package (`apt install bubblewrap`) — only if you enable
-  `code_execution`; mullsmith refuses to start with code execution on when a
+  `tools.code_run`; mullsmith refuses to start with code execution on when a
   working bwrap is missing (spec §9.9).
-* For `code_execution` under systemd: `Delegate=yes` on the unit (the shipped
+* For `tools.code_run` under systemd: `Delegate=yes` on the unit (the shipped
   `packaging/systemd/mullsmith.service` has it, with `DelegateSubgroup=payload`) so each run
   can get a per-run cgroup resource meter — kernel ≥ 5.7 with cgroup v2. No
   meterable subtree ⇒ code execution refuses to start, never runs un-metered.
@@ -323,7 +323,7 @@ them is reproducible from the commands above.
   manipulated into *asking* you to approve something. Keep `code_run: confirm`
   (the default) and never combine `code_run: auto` with open registration —
   mullsmith warns when you do.
-* **Code execution means trusted users.** Enabling `code_execution.enabled`
+* **Code execution means trusted users.** Enabling `tools.code_run.enabled`
   is a statement that the accounts you serve are trusted not to spend the
   host down. The jail and the per-run cgroup v2 meter *do* hard-cap memory,
   task count and CPU in the kernel — but nothing hard-caps **storage**.

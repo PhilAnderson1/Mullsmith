@@ -94,7 +94,7 @@ RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 # ignore the key and mullsmith performs the same move itself) starts the service
 # in a child cgroup so the kernel allows controllers on the delegation root.
 # Without working metering, mullsmith refuses code_run at startup (fail closed);
-# code_execution.enabled: false removes the requirement.
+# tools.code_run.enabled: false removes the requirement.
 Delegate=yes
 DelegateSubgroup=payload
 

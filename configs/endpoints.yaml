@@ -87,30 +87,6 @@ endpoints:
         reasoning_effort: none
       effort:
         reasoning_effort: $effort
-  lm_studio_native:
-    protocol: lm_studio_chat
-    path: /chat
-    requests:
-      'off':
-        reasoning: 'off'
-      'on':
-        reasoning: 'on'
-      effort:
-        reasoning: $effort
-    effort_values:
-      - low
-      - medium
-      - high
-  ollama:
-    protocol: ollama_chat
-    path: /chat
-    requests:
-      'off':
-        think: false
-      'on':
-        think: true
-      effort:
-        think: $effort
   ollama_openai:
     protocol: openai_chat
     path: /chat/completions

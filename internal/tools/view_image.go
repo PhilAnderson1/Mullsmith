@@ -29,7 +29,7 @@ const ViewImageName = "view_image"
 
 // ViewImage attaches one picture from anywhere in the user's sandbox.
 type ViewImage struct {
-	// MaxImageBytes mirrors llm.vision_max_image_bytes: a file the
+	// MaxImageBytes mirrors app_limits.vision_max_image_bytes: a file the
 	// server-side embed would silently refuse is instead explained to
 	// the model, which is the difference between retrying and wondering.
 	MaxImageBytes int64

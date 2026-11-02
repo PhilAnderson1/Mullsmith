@@ -162,6 +162,14 @@ type TLS struct {
 type AppLimits struct {
 	MaxMessageChars int `yaml:"max_message_chars"`
 	MaxAttachments  int `yaml:"max_attachments"`
+	// VisionMaxImageBytes is the per-picture cap for view_image across
+	// all vision models (default 4 MiB).
+	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"`
+	// VisionMaxImagesPerConversation bounds the active image context carried
+	// by one conversation. view_image turns persist into later requests, so
+	// the cap applies both while a tool loop grows and when history is rebuilt
+	// (default 8; deleted or expired image files no longer consume a slot).
+	VisionMaxImagesPerConversation int `yaml:"vision_max_images_per_conversation"`
 	// The caps below share the house syntax for optional limits (§9.11):
 	// positive → that value; -1 → disables the control; absent → the code
 	// default; 0 and any other negative → startup error. Plain ints — the
@@ -222,19 +230,11 @@ type Scratchpad struct {
 	// always sends Content-Disposition: attachment (§9.4), so an uploaded
 	// .html can never execute in the app's origin no matter what it is.
 	// Use this only to keep file types you never want on the disk at all.
-	BlockExtensions []string      `yaml:"block_extensions"`
-	CodeExec        CodeExecution `yaml:"code_execution"`
+	BlockExtensions []string `yaml:"block_extensions"`
 }
 
 type CodeExecution struct {
-	Enabled bool `yaml:"enabled"`
-	// Code execution always runs inside a bubblewrap jail (§9.9): there is
-	// exactly one mode and it is not configurable. The three fields below
-	// are retired — they exist only so Validate can tell operators running
-	// old configs what changed instead of failing on an unknown key.
-	Mode            string    `yaml:"mode"`            // retired
-	ContainerImage  string    `yaml:"container_image"` // retired
-	RunAsUser       string    `yaml:"run_as_user"`     // retired
+	Enabled         bool      `yaml:"enabled"`
 	AllowedRuntimes []Runtime `yaml:"allowed_runtimes"`
 	Timeout         Duration  `yaml:"timeout"`
 	MaxOutput       Size      `yaml:"max_output"`
@@ -287,16 +287,6 @@ type LLM struct {
 	RequestTimeout    *Duration `yaml:"request_timeout"` // retired
 	MaxTokensResponse int       `yaml:"max_tokens_response"`
 	ShowReasoning     bool      `yaml:"show_reasoning"`
-	// VisionMaxImageBytes is the per-picture cap for view_image across
-	// all vision models (default 4 MiB); which models may see at all is
-	// per entry (llm.models[].vision).
-	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"`
-	// VisionMaxImagesPerConversation bounds the active image context carried
-	// by one conversation. view_image turns persist into later requests, so
-	// the cap applies both while a tool loop grows and when history is rebuilt
-	// (default 8; deleted or expired image files no longer consume a slot).
-	VisionMaxImagesPerConversation int `yaml:"vision_max_images_per_conversation"`
-
 	// Upstream progress budgets (C8) — PROGRESS budgets, never total
 	// timeouts: a long reasoning run that keeps sending data is legitimate
 	// and must never be cut short. upstream_header_timeout caps the wait
@@ -376,10 +366,11 @@ func (l *LLM) ThinkingProfileFor(model string) string {
 }
 
 type Tools struct {
-	WebSearch   WebSearch   `yaml:"web_search"`
-	WebFetch    WebFetch    `yaml:"web_fetch"`
-	WebDownload WebDownload `yaml:"web_download"`
-	Agent       Agent       `yaml:"agent"`
+	WebSearch   WebSearch     `yaml:"web_search"`
+	WebFetch    WebFetch      `yaml:"web_fetch"`
+	WebDownload WebDownload   `yaml:"web_download"`
+	CodeRun     CodeExecution `yaml:"code_run"`
+	Agent       Agent         `yaml:"agent"`
 }
 
 type WebSearch struct {
@@ -406,6 +397,19 @@ type Agent struct {
 	MaxToolCallsPerTurn    int               `yaml:"max_tool_calls_per_turn"`
 	MaxNetworkCallsPerTurn int               `yaml:"max_network_tool_calls_per_turn"`
 	Approval               map[string]string `yaml:"approval"` // tool → auto | confirm
+}
+
+// validApprovalTool keeps approval policy fail-fast: a misspelled tool name
+// must not be accepted and then silently fall back to its default policy.
+func validApprovalTool(name string) bool {
+	switch name {
+	case "web_search", "web_fetch", "web_download",
+		"fs_list", "fs_read", "fs_write", "fs_delete", "files_share",
+		"view_image", "code_run":
+		return true
+	default:
+		return false
+	}
 }
 
 type Auth struct {
@@ -918,6 +922,12 @@ func (c *Config) setDefaults() {
 	if c.AppLimits.MaxAttachments == 0 {
 		c.AppLimits.MaxAttachments = 8
 	}
+	if c.AppLimits.VisionMaxImageBytes == 0 {
+		c.AppLimits.VisionMaxImageBytes = 4 << 20
+	}
+	if c.AppLimits.VisionMaxImagesPerConversation == 0 {
+		c.AppLimits.VisionMaxImagesPerConversation = 8
+	}
 	// Optional caps (house syntax): absent (0) takes the code default; -1
 	// is the off sentinel and passes through; validation rejects 0 spelled
 	// out plus every other negative. Shipped configs spell the defaults out
@@ -990,7 +1000,7 @@ func (c *Config) setDefaults() {
 		}
 		c.Scratchpad.BlockExtensions = merged
 	}
-	c.Scratchpad.CodeExec = c.Scratchpad.CodeExec.WithDefaults()
+	c.Tools.CodeRun = c.Tools.CodeRun.WithDefaults()
 	// Any entry leaving context_size unset (or spelled -1) discovers its
 	// window from the endpoint (§2.2); a positive number pins it. The
 	// internal sentinel for "auto" is -1.
@@ -1017,12 +1027,6 @@ func (c *Config) setDefaults() {
 		if !marked {
 			c.LLM.Models[0].Default = true
 		}
-	}
-	if c.LLM.VisionMaxImageBytes == 0 {
-		c.LLM.VisionMaxImageBytes = 4 << 20
-	}
-	if c.LLM.VisionMaxImagesPerConversation == 0 {
-		c.LLM.VisionMaxImagesPerConversation = 8
 	}
 	// Upstream progress budgets (C8): absent takes the shipped default;
 	// the off sentinel (-1) survives to mean "no cap" for the client.
@@ -1064,7 +1068,7 @@ func (c *Config) setDefaults() {
 	}
 	for tool, def := range map[string]string{
 		"web_search": "auto", "web_fetch": "auto", "web_download": "auto", "fs_list": "auto", "fs_read": "auto",
-		"fs_write": "auto", "files_share": "auto", "code_run": "confirm",
+		"fs_write": "auto", "fs_delete": "confirm", "files_share": "auto", "view_image": "auto", "code_run": "confirm",
 	} {
 		if _, ok := c.Tools.Agent.Approval[tool]; !ok {
 			c.Tools.Agent.Approval[tool] = def
@@ -1154,7 +1158,7 @@ func (c *Config) Validate() error {
 		{"server.shutdown_grace", c.Server.ShutdownGrace},
 		{"scratchpad.artifact_ttl", c.Scratchpad.ArtifactTTL},
 		{"scratchpad.work_ttl", c.Scratchpad.WorkTTL},
-		{"scratchpad.code_execution.timeout", c.Scratchpad.CodeExec.Timeout},
+		{"tools.code_run.timeout", c.Tools.CodeRun.Timeout},
 		{"tools.web_fetch.timeout", c.Tools.WebFetch.Timeout},
 		{"tools.web_download.timeout", c.Tools.WebDownload.Timeout},
 	} {
@@ -1243,31 +1247,21 @@ func (c *Config) Validate() error {
 	if c.Scratchpad.MaxFileSize <= 0 || c.Scratchpad.UserQuota <= 0 {
 		f.bad("scratchpad: max_file_size and user_quota must be > 0")
 	}
-	// One sandbox, always: bubblewrap (§9.9). The old mode knobs are
-	// retired; say so plainly rather than through an unknown-key error.
-	ce := &c.Scratchpad.CodeExec
-	if ce.Mode != "" {
-		f.bad("scratchpad.code_execution.mode: removed — code execution now always runs in a bubblewrap jail; delete this key")
-	}
-	if ce.ContainerImage != "" {
-		f.bad("scratchpad.code_execution.container_image: removed with container mode — delete this key")
-	}
-	if ce.RunAsUser != "" {
-		f.bad("scratchpad.code_execution.run_as_user: removed — the jail runs in its own user namespace; delete this key")
-	}
+	// One sandbox, always: bubblewrap (§9.9).
+	ce := &c.Tools.CodeRun
 	if ce.Enabled {
 		if len(ce.AllowedRuntimes) == 0 {
-			f.bad("scratchpad.code_execution.allowed_runtimes: required when code execution is enabled")
+			f.bad("tools.code_run.allowed_runtimes: required when code execution is enabled")
 		}
 		seen := map[string]bool{}
 		for _, r := range ce.AllowedRuntimes {
 			switch {
 			case r.ID == "":
-				f.bad("scratchpad.code_execution.allowed_runtimes: id required")
+				f.bad("tools.code_run.allowed_runtimes: id required")
 			case seen[r.ID]:
-				f.bad("scratchpad.code_execution.allowed_runtimes: duplicate id %q", r.ID)
+				f.bad("tools.code_run.allowed_runtimes: duplicate id %q", r.ID)
 			case r.Binary == "" || !filepath.IsAbs(r.Binary):
-				f.bad("scratchpad.code_execution.allowed_runtimes[%s]: binary must be an absolute path", r.ID)
+				f.bad("tools.code_run.allowed_runtimes[%s]: binary must be an absolute path", r.ID)
 			}
 			seen[r.ID] = true
 		}
@@ -1336,11 +1330,11 @@ func (c *Config) Validate() error {
 	if c.LLM.DefaultTemperature < 0 || c.LLM.DefaultTemperature > 2 {
 		f.bad("llm.default_temperature: must be within 0..2")
 	}
-	if c.LLM.VisionMaxImageBytes < 0 {
-		f.bad("llm.vision_max_image_bytes: must be >= 0")
+	if c.AppLimits.VisionMaxImageBytes < 0 {
+		f.bad("app_limits.vision_max_image_bytes: must be >= 0")
 	}
-	if c.LLM.VisionMaxImagesPerConversation < 1 {
-		f.bad("llm.vision_max_images_per_conversation: must be > 0")
+	if c.AppLimits.VisionMaxImagesPerConversation < 1 {
+		f.bad("app_limits.vision_max_images_per_conversation: must be > 0")
 	}
 
 	switch c.Tools.WebSearch.Provider {
@@ -1364,6 +1358,10 @@ func (c *Config) Validate() error {
 		f.bad("tools.agent.max_network_tool_calls_per_turn: must be > 0")
 	}
 	for tool, mode := range c.Tools.Agent.Approval {
+		if !validApprovalTool(tool) {
+			f.bad("tools.agent.approval.%s: unknown tool", tool)
+			continue
+		}
 		if mode != "auto" && mode != "confirm" {
 			f.bad("tools.agent.approval.%s: must be \"auto\" or \"confirm\"", tool)
 		}
@@ -1448,9 +1446,9 @@ func (c *Config) Warnings() []string {
 			w = append(w, fmt.Sprintf("server.trusted_proxies contains %s — ANY client's X-Forwarded-For is honored, so source-IP buckets can be spoofed at will; list only your real proxies' addresses (spec §9.10)", p))
 		}
 	}
-	if c.Scratchpad.CodeExec.Enabled {
-		if c.Scratchpad.CodeExec.AllowNetwork {
-			w = append(w, "code_execution.allow_network=true: sandboxed scripts may reach the network from inside the jail — keep off unless required (spec §9.6/§9.9)")
+	if c.Tools.CodeRun.Enabled {
+		if c.Tools.CodeRun.AllowNetwork {
+			w = append(w, "tools.code_run.allow_network=true: sandboxed scripts may reach the network from inside the jail — keep off unless required (spec §9.6/§9.9)")
 		}
 		if c.Tools.Agent.Approval["code_run"] == "auto" && c.Auth.Registration == "open" {
 			w = append(w, "code execution enabled with auto-approval AND open registration — prompt-injection risk (spec §9.13)")

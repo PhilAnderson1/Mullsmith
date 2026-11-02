@@ -146,7 +146,6 @@ database: { dir: "${dir}/db" }
 app_limits: { requests_per_minute: -1, chat_messages_per_hour: -1 }
 scratchpad:
   root: "${dir}/scratch"
-  code_execution: { enabled: false }
 auth: { registration: open, argon2: { time: 1, memory: 65536, threads: 4 } }
 llm:
   endpoint: "${llmUrl}"
@@ -156,6 +155,7 @@ llm:
   endpoint_type: gufo
 tools:
   web_fetch: { enabled: true }
+  code_run: { enabled: false }
   agent:
     max_tool_rounds: 4
     approval: { ${Object.entries(policy).map(([k, v]) => `${k}: ${v}`).join(", ")} }

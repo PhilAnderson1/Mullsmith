@@ -157,7 +157,7 @@ func TestChatViewImageRequestCountLimit(t *testing.T) {
 		{answerChunk("I saw one picture."), finishChunk("stop")},
 	}, func(cfg *config.Config) {
 		cfg.LLM.Models[0].Vision = true
-		cfg.LLM.VisionMaxImagesPerConversation = 1
+		cfg.AppLimits.VisionMaxImagesPerConversation = 1
 	})
 
 	uploadOK(t, a, "photo.png", pngBytes(24))

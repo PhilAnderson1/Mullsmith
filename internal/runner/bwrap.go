@@ -63,7 +63,7 @@ func ProbeBwrap() error {
 	bin, err := exec.LookPath("bwrap")
 	if err != nil {
 		return errors.New("bwrap not found in PATH — install the bubblewrap package " +
-			"or set code_execution.enabled: false (spec §9.9)")
+			"or set tools.code_run.enabled: false (spec §9.9)")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -1,214 +1,337 @@
-# Mullsmith — production config template (spec.md §2.2).
-# Copy, edit, then verify with:  mullsmith -config /etc/mullsmith/config.yaml -check-config
-# Relative paths resolve against this file's directory. Secrets go in via
-# ${ENV_VAR} / ${ENV_VAR:-default} expansion (§9.12) — never commit them.
+# Mullsmith production configuration.
+# Copy and edit this file, then verify it with:
+# mullsmith -config /etc/mullsmith/config.yaml -check-config
+# Relative paths resolve from this file's directory.
+# Secrets support ${ENV_VAR} and ${ENV_VAR:-default} expansion.
+# YAML indentation uses two spaces per level; never tabs.
 
+
+# Mullsmith's HTTP server settings
 server:
-  listen: ":3210"                 # every interface (IPv4+IPv6): usable on your
-                                  # network right away over plain HTTP — the
-                                  # startup warning about TLS is expected there.
-                                  # Loopback only (proxy in front): "127.0.0.1:3210"
-  # Admission caps: positive values or -1 to disable; omission takes defaults.
-  max_connections: 128           # open TCP connections, including TLS/header waits
-  concurrent_requests: 32        # active HTTP requests, including long-lived streams
-  max_body_bytes: 1MiB            # non-upload HTTP request bodies
+  # Address and port to serve. The default listens on all IPv4 and IPv6 addresses.
+  # Use "127.0.0.1:3210" for localhost only.
+  listen: ":3210"
+
+  # Maximum open TCP connections.
+  max_connections: 128
+
+  # Maximum active HTTP requests.
+  concurrent_requests: 32
+
+  # Maximum non-upload request body.
+  max_body_bytes: 1MiB
+
   tls:
-    enabled: false                # true + cert/key here, or terminate at proxy
-    # To serve HTTPS directly: un-comment the commented ExecStartPre line in
-    # the shipped unit (packaging/systemd/mullsmith.service) and set its
-    # YOUR.HOSTNAME to your certbot domain. It then stages certbot's key into
-    # RAM-only /run/mullsmith at service start — the key never persists to disk
-    # and no group grants are needed:
-    cert_file: "/run/mullsmith/cert.pem"
-    key_file: "/run/mullsmith/key.pem"
-  trusted_proxies: []             # CIDRs of your proxies ONLY (§9.11 spoofing)
-  hsts_max_age: 31536000          # HSTS when serving TLS; -1 disables
-  read_timeout: 30s               # slow-body guard on the listening socket
-  write_timeout: 60s              # stalled-reader cap on response writes; -1 = no cap
-  shutdown_grace: 15s             # in-flight grace on SIGTERM
-
-database:
-  dir: "/var/lib/mullsmith/db"     # outside /var/lib/mullsmith, the shipped
-                                    # systemd unit needs a ReadWritePaths override
-
-scratchpad:
-  # A dedicated filesystem may be mounted directly here without changing the
-  # shipped systemd unit. A root elsewhere needs a ReadWritePaths override.
-  root: "/var/lib/mullsmith/scratchpad"
-  max_file_size: 25MiB
-  user_quota: 1GiB
-  max_entries: 1000               # all descendants, including the 3 layout directories
-  artifact_ttl: 168h              # shared artifacts expire after 7 days
-  work_ttl: 24h                   # per-run work dirs swept past this age
-  # Extensions that may not be uploaded. Empty/absent = no blocking: safety
-  # does not depend on this gate — downloads are ALWAYS served as attachment
-  # files (§9.4), so even an uploaded .html cannot run in the app's origin.
-  # Use it only to keep types you never want on disk, e.g.:
-  # block_extensions: [exe, dll, so, bat, cmd, com, scr, msi, js, jar]
-  block_extensions: []
-  code_execution:                 # §9.9 — OFF by default; enable deliberately
+    # Serve using SSL (HTTPS)
     enabled: false
-    # One sandbox, always: every script runs inside a bubblewrap (bwrap)
-    # jail — own namespaces, read-only /usr, only the user's work dir
-    # writable, network off unless allow_network. Requires the bubblewrap
-    # package; mullsmith refuses to start with enabled: true when bwrap is
-    # missing or unprivileged user namespaces are disabled.
-    # max_memory is a PER-RUN aggregate: the whole process tree (children
-    # included) shares it via a per-run cgroup, which needs a delegated
-    # cgroup v2 subtree — for systemd use packaging/systemd/mullsmith.service as shipped
-    # (Delegate=yes + DelegateSubgroup=payload). Metering unavailable ⇒
-    # refuses to start, same fail-closed contract (§9.9).
-    # (Old keys mode/container_image/run_as_user are retired — remove them.)
-    allowed_runtimes:
-      - { id: python3, binary: /usr/bin/python3 }
-      - { id: sh, binary: /bin/sh }
-    timeout: 30s
-    max_output: 256KiB             # retained separately for stdout and stderr
-    max_memory: 1GiB
-    allow_network: false
-  # Approval policy per tool: auto | confirm (unknown tool ⇒ confirm).
-  # code_run is always confirm-capable; keep it that way unless you know
-  # exactly what you are doing (§9.9/§9.13).
 
+    # TLS certificate path.
+    cert_file: "/run/mullsmith/cert.pem"
+
+    # TLS private-key path.
+    key_file: "/run/mullsmith/key.pem"
+
+  # Proxies trusted to supply client IPs.
+  trusted_proxies: []
+
+  # HSTS lifetime in seconds; -1 disables.
+  hsts_max_age: 31536000
+
+  # Maximum request-read time.
+  read_timeout: 30s
+
+  # Maximum stalled response-write time.
+  write_timeout: 60s
+
+  # Graceful-shutdown deadline.
+  shutdown_grace: 15s
+
+
+# Model endpoint and generation behavior.
 llm:
-  endpoint: "http://127.0.0.1:8081/v1"   # your OpenAI-compatible server
-  api_key: "${MULLSMITH_LLM_API_KEY:-}"
-  # The one model list: every entry is a picker item. Exactly one entry
-  # may claim default: true — with no claim anywhere the first entry is
-  # the default, so a single-model deployment writes no marking. Each
-  # entry carries its own thinking_profile ("none" hides the dropdown for
-  # that model) and vision flag; there is no inheritance between entries.
-  models:
-    - id: "your-model-name"
-      default: true
-      # thinking_profile: qwen3_8
-      # context_size: 131072   # the window in tokens: a number pins it;
-                               # omitted or -1 discovers it from the
-                               # endpoint's /models listing and falls back
-                               # to unlimited (meter shows counts only)
-      # vision: true           # this model may look at pictures with the
-                               # view_image tool (spec §7.2) — uploads
-                               # always ride as manifest pointers only,
-                               # and the tool's turns are the sole path
-                               # image bytes take to the endpoint. An
-                               # entry without it stays text-only: plain
-                               # manifest, no view_image offered.
-  default_temperature: 0.7
-  max_tokens_response: 4096
-  show_reasoning: false
-  vision_max_image_bytes: 4MiB    # per-picture cap for view_image (all vision models)
-  vision_max_images_per_conversation: 8 # active pictures retained in one chat's model context
-  # Upstream PROGRESS budgets — silence caps, never total stream timeouts.
-  # A long reasoning run that keeps sending data is never cut short.
-  upstream_header_timeout: "90s"  # wait for the endpoint's response headers
-  upstream_stall_timeout: "120s"  # max silence between bytes mid-stream; any
-                                  # byte counts as progress, SSE comment
-                                  # heartbeats included. -1 turns either off.
-  # --- Thinking control (thinking-control-specification.md) -------------
-  # There is no selector switch: the dropdown appears exactly when at
-  # least one llm.models entry spells a real thinking_profile — a model
-  # with "none" (or no profile) shows a disabled dropdown pointing at
-  # switching model, and a deployment with no profile anywhere shows
-  # nothing. endpoint_type stays deployment-level — it is the request
-  # convention for the URL above (must name a catalogue entry). The two
-  # files ARE the catalogues — nothing is baked into the binary, so an
-  # edit, an addition or a deletion all take effect on restart.
-  # endpoint_type needs endpoints_file; a named thinking_profile needs
-  # profiles_file ("none" is built in). Relative paths resolve against
-  # this file's directory. There is deliberately no default_thinking:
-  # every conversation starts at the built-in Default (sends no override)
-  # and the user's pick is conversation state.
-  # Both catalogue files carry a schema_version, and this build speaks 2:
-  # anything else refuses startup rather than being translated. Version 2
-  # holds the model template switch: the profile names it (thinking_profile's
-  # entry spells template_parameters: {thinking_toggle: …}, or null when the
-  # template has no such argument) and the endpoint references it as
-  # $template.thinking_toggle. Nothing new belongs in this block.
-  endpoints_file: ./endpoints.yaml        # request-field recipes per endpoint type
-  profiles_file: ./thinking-profiles.yaml # choice lists per profile id
-  endpoint_type: gufo             # must speak protocol openai_chat
+  # OpenAI-compatible API base URL.
+  endpoint: "http://127.0.0.1:9931/v1"
 
+  # Endpoint type, supported options are: gufo, llama_cpp, vllm, lm_studio, ollama_openai, openrouter.
+  endpoint_type: "llama_cpp"
+
+  # Endpoint bearer token.
+  api_key: ""
+  # To keep this secret in a separate environment file, use the following environment variable:
+  # api_key: "${MULLSMITH_LLM_API_KEY:-}"
+
+  # Models supported by your endpoint. Qwen3.8-27B is the example default;
+  # change it to the model served by your endpoint. Add another entry for
+  # each additional model you want to offer.
+  models:
+    # Endpoint model identifier.
+    - id: "qwen3.8-27b"
+
+      # Select this model by default.
+      default: true
+
+      # Thinking profile from thinking-profiles.yaml; use none to disable.
+      # Supported profiles: none, qwen3_5, qwen3_6, qwen3_8, qwen3_8_thinking_only,
+      # gpt_oss, gemma4, deepseek_v4, deepseek_v4_1, glm5_3, kimi_k2_6,
+      # kimi_k2_7_code, kimi_k3, minimax_m2_7, minimax_m3_1_flash,
+      # step3_7_flash, step5_preview.
+      # If the required profile is not listed, it can probably be added to thinking-profiles.yaml.
+      thinking_profile: "qwen3_8"
+
+      # Model context window in tokens; omit to discover it automatically (if supported by endpoint).
+      context_size: 262144
+
+      # This model supports image input.
+      vision: true
+
+  # Sampling temperature for new requests.
+  default_temperature: 0.7
+
+  # Maximum generated tokens per response.
+  max_tokens_response: 4096
+
+  # Display model reasoning in chats.
+  show_reasoning: false
+
+  # Maximum wait for response headers.
+  upstream_header_timeout: 90s
+
+  # Maximum silence during streaming.
+  upstream_stall_timeout: 120s
+
+  # Endpoint request-template catalogue. If your endpoint type is not listed
+  # above, you may be able to define it in this file.
+  endpoints_file: "./endpoints.yaml"
+
+  # Thinking-choice catalogue. If your model family is not listed above,
+  # you may be able to define it in this file.
+  profiles_file: "./thinking-profiles.yaml"
+
+
+# Account access and session policy.
+auth:
+  # Account creation: "open", "invite-only", or "closed". "open" is
+  # convenient on a trusted LAN; change it before public exposure.
+  registration: "open"
+
+  # Global open-registration rate limit.
+  max_signups_per_hour: 5
+
+  # Offer persistent login.
+  remember_login: true
+
+  # Standard session lifetime.
+  session_ttl: 24h
+
+  # Persistent session sliding lifetime.
+  remember_ttl: 720h
+
+  # Persistent session maximum lifetime.
+  remember_absolute_ttl: 2160h
+
+  # Failed attempts before temporary lockout.
+  max_failed_logins: 10
+
+  # Password-hashing cost.
+  argon2: { time: 1, memory: 65536, threads: 4 }
+
+
+# Model-callable tool configuration.
 tools:
   web_search:
-    enabled: false                # true + brave key to enable "search the web"
-    provider: "brave"             # the only implemented provider
-    api_key: "${MULLSMITH_SEARCH_API_KEY:-}"
+    # Offer web_search to models.
+    enabled: false
+
+    # Search service implementation; "brave" is currently the only available option.
+    provider: "brave"
+
+    # Search service credential.
+    api_key: ""
+    # To keep this secret in a separate environment file, use the following environment variable:
+    # api_key: "${MULLSMITH_SEARCH_API_KEY:-}"
+
+    # Maximum results per search.
     max_results: 8
+
   web_fetch:
-    enabled: true                 # SSRF-guarded egress (§9.6); public web only
+    # Offer web_fetch to models.
+    enabled: true
+
+    # Maximum fetched response size.
     max_bytes: 512KiB
+
+    # Fetch request deadline.
     timeout: 15s
+
   web_download:
-    enabled: true                 # same SSRF guard as web_fetch; no code network required
-    max_bytes: 1GiB              # larger responses fail without saving a partial file
+    # Offer web_download to models.
+    enabled: true
+
+    # Maximum downloaded file size.
+    max_bytes: 1GiB
+
+    # Download request deadline.
     timeout: 60s
+
+  code_run:
+    # Offer code_run to models.
+    enabled: false
+
+    allowed_runtimes:
+      # Python runtime.
+      - { id: "python3", binary: "/usr/bin/python3" }
+
+      # POSIX shell runtime.
+      - { id: "sh", binary: "/bin/sh" }
+
+    # Maximum runtime per execution.
+    timeout: 30s
+
+    # Maximum stdout and stderr size each.
+    max_output: 256KiB
+
+    # Maximum process-tree memory.
+    max_memory: 1GiB
+
+    # Allow network access from code.
+    allow_network: false
+
   agent:
-    max_tool_rounds: 20             # model continuations per reply
-    max_tool_calls_per_turn: 100    # all proposed calls across those rounds; excess calls are refused
-    max_network_tool_calls_per_turn: 10 # web_search/fetch/download calls across one submitted turn
+    # Maximum model tool rounds per turn.
+    max_tool_rounds: 20
+
+    # Maximum proposed tool calls per turn.
+    max_tool_calls_per_turn: 100
+
+    # Maximum network calls per turn.
+    max_network_tool_calls_per_turn: 10
+
+    # Tool approval policy. "auto" runs the tool immediately; "confirm" asks
+    # the user first. An approval can be remembered for the current conversation.
     approval:
-      web_search: auto
-      web_fetch: auto
-      web_download: auto
-      fs_list: auto
-      fs_read: auto
-      fs_write: auto
-      files_share: auto
-      code_run: confirm
+      web_search: "auto"
+      web_fetch: "auto"
+      web_download: "auto"
+      fs_list: "auto"
+      fs_read: "auto"
+      fs_write: "auto"
+      fs_delete: "confirm"
+      files_share: "auto"
+      view_image: "auto"
+      code_run: "confirm"
 
-auth:
-  registration: invite-only       # open | invite-only | closed (admin CLI users)
-  max_signups_per_hour: 5         # global cap, enforced only when registration
-                                  # is open (per-IP limits don't stop a proxy
-                                  # pool); -1 disables it — fine on a LAN
-  remember_login: true            # shows the "Stay logged in" checkbox
-  session_ttl: 24h
-  remember_ttl: 720h              # with the checkbox ticked
-  remember_absolute_ttl: 2160h
-  max_failed_logins: 10
-  argon2: { time: 1, memory: 65536, threads: 4 }  # hash parameters; stored in
-                                  # each hash, so retuning only affects new ones
 
-email:                            # password reset + email confirmation
-  enabled: false                  # master switch; enabling later never touches
-                                  # existing accounts (no retroactive confirming)
-  # Absolute origin the links in mails are built from — REQUIRED when enabled.
-  # Never derived from request headers on purpose: a spoofed Host must not be
-  # able to inject an attacker domain into password-reset links.
-  base_url: ""                    # e.g. https://mullsmith.example:3210
+# Per-user files and code sandbox.
+scratchpad:
+  # Scratchpad storage directory.
+  root: "/var/lib/mullsmith/scratchpad"
+
+  # Maximum uploaded file size.
+  max_file_size: 25MiB
+
+  # Maximum stored bytes per user.
+  user_quota: 1GiB
+
+  # Maximum filesystem entries per user.
+  max_entries: 1000
+
+  # Shared-artifact retention time.
+  artifact_ttl: 168h
+
+  # Temporary-work retention time.
+  work_ttl: 24h
+
+  # Upload extensions to reject.
+  block_extensions: []
+
+# Password-reset and confirmation email.
+email:
+  # Enable email-based account flows.
+  enabled: false
+
+  # Public origin used in email links, e.g. "https://mullsmith.mydomain.org/".
+  base_url: ""
+
   smtp:
-    host: ""                      # submission server hostname or address
-    port: 587                     # 587 (STARTTLS) or 465 (implicit TLS)
-    authenticated_smtp: true      # true → AUTH LOGIN (never before TLS);
-                                  # false → unauthenticated send (LAN relay)
+    # SMTP server hostname.
+    host: ""
+
+    # SMTP submission port.
+    port: 587
+
+    # Authenticate after establishing TLS.
+    authenticated_smtp: true
+
+    # SMTP account name.
     username: ""
-    password: "${MULLSMITH_SMTP_PASSWORD:-}"   # keep the secret in the service
-                                  # EnvironmentFile (§9.12), not in this file
-    from: "mullsmith@localhost"     # envelope sender + From header
-  # With enabled: true, new sign-ups must click a confirmation link within
-  # 24 hours (or the pending account is deleted); "Forgot password?" appears
-  # on the login page for accounts with a confirmed address. Authenticated
-  # SMTP on port 25 is a config error — credentials never go in the clear.
 
+    # SMTP account password.
+    password: ""
+    # To keep this secret in a separate environment file, use the following environment variable:
+    # password: "${MULLSMITH_SMTP_PASSWORD:-}"
+
+    # Envelope and message sender.
+    from: "mullsmith@localhost"
+
+
+# Application-wide usage controls.
 app_limits:
+  # Maximum characters per user message.
   max_message_chars: 32000
-  max_attachments: 8
-  # Caps below: values are the program defaults spelled out. -1 disables
-  # the control; omitting a key takes the default; 0 and any other
-  # negative are a config error. (rate_limit: is retired — these knobs
-  # all live here now.)
-  max_conversations_per_user: 1000 # stored threads, including the initial chat
-  max_messages_per_user: 10000     # all stored message rows across all threads
-  concurrent_streams_per_user: 2  # parallel SSE generations per user
-  concurrent_streams_total: 8     # all users combined (global backstop)
-  requests_per_minute: 120        # per authenticated user, including chat attempts
-  chat_messages_per_hour: 120     # per user
-  hash_concurrency: 1             # simultaneous Argon2 computations, all users
-  concurrent_uploads: 8           # in-flight uploads, all users (§9.11)
-  concurrent_uploads_per_user: 2   # in-flight uploads per account
-  concurrent_downloads_per_user: 2 # active file downloads per account
 
+  # Maximum attachments per message.
+  max_attachments: 8
+
+  # Maximum bytes per image shown to a model.
+  vision_max_image_bytes: 4MiB
+
+  # Maximum images included in one conversation's model context.
+  vision_max_images_per_conversation: 8
+
+  # Maximum stored chats per user.
+  max_conversations_per_user: 1000
+
+  # Maximum stored messages per user.
+  max_messages_per_user: 10000
+
+  # Maximum simultaneous replies per user.
+  concurrent_streams_per_user: 2
+
+  # Maximum simultaneous replies overall.
+  concurrent_streams_total: 8
+
+  # Per-user API request rate.
+  requests_per_minute: 120
+
+  # Per-user chat submission rate.
+  chat_messages_per_hour: 120
+
+  # Simultaneous password hashes.
+  hash_concurrency: 1
+
+  # Simultaneous uploads overall.
+  concurrent_uploads: 8
+
+  # Simultaneous uploads per user.
+  concurrent_uploads_per_user: 2
+
+  # Simultaneous downloads per user.
+  concurrent_downloads_per_user: 2
+
+
+# Persistent database location.
+database:
+  # SQLite data directory.
+  dir: "/var/lib/mullsmith/db"
+
+
+# Service log output.
 logging:
-  level: info                     # debug | info | warn | error
-  format: text                    # json for log pipelines
-  file: ""                        # empty = stderr (let journald capture it)
+  # Minimum logged severity.
+  level: "info"
+
+  # Output format: text or json.
+  format: "text"
+
+  # Log file; empty uses stderr.
+  file: ""

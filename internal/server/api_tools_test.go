@@ -486,18 +486,18 @@ func TestToolRoundCap(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			search := &fakeTool{name: "web_search", content: `{}`, summary: "s"}
-			dangerous := &fakeTool{name: "dangerous", content: `{}`}
-			policies := map[string]string{"web_search": "auto", "dangerous": "confirm"}
+			dangerous := &fakeTool{name: "code_run", content: `{}`}
+			policies := map[string]string{"web_search": "auto", "code_run": "confirm"}
 			cfg := toolChatCfg(t, 2, policies)
 			// Three successful calls in two rounds: this is a ROUND budget.
 			replies := [][]string{
 				{toolCallChunk(0, "c1a", "web_search", `{}`), toolCallChunk(1, "c1b", "web_search", `{}`), finishChunk("tool_calls")},
 				{toolCallChunk(0, "c2", "web_search", `{}`), finishChunk("tool_calls")},
-				{toolCallChunk(0, "c3", "web_search", `{}`), toolCallChunk(1, "c4", "dangerous", `{}`), finishChunk("tool_calls")},
+				{toolCallChunk(0, "c3", "web_search", `{}`), toolCallChunk(1, "c4", "code_run", `{}`), finishChunk("tool_calls")},
 				{answerChunk("Which source should I prioritize next?"), finishChunk("stop")},
 			}
 			if repeats {
-				replies[3] = []string{toolCallChunk(0, "c5", "dangerous", `{}`), finishChunk("tool_calls")}
+				replies[3] = []string{toolCallChunk(0, "c5", "code_run", `{}`), finishChunk("tool_calls")}
 			}
 			a, script := newToolServer(t, cfg, registryFor(policies, search, dangerous), replies)
 			c := createConv(t, a, map[string]any{"title": "Cap"})

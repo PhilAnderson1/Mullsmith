@@ -788,12 +788,12 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 			fmt.Printf("[ok]   llm.models             no entry spells vision — view_image is never offered\n")
 		}
 	}
-	if cfg.Scratchpad.CodeExec.Enabled {
+	if cfg.Tools.CodeRun.Enabled {
 		if err := runner.ProbeBwrap(); err != nil {
 			ok = false
-			fmt.Printf("[FAIL] code_execution       %v\n", err)
+			fmt.Printf("[FAIL] tools.code_run        %v\n", err)
 		} else {
-			fmt.Printf("[ok]   code_execution       bubblewrap jail verified\n")
+			fmt.Printf("[ok]   tools.code_run        bubblewrap jail verified\n")
 		}
 	}
 	// email.smtp: warn-only by design — a transient mail-server blip must

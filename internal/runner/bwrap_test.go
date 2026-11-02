@@ -685,7 +685,7 @@ func TestProbeBwrapSucceedsWhereAvailable(t *testing.T) {
 
 func codeExecConfig() *config.Config {
 	cfg := &config.Config{}
-	cfg.Scratchpad.CodeExec = config.CodeExecution{
+	cfg.Tools.CodeRun = config.CodeExecution{
 		Enabled:         true,
 		AllowedRuntimes: []config.Runtime{{ID: "sh", Binary: "/bin/sh"}},
 		Timeout:         config.Duration(30 * time.Second),
@@ -698,7 +698,7 @@ func codeExecConfig() *config.Config {
 
 func TestNewForConfigDisabled(t *testing.T) {
 	cfg := codeExecConfig()
-	cfg.Scratchpad.CodeExec.Enabled = false
+	cfg.Tools.CodeRun.Enabled = false
 	r, err := runner.NewForConfig(cfg)
 	if r != nil || err != nil {
 		t.Fatalf("disabled code exec must yield nothing, got r=%v err=%v", r, err)

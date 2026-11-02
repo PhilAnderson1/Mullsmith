@@ -332,4 +332,4 @@ func (rc *RunCgroup) remove() { _ = syscall.Rmdir(rc.dir) }
 var ErrNoCgroup = errors.New(
 	"runner: no usable cgroup v2 subtree for per-run resource limits — refusing to run un-metered " +
 		"(a systemd unit needs Delegate=yes, ideally with DelegateSubgroup=payload and no ProtectControlGroups; " +
-		"see spec §9.9) or set code_execution.enabled: false")
+		"see spec §9.9) or set tools.code_run.enabled: false")

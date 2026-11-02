@@ -52,7 +52,7 @@ func newCodeChatServer(t *testing.T, replies [][]string) (*authTest, *Server, *t
 		"fs_delete": "auto", "files_share": "auto",
 		"code_run": "confirm",
 	}
-	cfg.Scratchpad.CodeExec = config.CodeExecution{
+	cfg.Tools.CodeRun = config.CodeExecution{
 		Enabled:         true,
 		AllowedRuntimes: []config.Runtime{{ID: "sh", Binary: "/bin/sh"}},
 		Timeout:         config.Duration(10 * time.Second),

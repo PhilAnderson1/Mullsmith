@@ -103,7 +103,7 @@ func (g *gate) acquire(ctx context.Context, userID string) (func(), error) {
 // code_run promises it cannot enforce, so a missing or non-functional
 // bwrap is a startup error, never a silent degradation.
 func NewForConfig(cfg *config.Config) (Runner, error) {
-	ce := cfg.Scratchpad.CodeExec.WithDefaults()
+	ce := cfg.Tools.CodeRun.WithDefaults()
 	if !ce.Enabled {
 		return nil, nil
 	}

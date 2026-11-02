@@ -124,6 +124,8 @@ server:
 
 app_limits:
   max_message_chars: 32000        # per chat message
+  vision_max_image_bytes: 4MiB    # per-picture cap for view_image (all vision models)
+  vision_max_images_per_conversation: 8 # active pictures retained in one chat's model context
   max_conversations_per_user: 1000 # stored conversations, including initial chat
   max_messages_per_user: 10000     # all stored message rows across all chats
   max_attachments: 8              # per message
@@ -151,17 +153,6 @@ scratchpad:
   max_entries: 1000               # same ceiling for storage admission and quota scans
   artifact_ttl: 168h              # clean generated artifacts older than this
   work_ttl: 24h                   # clean the model's work/ desk older than this
-  code_execution:
-    enabled: false                # opt-in; see §9.9 for enforcement
-    # One sandbox, always: bubblewrap. Requires the `bubblewrap` package;
-    # mullsmith refuses to start without a working bwrap when enabled.
-    allowed_runtimes:             # allowlist of interpreters the model may invoke
-      - { id: python3, binary: /usr/bin/python3 }
-      - { id: sh,      binary: /bin/sh }
-    timeout: 30s
-    max_output: 256KiB
-    max_memory: 1GiB
-    allow_network: false
 
 llm:
   endpoint: "http://127.0.0.1:8080/v1"        # OpenAI-compatible base URL
@@ -188,8 +179,6 @@ llm:
                                        # view_image ever offered to it
   default_temperature: 0.7
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
-  vision_max_image_bytes: 4MiB           # per-picture cap for view_image (all vision models)
-  vision_max_images_per_conversation: 8  # active pictures retained in one chat's model context
   upstream_header_timeout: "90s"         # wait for response headers; -1 = no cap (§6.2)
   upstream_stall_timeout: "120s"         # max silence between bytes mid-stream; -1 = no cap (§6.2)
   # Thinking control (thinking-control-specification.md, §6.3). All three
@@ -219,6 +208,17 @@ tools:
     enabled: true                 # save a public URL to the scratchpad (same SSRF guard)
     max_bytes: 1GiB
     timeout: 60s
+  code_run:
+    enabled: false                # opt-in; see §9.9 for enforcement
+    # One sandbox, always: bubblewrap. Requires the `bubblewrap` package;
+    # mullsmith refuses to start without a working bwrap when enabled.
+    allowed_runtimes:             # allowlist of interpreters the model may invoke
+      - { id: python3, binary: /usr/bin/python3 }
+      - { id: sh,      binary: /bin/sh }
+    timeout: 30s
+    max_output: 256KiB
+    max_memory: 1GiB
+    allow_network: false
   agent:
     max_tool_rounds: 20           # cap on tool-call loop per user turn
     max_tool_calls_per_turn: 100  # total proposed calls across every round of that turn
@@ -227,15 +227,17 @@ tools:
       web_search: auto            # auto | confirm
       web_fetch: auto
       web_download: auto
+      fs_list: auto
       fs_read: auto
       fs_write: auto
+      fs_delete: confirm
       files_share: auto           # model presents a scratchpad file for download
       view_image: auto            # model looks at one of the user's uploads (needs the entry's vision: true, §7.2)
       code_run: confirm           # requires user approval (see §9.9 / §9.13)
 
 auth:
-  registration: invite-only        # open | invite-only | closed (invite-only recommended
-                                   # for internet-facing; see §9.12)
+  registration: open               # frictionless trusted-LAN default; change to
+                                   # invite-only or closed before public exposure (§9.12)
   max_signups_per_hour: 5         # GLOBAL creation cap, enforced only when registration
                                   # is open; absent = 5, -1 disables (audit1 M-2)
   remember_login: true            # show the "Stay logged in" checkbox at login (§9.1)
@@ -1138,7 +1140,7 @@ in-daemon mechanism can supply one: the byte quota, storage watchdog and
 bounded scans (§9.7, §9.11) keep usage honest and metered, but a user
 spending disk and inodes on legitimate primitives — empty files, deep
 trees, deleted-but-open files — cannot be stopped short of service.
-Mullsmith therefore defines `code_execution.enabled: true` as
+Mullsmith therefore defines `tools.code_run.enabled: true` as
 **trusted users only**: enabling it is the operator's decision that the
 serving population may cost the host its storage, and public-facing
 deployments should keep code execution off or gate enrollment
@@ -1151,11 +1153,11 @@ v2 meter** for resources. At startup mullsmith probes a real jail; if bwrap is
 missing or its namespaces do not work (kernel policy disabling unprivileged user
 namespaces), or if per-run cgroup metering cannot be armed (no writable cgroup v2
 subtree — a systemd unit needs `Delegate=yes`; kernel < 5.7), it **refuses to
-start** with `code_execution.enabled: true` — never a silent downgrade. The
+start** with `tools.code_run.enabled: true` — never a silent downgrade. The
 retired multi-mode knobs (`mode`, `container_image`, `run_as_user`) are rejected
 as removed keys. Layers:
 
-1. **Opt-in.** `code_execution.enabled: false` by default — the product is fully useful
+1. **Opt-in.** `tools.code_run.enabled: false` by default — the product is fully useful
    (chat, search, files) without it.
 2. **Allowlisted runtimes** — config lists exact interpreter paths (resolved via
    symlinks, required to live under `/usr`, the only tree the jail mounts); the model
@@ -1592,10 +1594,11 @@ calls), and a smoke script per milestone.
   ended for new keys, so this is a paid API — the only per-request cost in the stack).
   Brave is the only provider the config accepts; a future second provider would land as
   an implementation plus its provider name in the validation switch.
-- **Registration = invite-only** (the safe public-internet default, §9.12; email
-  confirmation (§9.17) proves mailbox control, but gating *who may sign up* stays the
-  first control). Admin mints codes: `mullsmith admin invite`; `open`/`closed` remain
-  config choices.
+- **The shipped configuration sets registration to `open`** for a frictionless first run
+  on a trusted home LAN; the code fallback for an omitted setting remains `invite-only`.
+  Before public exposure, operators should change the explicit setting to `invite-only`
+  (admin mints codes with `mullsmith admin invite`) or `closed`. Email confirmation
+  (§9.17) proves mailbox control but does not decide who may sign up.
 - **Code execution = bubblewrap jail on this host** — `bubblewrap` 0.11.x is
   installed and unprivileged user namespaces are enabled, so the single §9.9 mode
   runs natively (verified by the startup probe). Docker is not used.

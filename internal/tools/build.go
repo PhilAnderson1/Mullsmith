@@ -77,16 +77,16 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	// offered at all. Per conversation the offer is filtered further by
 	// the model actually running (spec §7.2).
 	if cfg.LLM.AnyVision() {
-		reg.Register(ViewImage{MaxImageBytes: int64(cfg.LLM.VisionMaxImageBytes)})
+		reg.Register(ViewImage{MaxImageBytes: int64(cfg.AppLimits.VisionMaxImageBytes)})
 	}
-	if cfg.Scratchpad.CodeExec.Enabled && code != nil {
+	if cfg.Tools.CodeRun.Enabled && code != nil {
 		reg.Register(CodeRun{
 			Runner:       code,
-			Runtimes:     cfg.Scratchpad.CodeExec.AllowedRuntimes,
-			Timeout:      cfg.Scratchpad.CodeExec.Timeout.D(),
-			MaxOutput:    int(cfg.Scratchpad.CodeExec.MaxOutput),
+			Runtimes:     cfg.Tools.CodeRun.AllowedRuntimes,
+			Timeout:      cfg.Tools.CodeRun.Timeout.D(),
+			MaxOutput:    int(cfg.Tools.CodeRun.MaxOutput),
 			Files:        files,
-			AllowNetwork: cfg.Scratchpad.CodeExec.AllowNetwork,
+			AllowNetwork: cfg.Tools.CodeRun.AllowNetwork,
 		})
 	}
 

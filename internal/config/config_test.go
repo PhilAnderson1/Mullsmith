@@ -103,6 +103,10 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.Approval["code_run"] != "confirm" {
 		t.Errorf("code_run approval default = %q, want confirm", cfg.Tools.Agent.Approval["code_run"])
 	}
+	if cfg.Tools.Agent.Approval["fs_delete"] != "confirm" || cfg.Tools.Agent.Approval["view_image"] != "auto" {
+		t.Errorf("file/image approval defaults = %q / %q, want confirm / auto",
+			cfg.Tools.Agent.Approval["fs_delete"], cfg.Tools.Agent.Approval["view_image"])
+	}
 	// write_timeout defaults ON (astra2 finding 1): 60s, passed to the
 	// http.Server unchanged; the bare -1 stays the explicit off-switch,
 	// now alongside hsts_max_age, the file's remaining off-by-default flag.
@@ -405,22 +409,23 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 	}
 
 	exceptions := map[string]string{
-		"server.listen":                              "deployment choice — template ships the production port",
-		"server.tls.cert_file":                       "deployment paths — template stages certbot's cert",
-		"server.tls.key_file":                        "deployment paths — template stages certbot's cert",
-		"server.hsts_max_age":                        "-1 (code default) means no HSTS header; the template ships one year as the TLS-era default",
-		"database.dir":                               "required; per-machine path",
-		"scratchpad.root":                            "required; per-machine path",
-		"scratchpad.code_execution.allowed_runtimes": "host-specific interpreter paths — code default is the empty list",
-		"llm.models":                                 "required; the template holds a placeholder id (entries carry each model's default/thinking_profile)",
-		"llm.api_key":                                "secret via ${ENV} expansion — environment-dependent at test time",
-		"llm.default_temperature":                    "zero is a meaningful LLM value, so zero-collapse cannot carry 0.7; code default is 0",
-		"auth.remember_login":                        "bool zero-collapse — template opts in; code default keeps the checkbox off",
-		"tools.web_search.api_key":                   "secret via ${ENV} expansion — environment-dependent at test time",
-		"tools.web_fetch.enabled":                    "bool zero-collapse — template opts into guarded egress; code default is off",
-		"tools.web_download.enabled":                 "bool zero-collapse — template opts into guarded downloads; code default is off",
-		"email.smtp.password":                        "secret via ${ENV} expansion — environment-dependent at test time",
-		"email.smtp.from":                            "sender identity is operator- and domain-specific; the template shows the shape",
+		"server.listen":                   "deployment choice — template ships the production port",
+		"server.tls.cert_file":            "deployment paths — template stages certbot's cert",
+		"server.tls.key_file":             "deployment paths — template stages certbot's cert",
+		"server.hsts_max_age":             "-1 (code default) means no HSTS header; the template ships one year as the TLS-era default",
+		"database.dir":                    "required; per-machine path",
+		"scratchpad.root":                 "required; per-machine path",
+		"tools.code_run.allowed_runtimes": "host-specific interpreter paths — code default is the empty list",
+		"llm.models":                      "required; the template holds a worked example (entries carry each model's default/thinking_profile)",
+		"llm.api_key":                     "secret via ${ENV} expansion — environment-dependent at test time",
+		"llm.default_temperature":         "zero is a meaningful LLM value, so zero-collapse cannot carry 0.7; code default is 0",
+		"auth.registration":               "template explicitly opens trusted-LAN signup; omitted config fails safe to invite-only",
+		"auth.remember_login":             "bool zero-collapse — template opts in; code default keeps the checkbox off",
+		"tools.web_search.api_key":        "secret via ${ENV} expansion — environment-dependent at test time",
+		"tools.web_fetch.enabled":         "bool zero-collapse — template opts into guarded egress; code default is off",
+		"tools.web_download.enabled":      "bool zero-collapse — template opts into guarded downloads; code default is off",
+		"email.smtp.password":             "secret via ${ENV} expansion — environment-dependent at test time",
+		"email.smtp.from":                 "sender identity is operator- and domain-specific; the template shows the shape",
 	}
 
 	tmplLeaf, miniLeaf := map[string]any{}, map[string]any{}
@@ -432,11 +437,8 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 	// Keys the template must NOT carry: retired knobs whose presence (with a
 	// value) is itself a startup error — the template can only confuse.
 	notInTemplate := map[string]bool{
-		"rate_limit.requests_per_minute":            true,
-		"rate_limit.chat_messages_per_hour":         true,
-		"scratchpad.code_execution.mode":            true,
-		"scratchpad.code_execution.container_image": true,
-		"scratchpad.code_execution.run_as_user":     true,
+		"rate_limit.requests_per_minute":    true,
+		"rate_limit.chat_messages_per_hour": true,
 		// Retired with automatic upload embedding (2026-10-29): view
 		// turns carry exactly one picture, so there is no per-message
 		// inline budget left to configure (§7.2).
@@ -612,6 +614,11 @@ llm: {endpoint: "http://x/v1", models: [{id: m, context_size: 4096}], max_tokens
 			"approval",
 		},
 		{
+			"unknown approval tool",
+			minimalYAML + "tools:\n  agent:\n    approval:\n      web_serach: auto\n",
+			"tools.agent.approval.web_serach: unknown tool",
+		},
+		{
 			"negative tool call cap",
 			minimalYAML + "tools:\n  agent:\n    max_tool_calls_per_turn: -1\n",
 			"max_tool_calls_per_turn",
@@ -652,59 +659,14 @@ llm: {endpoint: "http://x/v1", models: [{id: m, context_size: 4096}], max_tokens
 database: {dir: ./db}
 scratchpad:
   root: ./sp
-  code_execution:
+tools:
+  code_run:
     enabled: true
-    run_as_user: nobody
     allowed_runtimes:
       - { id: python3, binary: python3 }
 llm: {endpoint: "http://x/v1", models: [{id: m}]}
 `,
 			"absolute path",
-		},
-		{
-			"retired mode key rejected",
-			`
-database: {dir: ./db}
-scratchpad:
-  root: ./sp
-  code_execution:
-    enabled: true
-    mode: "isolated"
-    allowed_runtimes:
-      - { id: python3, binary: /usr/bin/python3 }
-llm: {endpoint: "http://x/v1", models: [{id: m}]}
-`,
-			"removed",
-		},
-		{
-			"retired run_as_user key rejected",
-			`
-database: {dir: ./db}
-scratchpad:
-  root: ./sp
-  code_execution:
-    enabled: true
-    run_as_user: nobody
-    allowed_runtimes:
-      - { id: python3, binary: /usr/bin/python3 }
-llm: {endpoint: "http://x/v1", models: [{id: m}]}
-`,
-			"run_as_user",
-		},
-		{
-			"retired container_image key rejected",
-			`
-database: {dir: ./db}
-scratchpad:
-  root: ./sp
-  code_execution:
-    enabled: true
-    container_image: python:3
-    allowed_runtimes:
-      - { id: python3, binary: /usr/bin/python3 }
-llm: {endpoint: "http://x/v1", models: [{id: m}]}
-`,
-			"container_image",
 		},
 		{
 			"bad log level",
@@ -958,8 +920,8 @@ func TestLoadVisionPerModel(t *testing.T) {
 	if !cfg.LLM.AnyVision() {
 		t.Error("AnyVision must be true when one entry sees")
 	}
-	if cfg.LLM.VisionMaxImagesPerConversation != 8 {
-		t.Errorf("vision image conversation cap = %d, want default 8", cfg.LLM.VisionMaxImagesPerConversation)
+	if cfg.AppLimits.VisionMaxImagesPerConversation != 8 {
+		t.Errorf("vision image conversation cap = %d, want default 8", cfg.AppLimits.VisionMaxImagesPerConversation)
 	}
 	// Outside the picker → the default entry (here "seer" is default).
 	if !cfg.LLM.VisionFor("somewhere-else") {
@@ -970,8 +932,8 @@ func TestLoadVisionPerModel(t *testing.T) {
 		t.Errorf("no entry sees: err=%v AnyVision=%v", err, cfg.LLM.AnyVision())
 	}
 	if _, err := Load(writeCfg(t, minimalBase+
-		"  vision_max_images_per_conversation: -1\n"+
-		modelsYAML("    - id: \"seer\"\n      vision: true\n"))); err == nil {
+		modelsYAML("    - id: \"seer\"\n      vision: true\n")+
+		"app_limits:\n  vision_max_images_per_conversation: -1\n")); err == nil {
 		t.Error("negative vision_max_images_per_conversation accepted")
 	}
 }
@@ -1112,13 +1074,14 @@ database:
   dir: "./data/db"
 scratchpad:
   root: "./data/scratchpad"
+app_limits:
+  vision_max_image_bytes: 1MiB
 llm:
   endpoint: "http://192.168.0.2:8080/v1"
   api_key: ""
   default_temperature: 0.7
   max_tokens_response: 16384
   show_reasoning: false
-  vision_max_image_bytes: 1MiB
   endpoints_file: ./endpoints.yaml
   profiles_file: ./thinking-profiles.yaml
   endpoint_type: gufo
@@ -1149,6 +1112,9 @@ llm:
 		cfg.LLM.ThinkingProfileFor("Qwen3.8 Flash Next") != "qwen3_8" ||
 		cfg.LLM.ThinkingProfileFor("quiet-model") != "operator_p" {
 		t.Errorf("new fields = %q / %v", cfg.LLM.EndpointType, cfg.LLM.ModelProfiles())
+	}
+	if cfg.AppLimits.VisionMaxImageBytes != 1<<20 {
+		t.Errorf("vision image byte cap = %d, want 1 MiB", cfg.AppLimits.VisionMaxImageBytes)
 	}
 	if want := filepath.Join(dir, "endpoints.yaml"); cfg.LLM.EndpointsFile != want {
 		t.Errorf("endpoints_file = %q, want resolved %q", cfg.LLM.EndpointsFile, want)
@@ -1183,7 +1149,6 @@ func TestLoadThinkingFailures(t *testing.T) {
 		{"unknown endpoint_type", "nope", "qwen3_8"},
 		{"unknown thinking_profile", "gufo", "nope"},
 		{"profile without type", "", "qwen3_8"},
-		{"native protocol", "ollama", "qwen3_5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1272,14 +1237,14 @@ func TestPrepareUsesSameDefaultsAndRejectsRuntimeFailure(t *testing.T) {
 	if err := direct.Prepare(); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(direct.Scratchpad.CodeExec, loaded.Scratchpad.CodeExec) {
-		t.Fatalf("constructor defaults differ: %+v / %+v", direct.Scratchpad.CodeExec, loaded.Scratchpad.CodeExec)
+	if !reflect.DeepEqual(direct.Tools.CodeRun, loaded.Tools.CodeRun) {
+		t.Fatalf("constructor defaults differ: %+v / %+v", direct.Tools.CodeRun, loaded.Tools.CodeRun)
 	}
-	if direct.Scratchpad.CodeExec.MaxOutput != 256<<10 {
-		t.Fatalf("output default=%d", direct.Scratchpad.CodeExec.MaxOutput)
+	if direct.Tools.CodeRun.MaxOutput != 256<<10 {
+		t.Fatalf("output default=%d", direct.Tools.CodeRun.MaxOutput)
 	}
-	if direct.Scratchpad.CodeExec.MaxMemory != 1<<30 {
-		t.Fatalf("memory default=%d", direct.Scratchpad.CodeExec.MaxMemory)
+	if direct.Tools.CodeRun.MaxMemory != 1<<30 {
+		t.Fatalf("memory default=%d", direct.Tools.CodeRun.MaxMemory)
 	}
 	runtime := direct.Thinking
 	if err := direct.Prepare(); err != nil || direct.Thinking != runtime {

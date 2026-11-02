@@ -178,16 +178,37 @@ func TestRecipeAndAllowlistFiltering(t *testing.T) {
 		}
 	}
 
-	// The LM Studio native allowlist: High (xhigh) excluded — but that
-	// definition cannot be selected at all in this build, so the pair is
-	// a configuration error, checked beside it.
-	if _, err := Build(catSettings(Settings{EndpointType: "lm_studio_native", ProfileID: "qwen3_8"})); err == nil ||
-		!strings.Contains(err.Error(), "lm_studio_chat") {
-		t.Errorf("lm_studio_native accepted: %v", err)
+}
+
+// Custom catalogues may describe native transports, but this build must
+// reject them rather than sending an OpenAI request body to another route.
+// The shipped catalogue contains only selectable definitions.
+func TestNativeProtocolsRejected(t *testing.T) {
+	for _, protocol := range []string{"lm_studio_chat", "ollama_chat"} {
+		t.Run(protocol, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "endpoints.yaml")
+			body := "schema_version: 2\nendpoints:\n  native:\n    protocol: " + protocol +
+				"\n    path: /chat\n    requests:\n      'on': {enabled: true}\n"
+			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Build(Settings{EndpointType: "native", EndpointsFile: p})
+			if err == nil || !strings.Contains(err.Error(), protocol) {
+				t.Fatalf("native protocol accepted: %v", err)
+			}
+		})
 	}
-	if _, err := Build(catSettings(Settings{EndpointType: "ollama", ProfileID: "qwen3_5"})); err == nil ||
-		!strings.Contains(err.Error(), "ollama_chat") {
-		t.Errorf("ollama native accepted: %v", err)
+}
+
+func TestShippedEndpointsUseImplementedProtocol(t *testing.T) {
+	endpoints, _, err := loadCatalogues(Settings{EndpointsFile: repoEndpoints})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, ep := range endpoints {
+		if ep.Protocol != protocolOpenAI {
+			t.Errorf("shipped endpoint %q uses unsupported protocol %q", id, ep.Protocol)
+		}
 	}
 }
 

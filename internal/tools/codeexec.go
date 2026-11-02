@@ -35,7 +35,7 @@ type CodeRun struct {
 	Timeout   time.Duration
 	MaxOutput int
 	Files     *managed.Service
-	// AllowNetwork mirrors scratchpad.code_execution.allow_network so the
+	// AllowNetwork mirrors tools.code_run.allow_network so the
 	// tool description tells the model what the jail actually enforces
 	// (§9.9): the Runner opens or closes the net namespace by this same flag.
 	AllowNetwork bool

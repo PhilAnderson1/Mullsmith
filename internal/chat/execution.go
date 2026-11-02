@@ -42,8 +42,8 @@ func (s *Service) execTimeout(tool string) time.Duration {
 	case "web_download":
 		return s.cfg.Tools.WebDownload.Timeout.D() + 5*time.Second
 	}
-	if tool == "code_run" && s.cfg.Scratchpad.CodeExec.Enabled {
-		if d := s.cfg.Scratchpad.CodeExec.Timeout.D(); d > 0 {
+	if tool == "code_run" && s.cfg.Tools.CodeRun.Enabled {
+		if d := s.cfg.Tools.CodeRun.Timeout.D(); d > 0 {
 			return d + 15*time.Second
 		}
 	}
@@ -324,8 +324,10 @@ func (s *Service) awaitApproval(ctx context.Context, g *Generation, conn sink,
 // so typing this prefix changes nothing.
 const ViewTurnMarker = "[view_image attached "
 
-func (s *Service) visionMaxBytes() int64 { return int64(s.cfg.LLM.VisionMaxImageBytes) }
-func (s *Service) visionMaxImages() int  { return s.cfg.LLM.VisionMaxImagesPerConversation }
+func (s *Service) visionMaxBytes() int64 { return int64(s.cfg.AppLimits.VisionMaxImageBytes) }
+func (s *Service) visionMaxImages() int {
+	return s.cfg.AppLimits.VisionMaxImagesPerConversation
+}
 
 func requestImageCount(msgs []llm.ChatMessage) int {
 	var n int
