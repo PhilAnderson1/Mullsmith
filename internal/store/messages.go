@@ -109,6 +109,10 @@ func (d *DB) addMessage(ctx context.Context, userID string, m *Message, paths []
 		return err
 	}
 
+	if err := d.checkMessageLimit(ctx, tx, userID, 1); err != nil {
+		return err
+	}
+
 	var tok any
 	if m.TokenCount != nil {
 		tok = *m.TokenCount
@@ -201,6 +205,10 @@ func (d *DB) BeginSend(ctx context.Context, userID, convID, content string,
 		return nil, nil, ErrConversationNotFound
 	}
 	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := d.checkMessageLimit(ctx, tx, userID, 2); err != nil {
 		return nil, nil, err
 	}
 
@@ -359,6 +367,10 @@ func (d *DB) BeginTurnRegeneration(ctx context.Context, userID, convID, oldMsgID
 		convID, oldGen); err != nil {
 		return nil, err
 	}
+	if err := d.checkMessageLimit(ctx, tx, userID, 1); err != nil {
+		return nil, err
+	}
+
 	if genID == "" {
 		genID = id.New()
 	}

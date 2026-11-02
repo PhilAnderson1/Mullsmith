@@ -21,11 +21,9 @@ import (
 	"mullsmith/internal/store"
 )
 
-// Token lifetimes (plan §5): the confirm TTL deliberately equals the
-// pending sign-up expiry window — the account never outlives its link.
+// Confirmation/signup expiry is shared with the store.
 const (
 	resetTokenTTL   = 30 * time.Minute
-	confirmTokenTTL = 24 * time.Hour
 	emailRateWindow = 15 * time.Minute
 )
 
@@ -49,31 +47,21 @@ func mailQueued(w http.ResponseWriter) {
 	})
 }
 
-// Confirmation purposes for sendConfirmMail: same token machinery, but the
-// mail must read differently — activating an account vs. moving an existing
-// account's address (field feedback: one wording for both confused users).
-const (
-	confirmPurposeSignup = "signup"
-	confirmPurposeChange = "change"
-)
-
 // sendConfirmMail mints the address-bound confirmation token and queues the
-// mail for a pending address (sign-up or Settings change). Errors are
+// mail for a pending sign-up. Address changes mint their token inside
+// ChangeEmail instead. Errors are
 // logged, never surfaced to the requester: the pending row exists and
 // resend-confirm is the documented escape hatch.
-func (s *Server) sendConfirmMail(ctx context.Context, userID, email, purpose string) {
-	raw, err := s.store.CreateToken(ctx, store.TokenConfirmEmail, userID, email,
-		time.Now().Add(confirmTokenTTL))
+func (s *Server) sendConfirmMail(ctx context.Context, userID, email string) {
+	raw, err := s.store.CreateSignupConfirmation(ctx, userID, email, time.Now())
 	if err != nil {
 		s.logger.Error("confirm token mint failed", "error", err, "user", userID)
 		return
 	}
-	var subject, body string
-	if purpose == confirmPurposeChange {
-		subject, body = mail.ConfirmationMailChange(s.cfg.Email.BaseURL, raw)
-	} else {
-		subject, body = mail.ConfirmationMail(s.cfg.Email.BaseURL, raw)
+	if raw == "" {
+		return
 	}
+	subject, body := mail.ConfirmationMail(s.cfg.Email.BaseURL, raw)
 	s.mailer.Send(email, subject, body)
 }
 
@@ -173,6 +161,16 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		invalidToken(w, r)
 		return
 	}
+	valid, err := s.store.PasswordResetValid(r.Context(), body.Token, time.Now())
+	if err != nil {
+		s.logger.Error("password reset lookup failed", "error", err, "rid", RequestIDFrom(r.Context()))
+		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	if !valid {
+		invalidToken(w, r)
+		return
+	}
 	var hash string
 	if !s.hashRun(w, r, func() error {
 		var err error
@@ -181,10 +179,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	// One transaction: consume + address binding + new hash + revoke ALL
-	// sessions. Hashing before consumption means a dead link never burns
-	// argon2 work into an applied change, and an argon2 failure never
-	// burns the one shot.
+	// Recheck and consume in one transaction with the hash update and session
+	// revocation: the preflight cannot authorize a token that expired or was used
+	// while hashing, and a hashing failure must leave the token unconsumed.
 	userID, found, err := s.store.CompletePasswordReset(r.Context(), body.Token, hash, time.Now())
 	if err != nil {
 		s.logger.Error("password reset completion failed", "error", err, "rid", RequestIDFrom(r.Context()))
@@ -273,22 +270,9 @@ func (s *Server) handleResendConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only never-confirmed sign-ups (unconfirmed + NULL email) can resend:
-	// a confirmed address is forgot-password's business, and a mid-Settings
-	// change is re-pointed by a second PATCH, not by this public route.
-	user, err := s.store.UserByPendingEmail(r.Context(), email)
-	if err != nil {
-		s.logger.Error("resend lookup failed", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-	if user != nil {
-		// Reissue invalidates the older link (plan §3). The 24 h
-		// pending-account window is NOT extended — link and account die
-		// together at 24 h from sign-up.
-		s.sendConfirmMail(r.Context(), user.ID, email, confirmPurposeSignup)
-		s.logger.Info("confirmation mail re-queued", "user", user.ID, "ip", ip)
-	}
+	// Token issuance rechecks the original signup deadline in its transaction;
+	// public resends cannot revive or extend an expired signup.
+	s.sendConfirmMail(r.Context(), "", email)
 	mailQueued(w) // identical whether or not anything matched
 }
 
@@ -304,9 +288,6 @@ func (s *Server) handleCancelEmail(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("cancel pending email failed", "error", err, "user", user.ID)
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
-	}
-	if err := s.store.DeleteUnusedTokens(r.Context(), store.TokenConfirmEmail, user.ID); err != nil {
-		s.logger.Warn("confirm token cleanup failed", "error", err, "user", user.ID)
 	}
 	fresh, err := s.store.UserByID(r.Context(), user.ID)
 	if err != nil || fresh == nil {

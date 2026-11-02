@@ -1037,6 +1037,7 @@ function openSettingsView() {
 }
 
 function closeSettingsView() {
+  $("#settings-email-password").value = "";
   state.settingsOpen = false;
   document.body.classList.remove("settings-open");
   show($("#settings-panel"), false);
@@ -1049,12 +1050,27 @@ function fillSettingsForm() {
   $("#settings-name").value = me.name || "";
   $("#settings-email").value = me.email || "";
   $("#settings-prompt").value = me.default_system_prompt || "";
+  $("#settings-email-password").value = "";
+  syncEmailVerification();
   $("#form-password").reset();
   // email_features: the field keeps showing the CONFIRMED address; a
   // pending change is a notice with its own escape hatch, not a value.
   const pendingAddr = me.unconfirmed_email || "";
   show($("#settings-email-pending"), !!pendingAddr);
   if (pendingAddr) $("#pending-email-addr").textContent = pendingAddr;
+}
+
+function emailAddressChanged() {
+  return $("#settings-email").value.trim().toLowerCase() !== (state.me?.email || "");
+}
+
+function syncEmailVerification() {
+  const changed = emailAddressChanged();
+  show($("#settings-email-verification"), changed);
+  const password = $("#settings-email-password");
+  password.disabled = !changed;
+  password.required = changed;
+  if (!changed) password.value = "";
 }
 
 // Both save buttons double as "done": on SUCCESS the panel closes and the
@@ -1066,12 +1082,23 @@ function leaveSettings() {
 
 async function onSettingsSave(ev) {
   ev.preventDefault();
+  syncEmailVerification();
+  const password = $("#settings-email-password");
+  const update = {
+    name: $("#settings-name").value.trim(),
+    email: $("#settings-email").value.trim(),
+    default_system_prompt: $("#settings-prompt").value.trim(),
+  };
+  if (emailAddressChanged()) {
+    if (!password.value) {
+      toast("Enter your current password to change your email address.", true);
+      password.focus();
+      return;
+    }
+    update.current_password = password.value;
+  }
   try {
-    state.me = await api.updateMe({
-      name: $("#settings-name").value.trim(),
-      email: $("#settings-email").value.trim(),
-      default_system_prompt: $("#settings-prompt").value.trim(),
-    });
+    state.me = await api.updateMe(update);
     leaveSettings();
     if (state.me.unconfirmed_email) {
       toast("Confirmation link sent to " + state.me.unconfirmed_email, false);
@@ -1080,6 +1107,8 @@ async function onSettingsSave(ev) {
     }
   } catch (err) {
     handleErr(err, "save settings");
+  } finally {
+    password.value = "";
   }
 }
 
@@ -1093,6 +1122,7 @@ async function onPasswordSave(ev) {
   }
   try {
     await api.changePassword(cur, next);
+    state.me.unconfirmed_email = "";
     $("#form-password").reset();
     // The server rotated our session cookie (other sessions were revoked).
     leaveSettings();
@@ -1140,7 +1170,10 @@ async function loadFiles(reset) {
     const used = q.used_bytes || 0;
     const total = q.total_bytes || 0;
     $("#quota-fill").style.width = (total > 0 ? Math.min(100, (used / total) * 100) : 0).toFixed(1) + "%";
-    $("#quota-text").textContent = `${humanSize(used)} of ${humanSize(total)} used`;
+    $("#quota-text").textContent = q.entry_limit_reached
+      ? "Scratchpad entry limit exceeded — delete files or directories to make room."
+      : `${humanSize(used)} of ${humanSize(total)} used`;
+    $("#quota-fill").parentElement.hidden = !!q.entry_limit_reached;
   } finally {
     if (gen === filesLoadSeq) {
       filesLoading = false;
@@ -1623,6 +1656,7 @@ async function boot() {
     location.hash = navigation.currentId ? `#/c/${navigation.currentId}` : "";
   });
   $("#form-profile").addEventListener("submit", onSettingsSave);
+  $("#settings-email").addEventListener("input", syncEmailVerification);
   $("#form-password").addEventListener("submit", onPasswordSave);
   $("#btn-cancel-email").addEventListener("click", onCancelPendingEmail);
   $("#btn-delete-account").addEventListener("click", onDeleteAccount);

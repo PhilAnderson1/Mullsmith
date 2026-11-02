@@ -18,6 +18,28 @@ type Session struct {
 	UserAgent  string
 }
 
+// ErrStaleCredentials means the account changed after login verified its snapshot.
+var ErrStaleCredentials = errors.New("account credentials changed")
+
+// CreateLoginSession checks credentials and inserts the session in one statement,
+// so credential changes and revocation cannot be overtaken by a stale login.
+func (d *DB) CreateLoginSession(ctx context.Context, s *Session, verified *User) error {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`INSERT INTO sessions(id_hash, user_id, created_at, expires_at, remembered, last_seen_at, user_agent)
+		 SELECT ?, id, ?, ?, ?, ?, ? FROM users
+		 WHERE id = ? AND password_hash = ? AND email = ? AND status = ?`,
+		s.IDHash, s.CreatedAt.Unix(), s.ExpiresAt.Unix(), s.Remembered, s.LastSeenAt.Unix(), s.UserAgent,
+		verified.ID, verified.PasswordHash, verified.Email, StatusEnabled)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err == nil && n == 0 {
+		return ErrStaleCredentials
+	}
+	return err
+}
+
 func (d *DB) CreateSession(ctx context.Context, s *Session) error {
 	_, err := d.sqlDB.ExecContext(ctx,
 		`INSERT INTO sessions(id_hash, user_id, created_at, expires_at, remembered, last_seen_at, user_agent)
@@ -85,7 +107,7 @@ func (d *DB) DeleteSessionsForUser(ctx context.Context, userID string, exceptHas
 
 // DeleteExpired purges expired sessions; returns rows removed.
 func (d *DB) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
-	res, err := d.sqlDB.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, now.Unix())
+	res, err := d.sqlDB.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now.Unix())
 	if err != nil {
 		return 0, err
 	}

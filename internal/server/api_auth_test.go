@@ -605,7 +605,7 @@ func TestLoginAndRegisterReturnIdentityPayload(t *testing.T) {
 	if err != nil || u == nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if err := a.db.UpdateProfile(ctx, u.ID, u.Name, u.Email, "be brief", time.Now()); err != nil {
+	if err := a.db.UpdateProfile(ctx, u.ID, u.Name, "be brief", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 

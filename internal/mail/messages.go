@@ -19,8 +19,9 @@ func ConfirmationMail(baseURL, token string) (subject, body string) {
 			"\n" +
 			"    " + confirmLink(baseURL, token) + "\n" +
 			"\n" +
-			"The link works once and expires within 24 hours — after that the\n" +
-			"pending account is deleted automatically and you can sign up again.\n" +
+			"The link works once and expires 24 hours after the original signup.\n" +
+			"Resending does not extend that deadline. Once it expires you can\n" +
+			"sign up again; the pending account is deleted automatically.\n" +
 			"\n" +
 			"If you did not create this account, ignore this message.\n"
 }

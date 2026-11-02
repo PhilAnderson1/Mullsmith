@@ -22,7 +22,7 @@ func TestCancelledWriteWaitDoesNotModifyFile(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	service := New(1 << 20)
+	service := New(1<<20, 1000)
 	if err := service.acquire(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestCancelledDownloadCommitKeepsStagingFile(t *testing.T) {
 	if err := os.WriteFile(temp, []byte("download"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	service := New(1 << 20)
+	service := New(1<<20, 1000)
 	if err := service.acquire(t.Context()); err != nil {
 		t.Fatal(err)
 	}

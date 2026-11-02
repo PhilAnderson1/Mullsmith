@@ -168,13 +168,15 @@ type AppLimits struct {
 	// sentinel frees absent (Go zero) to mean "take the default".
 	// requests_per_minute and chat_messages_per_hour moved here from the
 	// retired rate_limit block.
+	MaxConversationsPerUser  int `yaml:"max_conversations_per_user"`
+	MaxMessagesPerUser       int `yaml:"max_messages_per_user"`
 	ConcurrentStreamsPerUser int `yaml:"concurrent_streams_per_user"`
 	// ConcurrentStreamsTotal caps generations running at once across ALL
 	// users; the global backstop behind the per-user cap (§9.11). One
 	// shared LLM endpoint saturates long before a handful of users each
 	// hit their personal cap.
 	ConcurrentStreamsTotal int `yaml:"concurrent_streams_total"`
-	// Per-user API token bucket over non-chat endpoints (§9.11).
+	// Per-user API attempt bucket, including chat sends and regeneration (§9.11).
 	RequestsPerMinute int `yaml:"requests_per_minute"`
 	// Per-user hourly chat-message bucket (§9.11).
 	ChatMessagesPerHour int `yaml:"chat_messages_per_hour"`
@@ -192,6 +194,10 @@ type AppLimits struct {
 	// request bucket alone would let a script wave unbounded
 	// max_file_size temporaries through. -1 disables (unbounded).
 	ConcurrentUploads int `yaml:"concurrent_uploads"`
+	// ConcurrentUploadsPerUser prevents one account monopolizing upload capacity.
+	ConcurrentUploadsPerUser int `yaml:"concurrent_uploads_per_user"`
+	// ConcurrentDownloadsPerUser bounds active file transfers for each account.
+	ConcurrentDownloadsPerUser int `yaml:"concurrent_downloads_per_user"`
 }
 
 type Database struct {
@@ -199,9 +205,11 @@ type Database struct {
 }
 
 type Scratchpad struct {
-	Root        string   `yaml:"root"`
-	MaxFileSize Size     `yaml:"max_file_size"`
-	UserQuota   Size     `yaml:"user_quota"`
+	Root        string `yaml:"root"`
+	MaxFileSize Size   `yaml:"max_file_size"`
+	UserQuota   Size   `yaml:"user_quota"`
+	// MaxEntries is also the quota scan ceiling; layout directories count.
+	MaxEntries  int      `yaml:"max_entries"`
 	ArtifactTTL Duration `yaml:"artifact_ttl"`
 	// WorkTTL ages the model's scratch desk: files under work/ whose mtime
 	// exceeds it are swept (§8). Default 24h. Like artifact_ttl it does NOT
@@ -389,8 +397,9 @@ type WebDownload struct {
 }
 
 type Agent struct {
-	MaxToolRounds int               `yaml:"max_tool_rounds"`
-	Approval      map[string]string `yaml:"approval"` // tool → auto | confirm
+	MaxToolRounds       int               `yaml:"max_tool_rounds"`
+	MaxToolCallsPerTurn int               `yaml:"max_tool_calls_per_turn"`
+	Approval            map[string]string `yaml:"approval"` // tool → auto | confirm
 }
 
 type Auth struct {
@@ -476,14 +485,18 @@ type RateLimit struct {
 // out; -1 on any of them turns that single control off, absent takes the
 // default, 0 and other negatives are a startup error (§9.11).
 const (
-	DefaultRequestsPerMinute      = 120
-	DefaultChatMessagesPerHour    = 120
-	DefaultConcurrentStreamsUser  = 2
-	DefaultConcurrentStreamsTotal = 8
-	DefaultHashConcurrency        = 1
-	DefaultConcurrentUploads      = 8
-	DefaultMaxConnections         = 128
-	DefaultConcurrentRequests     = 32
+	DefaultMaxConversationsPerUser    = 1000
+	DefaultMaxMessagesPerUser         = 10000
+	DefaultRequestsPerMinute          = 120
+	DefaultChatMessagesPerHour        = 120
+	DefaultConcurrentStreamsUser      = 2
+	DefaultConcurrentStreamsTotal     = 8
+	DefaultHashConcurrency            = 1
+	DefaultConcurrentUploads          = 8
+	DefaultConcurrentUploadsPerUser   = 2
+	DefaultConcurrentDownloadsPerUser = 2
+	DefaultMaxConnections             = 128
+	DefaultConcurrentRequests         = 32
 )
 
 // capKnobs lists every optional cap for validation: full key path plus a
@@ -494,11 +507,15 @@ var capKnobs = []struct {
 	name string
 	read func(*Config) int
 }{
+	{"app_limits.max_conversations_per_user", func(c *Config) int { return c.AppLimits.MaxConversationsPerUser }},
+	{"app_limits.max_messages_per_user", func(c *Config) int { return c.AppLimits.MaxMessagesPerUser }},
 	{"app_limits.concurrent_streams_per_user", func(c *Config) int { return c.AppLimits.ConcurrentStreamsPerUser }},
 	{"app_limits.concurrent_streams_total", func(c *Config) int { return c.AppLimits.ConcurrentStreamsTotal }},
 	{"app_limits.requests_per_minute", func(c *Config) int { return c.AppLimits.RequestsPerMinute }},
 	{"app_limits.chat_messages_per_hour", func(c *Config) int { return c.AppLimits.ChatMessagesPerHour }},
 	{"app_limits.hash_concurrency", func(c *Config) int { return c.AppLimits.HashConcurrency }},
+	{"app_limits.concurrent_downloads_per_user", func(c *Config) int { return c.AppLimits.ConcurrentDownloadsPerUser }},
+	{"app_limits.concurrent_uploads_per_user", func(c *Config) int { return c.AppLimits.ConcurrentUploadsPerUser }},
 	{"app_limits.concurrent_uploads", func(c *Config) int { return c.AppLimits.ConcurrentUploads }},
 	{"server.max_connections", func(c *Config) int { return c.Server.MaxConnections }},
 	{"server.concurrent_requests", func(c *Config) int { return c.Server.ConcurrentRequests }},
@@ -899,6 +916,12 @@ func (c *Config) setDefaults() {
 	// is the off sentinel and passes through; validation rejects 0 spelled
 	// out plus every other negative. Shipped configs spell the defaults out
 	// so the effective policy is visible at a glance.
+	if c.AppLimits.MaxConversationsPerUser == 0 {
+		c.AppLimits.MaxConversationsPerUser = DefaultMaxConversationsPerUser
+	}
+	if c.AppLimits.MaxMessagesPerUser == 0 {
+		c.AppLimits.MaxMessagesPerUser = DefaultMaxMessagesPerUser
+	}
 	if c.AppLimits.ConcurrentStreamsPerUser == 0 {
 		c.AppLimits.ConcurrentStreamsPerUser = DefaultConcurrentStreamsUser
 	}
@@ -914,6 +937,12 @@ func (c *Config) setDefaults() {
 	if c.AppLimits.HashConcurrency == 0 {
 		c.AppLimits.HashConcurrency = DefaultHashConcurrency
 	}
+	if c.AppLimits.ConcurrentDownloadsPerUser == 0 {
+		c.AppLimits.ConcurrentDownloadsPerUser = DefaultConcurrentDownloadsPerUser
+	}
+	if c.AppLimits.ConcurrentUploadsPerUser == 0 {
+		c.AppLimits.ConcurrentUploadsPerUser = DefaultConcurrentUploadsPerUser
+	}
 	if c.AppLimits.ConcurrentUploads == 0 {
 		c.AppLimits.ConcurrentUploads = DefaultConcurrentUploads
 	}
@@ -922,6 +951,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Scratchpad.MaxFileSize == 0 {
 		c.Scratchpad.MaxFileSize = 25 << 20
+	}
+	if c.Scratchpad.MaxEntries == 0 {
+		c.Scratchpad.MaxEntries = 1000
 	}
 	if c.Scratchpad.UserQuota == 0 {
 		c.Scratchpad.UserQuota = 1 << 30
@@ -1011,6 +1043,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Tools.Agent.MaxToolRounds == 0 {
 		c.Tools.Agent.MaxToolRounds = 20
+	}
+	if c.Tools.Agent.MaxToolCallsPerTurn == 0 {
+		c.Tools.Agent.MaxToolCallsPerTurn = 100
 	}
 	if c.Tools.Agent.Approval == nil {
 		c.Tools.Agent.Approval = map[string]string{}
@@ -1190,6 +1225,9 @@ func (c *Config) Validate() error {
 	if c.Scratchpad.Root == "" {
 		f.bad("scratchpad.root: required")
 	}
+	if c.Scratchpad.MaxEntries < 3 || c.Scratchpad.MaxEntries == int(^uint(0)>>1) {
+		f.bad("scratchpad.max_entries: must be at least 3 and below the maximum integer (layout directories count)")
+	}
 	if c.Scratchpad.MaxFileSize <= 0 || c.Scratchpad.UserQuota <= 0 {
 		f.bad("scratchpad: max_file_size and user_quota must be > 0")
 	}
@@ -1303,6 +1341,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Tools.WebDownload.MaxBytes <= 0 || c.Tools.WebDownload.MaxBytes == Size(1<<63-1) {
 		f.bad("tools.web_download.max_bytes: must be > 0 and less than 9223372036854775807")
+	}
+	if c.Tools.Agent.MaxToolCallsPerTurn <= 0 {
+		f.bad("tools.agent.max_tool_calls_per_turn: must be > 0")
 	}
 	for tool, mode := range c.Tools.Agent.Approval {
 		if mode != "auto" && mode != "confirm" {

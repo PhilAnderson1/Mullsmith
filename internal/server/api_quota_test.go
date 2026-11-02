@@ -60,6 +60,8 @@ func uploadRaw(t *testing.T, url string, cookies map[string]string, csrf string,
 // files can win no matter the scheduling, and the disk agrees.
 func TestConcurrentUploadsCannotBreachQuota(t *testing.T) {
 	cfg := quotaCfg(t, 1024)
+	// Exercise quota contention independently of the per-user admission cap.
+	cfg.AppLimits.ConcurrentUploadsPerUser = -1
 	a, _ := pwTestApp(t, cfg)
 	signupAs(a, "quota@test.io", "gk-code-1")
 

@@ -103,8 +103,8 @@
       <div id="register-confirm-note" hidden>
         <h2>Check your inbox</h2>
         <p class="auth-mode">We sent a confirmation link to <strong id="confirm-note-email"></strong>.
-          It works once and expires within 24 hours — after that the pending account is
-          deleted automatically and you can sign up again.</p>
+          It expires 24 hours after the original signup; resending does not extend that deadline.
+          After expiry you can sign up again. The pending account is deleted automatically.</p>
         <p class="form-error" id="resend-error" role="alert" hidden></p>
         <button id="btn-resend-confirm" class="btn ghost" type="button">Resend confirmation mail</button>
         <p class="switch-line"><a href="#login" id="link-confirm-back">Back to sign in</a></p>
@@ -259,6 +259,11 @@
           <input id="settings-name" type="text" autocomplete="name" maxlength="120" required>
           <label for="settings-email">Email</label>
           <input id="settings-email" type="email" autocomplete="email" required>
+          <div id="settings-email-verification" class="settings-email-verification" hidden>
+            <label for="settings-email-password">Current password</label>
+            <input id="settings-email-password" type="password" autocomplete="current-password" aria-describedby="settings-email-password-help" disabled>
+            <p id="settings-email-password-help" class="auth-mode">Confirm your password to change your email address.</p>
+          </div>
           <!-- email_features: a changed address waits here for its confirm click -->
           <p class="auth-mode" id="settings-email-pending" hidden>
             Awaiting confirmation: <strong id="pending-email-addr"></strong> — the address

@@ -12,7 +12,7 @@ import (
 func TestCancelledFileToolsLeaveFilesUntouched(t *testing.T) {
 	root := toolRoot(t)
 	writeDirect(t, root, "work/keep.txt", "original")
-	files := managed.New(1 << 20)
+	files := managed.New(1<<20, 1000)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	for _, tool := range []Tool{FsList{}, FsRead{}, FsWrite{Files: files}, FsDelete{}, FilesShare{Files: files}, ViewImage{}} {

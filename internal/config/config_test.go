@@ -91,6 +91,9 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.MaxToolRounds != 20 {
 		t.Errorf("max_tool_rounds default = %d, want 20", cfg.Tools.Agent.MaxToolRounds)
 	}
+	if cfg.Tools.Agent.MaxToolCallsPerTurn != 100 {
+		t.Errorf("max_tool_calls_per_turn default = %d, want 100", cfg.Tools.Agent.MaxToolCallsPerTurn)
+	}
 	if cfg.Tools.WebDownload.Enabled || cfg.Tools.WebDownload.MaxBytes != 1<<30 || cfg.Tools.WebDownload.Timeout != Duration(time.Minute) {
 		t.Errorf("web_download defaults = %+v", cfg.Tools.WebDownload)
 	}
@@ -126,6 +129,10 @@ func TestCapSyntax(t *testing.T) {
 		read func(*Config) int
 		def  int
 	}{
+		{"app_limits.max_conversations_per_user", "app_limits:\n  max_conversations_per_user: %d\n",
+			func(c *Config) int { return c.AppLimits.MaxConversationsPerUser }, DefaultMaxConversationsPerUser},
+		{"app_limits.max_messages_per_user", "app_limits:\n  max_messages_per_user: %d\n",
+			func(c *Config) int { return c.AppLimits.MaxMessagesPerUser }, DefaultMaxMessagesPerUser},
 		{"app_limits.concurrent_streams_per_user", "app_limits:\n  concurrent_streams_per_user: %d\n",
 			func(c *Config) int { return c.AppLimits.ConcurrentStreamsPerUser }, DefaultConcurrentStreamsUser},
 		{"app_limits.concurrent_streams_total", "app_limits:\n  concurrent_streams_total: %d\n",
@@ -140,6 +147,10 @@ func TestCapSyntax(t *testing.T) {
 			func(c *Config) int { return c.Server.MaxConnections }, DefaultMaxConnections},
 		{"server.concurrent_requests", "server:\n  concurrent_requests: %d\n",
 			func(c *Config) int { return c.Server.ConcurrentRequests }, DefaultConcurrentRequests},
+		{"app_limits.concurrent_downloads_per_user", "app_limits:\n  concurrent_downloads_per_user: %d\n",
+			func(c *Config) int { return c.AppLimits.ConcurrentDownloadsPerUser }, DefaultConcurrentDownloadsPerUser},
+		{"app_limits.concurrent_uploads_per_user", "app_limits:\n  concurrent_uploads_per_user: %d\n",
+			func(c *Config) int { return c.AppLimits.ConcurrentUploadsPerUser }, DefaultConcurrentUploadsPerUser},
 		{"app_limits.concurrent_uploads", "app_limits:\n  concurrent_uploads: %d\n",
 			func(c *Config) int { return c.AppLimits.ConcurrentUploads }, DefaultConcurrentUploads},
 		{"auth.max_signups_per_hour", "auth:\n  max_signups_per_hour: %d\n",
@@ -596,6 +607,11 @@ llm: {endpoint: "http://x/v1", models: [{id: m, context_size: 4096}], max_tokens
 			"bad approval",
 			minimalYAML + "tools:\n  agent:\n    approval:\n      web_search: maybe\n",
 			"approval",
+		},
+		{
+			"negative tool call cap",
+			minimalYAML + "tools:\n  agent:\n    max_tool_calls_per_turn: -1\n",
+			"max_tool_calls_per_turn",
 		},
 		{
 			"negative download size",
@@ -1297,5 +1313,26 @@ func TestServerAndApplicationLimitSections(t *testing.T) {
 				t.Fatal("accepted a setting in the wrong section")
 			}
 		})
+	}
+}
+
+func TestScratchpadEntryLimitConfiguration(t *testing.T) {
+	cfg, err := Load(writeCfg(t, minimalYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scratchpad.MaxEntries != 1000 {
+		t.Fatalf("default entries=%d", cfg.Scratchpad.MaxEntries)
+	}
+	for _, value := range []int{3, 10, 1000, -1, 1, 2} {
+		body := strings.Replace(minimalYAML, "scratchpad:\n", fmt.Sprintf("scratchpad:\n  max_entries: %d\n", value), 1)
+		cfg, err := Load(writeCfg(t, body))
+		if value < 3 {
+			if err == nil || !strings.Contains(err.Error(), "scratchpad.max_entries") {
+				t.Fatalf("invalid %d accepted: %v", value, err)
+			}
+		} else if err != nil || cfg.Scratchpad.MaxEntries != value {
+			t.Fatalf("entries %d: cfg=%v err=%v", value, cfg, err)
+		}
 	}
 }

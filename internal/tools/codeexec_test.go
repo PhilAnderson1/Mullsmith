@@ -52,7 +52,7 @@ func codeTool(r runner.Runner, quota int64) CodeRun {
 		},
 		Timeout:   30 * time.Second,
 		MaxOutput: 32 << 10,
-		Files:     managed.New(quota),
+		Files:     managed.New(quota, 1000),
 	}
 }
 
@@ -314,7 +314,7 @@ func TestCodeRunStagingRefusedBeforeCopy(t *testing.T) {
 func TestSharedQuotaLockHoldsUnderConcurrentWrites(t *testing.T) {
 	root := toolRoot(t)
 	const quota = 1000
-	files := managed.New(quota)
+	files := managed.New(quota, 1000)
 	content := strings.Repeat("z", 100)
 	var wg sync.WaitGroup
 	for i := range 20 {
@@ -329,7 +329,7 @@ func TestSharedQuotaLockHoldsUnderConcurrentWrites(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	used, err := scratch.DirSize(context.Background(), root, toolUser)
+	used, err := scratch.DirSize(context.Background(), root, toolUser, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +542,7 @@ func TestUnreadableTreeRefusesWritesUntilRestored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := run(t, FsWrite{Files: managed.New(1 << 20)}, root,
+	if _, err := run(t, FsWrite{Files: managed.New(1<<20, 1000)}, root,
 		argsJSON(t, map[string]string{"path": "work/note.txt", "content": "hi"})); err == nil ||
 		!strings.Contains(err.Error(), "could not be verified") {
 		t.Errorf("fs_write over unreadable tree: %v, want refusal", err)
@@ -558,7 +558,7 @@ func TestUnreadableTreeRefusesWritesUntilRestored(t *testing.T) {
 	}
 
 	os.Chmod(work, 0o700)
-	if _, err := run(t, FsWrite{Files: managed.New(1 << 20)}, root,
+	if _, err := run(t, FsWrite{Files: managed.New(1<<20, 1000)}, root,
 		argsJSON(t, map[string]string{"path": "work/note.txt", "content": "hi"})); err != nil {
 		t.Errorf("fs_write after restore: %v, want success", err)
 	}

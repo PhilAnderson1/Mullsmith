@@ -321,7 +321,7 @@ func TestResetLinkDiesWhenOwnerSecuresAccount(t *testing.T) {
 
 	// The owner flees the mailbox: PATCH email, then click the confirmation
 	// (two mails go out — confirm to the new address, notice to the old).
-	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": "safe@secure.io"})
+	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"current_password": emailPW, "email": "safe@secure.io"})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH email = %d, want 200", resp.StatusCode)
@@ -497,7 +497,7 @@ func TestSettingsEmailChangeFlow(t *testing.T) {
 	resp.Body.Close()
 
 	newAddr := "new@change.io"
-	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": newAddr})
+	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"current_password": emailPW, "email": newAddr})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH email = %d, want 200", resp.StatusCode)
 	}
@@ -544,7 +544,7 @@ func TestSettingsEmailChangeFlow(t *testing.T) {
 
 	// A second PATCH re-points the pending target: the first PATCH's token
 	// is now just another dead link (token-email binding, plan §3).
-	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": "third@change.io"})
+	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"current_password": emailPW, "email": "third@change.io"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("second PATCH = %d", resp.StatusCode)
 	}
@@ -578,7 +578,7 @@ func TestSettingsEmailConfirmSwapsAndTakenReports(t *testing.T) {
 	resp.Body.Close()
 
 	target := "prize@swap.io"
-	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": target})
+	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"current_password": emailPW, "email": target})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH = %d", resp.StatusCode)
 	}
@@ -637,7 +637,7 @@ func TestSettingsEmailChangeDirectWhenDisabled(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": "moved@off.io"})
+	resp = a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"current_password": emailPW, "email": "moved@off.io"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH off = %d", resp.StatusCode)
 	}

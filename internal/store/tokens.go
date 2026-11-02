@@ -12,7 +12,9 @@ import (
 
 // Token kinds (auth_tokens.kind).
 const (
-	TokenConfirmEmail  = "confirm_email"
+	TokenConfirmEmail = "confirm_email"
+	// ConfirmationTTL is the fixed signup window and address-change link lifetime.
+	ConfirmationTTL    = 24 * time.Hour
 	TokenResetPassword = "reset_password"
 )
 
@@ -31,36 +33,62 @@ var ErrEmailTakenNow = errors.New("that address is already in use")
 // user — one live link per purpose per account; clicking an older mail then
 // simply yields the generic invalid-link message.
 func (d *DB) CreateToken(ctx context.Context, kind, userID, email string, expiresAt time.Time) (string, error) {
-	raw, hash, err := auth.NewSessionToken()
-	if err != nil {
-		return "", err
-	}
 	tx, err := d.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`,
-		kind, userID); err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO auth_tokens(kind, token_hash, user_id, email, created_at, expires_at)
-		 VALUES(?, ?, ?, ?, ?, ?)`,
-		kind, hash, userID, email, time.Now().Unix(), expiresAt.Unix()); err != nil {
+	raw, err := createToken(ctx, tx, kind, userID, email, expiresAt)
+	if err != nil {
 		return "", err
 	}
 	return raw, tx.Commit()
 }
 
-// DeleteUnusedTokens drops a user's unconsumed tokens of one kind (the
-// cancel-pending-address path; expiry sweeps handle the rest).
-func (d *DB) DeleteUnusedTokens(ctx context.Context, kind, userID string) error {
-	_, err := d.sqlDB.ExecContext(ctx,
-		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`,
-		kind, userID)
-	return err
+// createToken lets an address change and its confirmation token share a commit.
+func createToken(ctx context.Context, tx *sql.Tx, kind, userID, email string, expiresAt time.Time) (string, error) {
+	raw, hash, err := auth.NewSessionToken()
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`, kind, userID); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO auth_tokens(kind, token_hash, user_id, email, created_at, expires_at) VALUES(?, ?, ?, ?, ?, ?)`,
+		kind, hash, userID, email, time.Now().Unix(), expiresAt.Unix()); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// CreateSignupConfirmation issues or replaces a link without extending signup
+// lifetime. An empty userID selects by address for the public resend endpoint.
+// Missing, already confirmed and expired accounts all produce no token.
+func (d *DB) CreateSignupConfirmation(ctx context.Context, userID, email string, now time.Time) (string, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var id string
+	var created int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, created_at FROM users WHERE email IS NULL AND status = ?
+		 AND unconfirmed_email = ? AND created_at > ? AND (? = '' OR id = ?)`,
+		StatusUnconfirmed, email, now.Add(-ConfirmationTTL).Unix(), userID, userID).Scan(&id, &created)
+	if errors.Is(err, ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	raw, err := createToken(ctx, tx, TokenConfirmEmail, id, email, time.Unix(created, 0).Add(ConfirmationTTL))
+	if err != nil {
+		return "", err
+	}
+	return raw, tx.Commit()
 }
 
 // ConfirmEmail applies a confirmation token — ONE rule for both flows (new
@@ -94,8 +122,9 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 	err = tx.QueryRowContext(ctx,
 		`SELECT t.user_id, t.email, u.unconfirmed_email
 		 FROM auth_tokens t JOIN users u ON u.id = t.user_id
-		 WHERE t.kind = ? AND t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?`,
-		TokenConfirmEmail, auth.HashToken(raw), now.Unix()).Scan(&userID, &tokenEmail, &pending)
+		 WHERE t.kind = ? AND t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?
+		 AND (u.email IS NOT NULL OR (u.status = 'unconfirmed' AND u.created_at > ?))`,
+		TokenConfirmEmail, auth.HashToken(raw), now.Unix(), now.Add(-ConfirmationTTL).Unix()).Scan(&userID, &tokenEmail, &pending)
 	if errors.Is(err, ErrNoRows) {
 		return false, nil
 	}
@@ -129,16 +158,15 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 		         updated_at = ? WHERE id = ?`,
 		StatusEnabled, now.Unix(), userID)
 	if isUnique(err, "users.email") {
-		// Someone claimed the address between mail-out and click. Clear
-		// the doomed pending value (so a resend cannot re-mint against it)
-		// and report the collision — this rollback-then-write needs its own
-		// statement, so commit the clear deliberately.
+		// Clear the failed reservation in this transaction, so a newer pending
+		// change cannot be accidentally cleared after this one commits.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET unconfirmed_email = NULL, updated_at = ? WHERE id = ?`, now.Unix(), userID); err != nil {
+			return false, err
+		}
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
-		_, _ = d.sqlDB.ExecContext(ctx,
-			`UPDATE users SET unconfirmed_email = NULL, updated_at = ? WHERE id = ?`,
-			now.Unix(), userID)
 		return false, ErrEmailTakenNow
 	}
 	if err != nil {
@@ -147,8 +175,7 @@ func (d *DB) ConfirmEmail(ctx context.Context, raw string, now time.Time) (found
 	// The address has moved: reset links bound to the abandoned mailbox
 	// proved control of a mailbox that is no longer the account's — they
 	// die here rather than surviving as a recovery path around the move
-	// (astra2 review; the features-off door is UpdateProfile's matching
-	// cut).
+	// (the direct-change door is ChangeEmail's matching cut).
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL AND email <> ?`,
 		TokenResetPassword, userID, tokenEmail); err != nil {
@@ -177,9 +204,7 @@ func (d *DB) CompletePasswordReset(ctx context.Context, raw, hash string, now ti
 	defer tx.Rollback()
 	var bound string
 	err = tx.QueryRowContext(ctx,
-		`SELECT t.user_id, t.email FROM auth_tokens t JOIN users u ON u.id = t.user_id
-		 WHERE t.kind = ? AND t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?
-		   AND u.email = t.email`,
+		resetAccountQuery,
 		TokenResetPassword, auth.HashToken(raw), now.Unix()).Scan(&userID, &bound)
 	if errors.Is(err, ErrNoRows) {
 		return "", false, nil
@@ -210,15 +235,31 @@ func (d *DB) CompletePasswordReset(ctx context.Context, raw, hash string, now ti
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", false, nil // address moved or account gone
 	}
+	if err := revokePasswordLinks(ctx, tx, userID); err != nil {
+		return "", false, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
 		return "", false, err
 	}
 	return userID, true, tx.Commit()
 }
 
+const resetAccountQuery = `SELECT t.user_id, t.email FROM auth_tokens t JOIN users u ON u.id = t.user_id
+	WHERE t.kind = ? AND t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ?
+	  AND u.email = t.email`
+
+// PasswordResetValid is a non-consuming preflight to avoid hashing dead links.
+// CompletePasswordReset must still recheck and consume the token atomically.
+func (d *DB) PasswordResetValid(ctx context.Context, raw string, now time.Time) (bool, error) {
+	var valid bool
+	err := d.sqlDB.QueryRowContext(ctx, `SELECT EXISTS (`+resetAccountQuery+`)`,
+		TokenResetPassword, auth.HashToken(raw), now.Unix()).Scan(&valid)
+	return valid, err
+}
+
 // DeleteExpiredTokens purges expired one-shot tokens; returns rows removed.
 func (d *DB) DeleteExpiredTokens(ctx context.Context, now time.Time) (int64, error) {
-	res, err := d.sqlDB.ExecContext(ctx, `DELETE FROM auth_tokens WHERE expires_at < ?`, now.Unix())
+	res, err := d.sqlDB.ExecContext(ctx, `DELETE FROM auth_tokens WHERE expires_at <= ?`, now.Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -228,13 +269,26 @@ func (d *DB) DeleteExpiredTokens(ctx context.Context, now time.Time) (int64, err
 // DeleteExpiredPendingUsers deletes never-confirmed sign-ups — exactly
 // status='unconfirmed' AND email IS NULL, the invariant's precise
 // definition of "pending" (suspended accounts always hold a confirmed
-// address and are never matched) — created before cutoff. Their
+// address and are never matched) — created at or before cutoff. Their
 // auth_tokens cascade via FK; the abandoned scratchpad directory goes to
 // the existing unknown-user sweep (§8). Returns rows removed.
 func (d *DB) DeleteExpiredPendingUsers(ctx context.Context, cutoff time.Time) (int64, error) {
 	res, err := d.sqlDB.ExecContext(ctx,
-		`DELETE FROM users WHERE status = ? AND email IS NULL AND created_at < ?`,
+		`DELETE FROM users WHERE status = ? AND email IS NULL AND created_at <= ?`,
 		StatusUnconfirmed, cutoff.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteExpiredEmailChanges clears reservations after their links expire or are
+// revoked. It is cleanup only: availability already ignores them immediately.
+func (d *DB) DeleteExpiredEmailChanges(ctx context.Context, now time.Time) (int64, error) {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE users AS u SET unconfirmed_email = NULL, updated_at = ?
+		 WHERE u.email IS NOT NULL AND u.unconfirmed_email IS NOT NULL
+		 AND NOT EXISTS (`+liveConfirmationQuery+`)`, now.Unix(), now.Unix())
 	if err != nil {
 		return 0, err
 	}

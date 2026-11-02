@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"errors"
 	"time"
 
 	"mullsmith/internal/agent"
@@ -52,6 +53,12 @@ func (op *Operation) Run(emit Emit) {
 	if maxRounds < 0 {
 		maxRounds = 0
 	}
+	maxCalls := s.cfg.Tools.Agent.MaxToolCallsPerTurn
+	if maxCalls < 0 {
+		maxCalls = 0
+	}
+	toolCallCount := 0
+	limitFeedbackSent := false
 	var res agent.Result
 	// storeErr records a persistence failure the terminal events must
 	// surface (finding 4): success may only be announced when the final
@@ -156,6 +163,7 @@ func (op *Operation) Run(emit Emit) {
 
 		msgs = append(msgs, llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls})
 		var perr error
+		limitedThisRound := false
 		for _, call := range res.ToolCalls {
 			if genCtx.Err() != nil {
 				// The stop landed between calls (review3 issue 3): the
@@ -167,7 +175,14 @@ func (op *Operation) Run(emit Emit) {
 			}
 			var result, attach string
 			var terr error
-			if round >= maxRounds {
+			// Rounds bound model continuations; calls bound the aggregate
+			// filesystem/network/database work one accepted user turn can
+			// induce. Count every proposal, including unknown, malformed,
+			// denied and already-over-limit calls, so no cheaper call class
+			// becomes an accounting bypass.
+			toolCallCount++
+			if round >= maxRounds || toolCallCount > maxCalls {
+				limitedThisRound = true
 				result, terr = s.rejectToolCall(genCtx, conn, userID, conv.ID, am.ID, g.ID, call, "tool call limit reached")
 			} else {
 				result, attach, terr = s.runToolCall(genCtx, g, conn, userID, conv.ID, am.ID, call, visionOn)
@@ -205,13 +220,18 @@ func (op *Operation) Run(emit Emit) {
 		if cancelledOut || storeErr != nil || perr != nil {
 			break
 		}
-		// The first refused round feeds ordinary tool errors back to the
-		// model, with the tool definitions intact. It chooses its own next
-		// response. A repeated request is recorded and refused too, then
-		// ends this generation rather than starting an unbounded error loop.
-		if round > maxRounds {
-			limitStopped = true
-			break
+		// The first round containing limit refusals feeds ordinary tool
+		// errors back to the model, with the definitions intact. It chooses
+		// its own next response. A repeated tool request is recorded and
+		// refused too, then ends the generation rather than starting an
+		// unbounded error loop. This applies equally to the round and total-
+		// call ceilings.
+		if limitedThisRound {
+			if limitFeedbackSent {
+				limitStopped = true
+				break
+			}
+			limitFeedbackSent = true
 		}
 
 		round++
@@ -270,7 +290,11 @@ func (op *Operation) Run(emit Emit) {
 	if storeErr != nil {
 		s.logger.Error("generation persistence failed", "error", storeErr, "user", userID,
 			"conversation", conv.ID, "rid", cmd.RequestID)
-		_ = conn.Send(Failed{Code: "storage_error", Message: "the reply could not be fully saved; reload this conversation"})
+		if errors.Is(storeErr, store.ErrMessageLimit) {
+			_ = conn.Send(Failed{Code: "message_limit", Message: store.MessageLimitNotice})
+		} else {
+			_ = conn.Send(Failed{Code: "storage_error", Message: "the reply could not be fully saved; reload this conversation"})
+		}
 	}
 	if limitStopped {
 		_ = conn.Send(Failed{Code: "tool_call_limit", Message: "tool call limit reached"})
@@ -304,6 +328,8 @@ func (op *Operation) Run(emit Emit) {
 	// sentence. This is what makes the live explanation survive a reload.
 	if midFull {
 		noteStranded(noteWindowMidLoop)
+	} else if errors.Is(storeErr, store.ErrMessageLimit) {
+		noteStranded(store.MessageLimitNotice)
 	} else if storeErr != nil {
 		noteStranded(noteSaveIncomplete)
 	} else if doneStatus == "aborted" {

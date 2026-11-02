@@ -153,6 +153,13 @@ func uploadTooLarge(w http.ResponseWriter, r *http.Request) {
 // instead of silently overwriting.
 func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
+	if !s.uploads.tryAcquire(user.ID) {
+		w.Header().Set("Retry-After", "2")
+		writeAPIError(w, r, http.StatusTooManyRequests, "too_many_uploads", "you already have the maximum number of uploads running; try again shortly")
+		return
+	}
+	defer s.uploads.release(user.ID)
+
 	// Global upload concurrency gate (audit finding 5): bounds in-flight
 	// temp bytes and quota-walk stampedes independently of the request-rate
 	// bucket. Refused outright — a saturated upload lane is a flood, and
@@ -178,7 +185,9 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	// usage never authorizes a write; raw scan errors stay in the log.
 	if err := s.files.Check(r.Context(), s.cfg.Scratchpad.Root, user.ID); err != nil {
 		code, message := "quota_exceeded", "storage quota exceeded"
-		if errors.Is(err, managed.ErrUnverified) {
+		if errors.Is(err, scratch.ErrEntryLimit) {
+			code, message = "entry_limit", err.Error()
+		} else if errors.Is(err, managed.ErrUnverified) {
 			code, message = "storage_unverified", "Storage usage could not be verified; check scratchpad permissions"
 		}
 		writeAPIError(w, r, http.StatusInsufficientStorage, code, message)
@@ -304,6 +313,8 @@ func (s *Server) commitUpload(w http.ResponseWriter, r *http.Request,
 		return rel, true
 	}
 	switch {
+	case errors.Is(err, scratch.ErrEntryLimit):
+		writeAPIError(w, r, http.StatusInsufficientStorage, "entry_limit", err.Error())
 	case errors.Is(err, managed.ErrUnverified):
 		writeAPIError(w, r, http.StatusInsufficientStorage, "storage_unverified", "Storage usage could not be verified; check scratchpad permissions")
 	case errors.Is(err, managed.ErrQuota):
@@ -351,6 +362,13 @@ func fileRelFrom(w http.ResponseWriter, r *http.Request) (string, bool) {
 // a writer appears.
 func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
+	if !s.downloads.tryAcquire(user.ID) {
+		w.Header().Set("Retry-After", "2")
+		writeAPIError(w, r, http.StatusTooManyRequests, "too_many_downloads", "you already have the maximum number of downloads running; try again shortly")
+		return
+	}
+	defer s.downloads.release(user.ID)
+
 	rel, ok := fileRelFrom(w, r)
 	if !ok {
 		return

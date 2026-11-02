@@ -118,6 +118,10 @@ func (s *Server) messageJSON(m *store.Message, userID string) map[string]any {
 // always surface as 404 — never 403 — so other users' ids cannot be probed.
 func (s *Server) writeConvErr(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, store.ErrConversationLimit):
+		writeAPIError(w, r, http.StatusConflict, "conversation_limit", "conversation limit reached; delete older conversations to make room")
+	case errors.Is(err, store.ErrMessageLimit):
+		writeAPIError(w, r, http.StatusConflict, "message_limit", store.MessageLimitNotice)
 	case errors.Is(err, store.ErrConversationNotFound):
 		writeAPIError(w, r, http.StatusNotFound, "not_found", "conversation not found")
 	case errors.Is(err, errInvalidCursor):

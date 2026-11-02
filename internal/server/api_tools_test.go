@@ -605,6 +605,49 @@ func TestToolRoundCap(t *testing.T) {
 	}
 }
 
+func TestToolCallCapCountsAcrossRoundsAndResetsPerTurn(t *testing.T) {
+	search := &fakeTool{name: "web_search", content: `{}`, summary: "s"}
+	policies := map[string]string{"web_search": "auto"}
+	cfg := toolChatCfg(t, 10, policies)
+	cfg.Tools.Agent.MaxToolCallsPerTurn = 3
+	a, _ := newToolServer(t, cfg, registryFor(policies, search), [][]string{
+		{
+			toolCallChunk(0, "c1", "web_search", `{}`),
+			toolCallChunk(1, "c2", "web_search", `{}`),
+			finishChunk("tool_calls"),
+		},
+		{
+			toolCallChunk(0, "c3", "web_search", `{}`),
+			toolCallChunk(1, "c4", "web_search", `{}`),
+			finishChunk("tool_calls"),
+		},
+		{answerChunk("first done"), finishChunk("stop")},
+		{toolCallChunk(0, "c5", "web_search", `{}`), finishChunk("tool_calls")},
+		{answerChunk("second done"), finishChunk("stop")},
+	})
+	c := createConv(t, a, map[string]any{"title": "Call cap"})
+
+	resp := sendChat(t, a, c.ID, "first")
+	first := drainSSE(t, newSSEReader(t, resp))
+	resp.Body.Close()
+	if first.done["status"] != "complete" || search.callCount() != 3 {
+		t.Fatalf("first turn: done=%v executions=%d, want complete/3", first.done, search.callCount())
+	}
+	if got := countEvents(first, "tool_end"); got != 4 {
+		t.Fatalf("first turn tool results=%d, want 4 (three runs and one refusal)", got)
+	}
+	if first.data["tool_end"]["status"] != "error" {
+		t.Fatalf("fourth call was not refused: %v", first.data["tool_end"])
+	}
+
+	resp = sendChat(t, a, c.ID, "second")
+	second := drainSSE(t, newSSEReader(t, resp))
+	resp.Body.Close()
+	if second.done["status"] != "complete" || search.callCount() != 4 {
+		t.Fatalf("second turn: done=%v executions=%d, want complete/4", second.done, search.callCount())
+	}
+}
+
 func TestUnknownToolReportedToModel(t *testing.T) {
 	reg := registryFor(map[string]string{})
 	cfg := toolChatCfg(t, 4, map[string]string{})

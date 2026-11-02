@@ -2,9 +2,10 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,23 +18,6 @@ import (
 )
 
 // --- helpers ---------------------------------------------------------------
-
-func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
-	if !strings.EqualFold(strings.TrimSpace(ct), "application/json") {
-		writeAPIError(w, r, http.StatusUnsupportedMediaType,
-			"unsupported_media_type", "Content-Type must be application/json")
-		return false
-	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		writeAPIError(w, r, http.StatusBadRequest, "invalid_request",
-			"request body must be a JSON object with only known fields")
-		return false
-	}
-	return true
-}
 
 // newSessionAndCookie creates the DB session row and sets the cookie. Always
 // mints a brand-new token — sessions are never reused across logins (fixation,
@@ -59,7 +43,7 @@ func (s *Server) newSessionAndCookie(w http.ResponseWriter, r *http.Request, use
 		LastSeenAt: now,
 		UserAgent:  truncate(r.UserAgent(), 255),
 	}
-	if err := s.store.CreateSession(r.Context(), sess); err != nil {
+	if err := s.store.CreateLoginSession(r.Context(), sess, user); err != nil {
 		return err
 	}
 	http.SetCookie(w, auth.SessionCookie(raw, remembered, expires, secureRequest(s.cfg, r)))
@@ -133,6 +117,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, r, http.StatusForbidden, "invite_required", "an invite code is required")
 			return
 		}
+	case "open":
+		if strings.TrimSpace(body.Invite) != "" {
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "invite codes are not used for open registration")
+			return
+		}
 	}
 
 	email, ok := auth.NormalizeEmail(body.Email)
@@ -167,14 +156,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Availability pre-flight: with email on, the address lands in
-	// unconfirmed_email, which carries no UNIQUE index — EmailAvailable's
-	// both-column check is the arbiter (plan §5). It runs in both modes so
-	// the global budget below and the hash can never be spent on a request
-	// whose row is certain to lose to the duplicate constraint; the store's
-	// UNIQUE index stays the final arbiter for the racing-identical-email
-	// case either way.
-	avail, err := s.store.EmailAvailable(r.Context(), email)
+	// Reject obvious duplicates before reserving capacity or hashing. Register
+	// repeats the check inside its transaction to resolve concurrent signups.
+	avail, err := s.store.EmailAvailable(r.Context(), email, time.Now())
 	if err != nil {
 		s.logger.Error("email availability check failed", "error", err, "rid", RequestIDFrom(r.Context()))
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
@@ -185,23 +169,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Global creation budget (audit1 M-2), open mode only: the per-IP bucket
-	// above is worthless to a proxy pool, and every accepted request means a
-	// DB row plus — with email on — a confirmation mail from the operator's
-	// SMTP host. Consumed HERE, after every validation and pre-flight and
-	// before the hash: one unit spent equals one row actually created, so
-	// garbage or duplicate attempts cannot burn the budget and lock out
-	// legitimate sign-ups. Invite-only mode needs no budget — the codes are
-	// the budget. -1 disables the check.
-	if s.cfg.Auth.Registration == "open" {
-		if limit := s.cfg.Auth.SignupsPerHour(); limit > 0 &&
-			!s.limiter.Allow("signup:global", limit, time.Hour) {
-			s.logger.Warn("global sign-up budget exhausted", "limit", limit, "ip", ip)
-			writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited",
-				"sign-ups are temporarily rate limited, try again later")
-			return
-		}
+	// Reserve before expensive work, charge on creation, release on any failure.
+	// The nil budget covers invite-only mode and an explicitly disabled cap.
+	reservation, allowed := s.signupBudget.Reserve()
+	if !allowed {
+		s.logger.Warn("global sign-up budget exhausted", "limit", s.cfg.Auth.SignupsPerHour(), "ip", ip)
+		writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited",
+			"sign-ups are temporarily rate limited, try again later")
+		return
 	}
+	defer reservation.Release()
 
 	var hash string
 	if !s.hashRun(w, r, func() error {
@@ -242,6 +219,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	reservation.Commit()
 
 	// Scratchpad provisioning (spec §8). On filesystem failure the row
 	// SURVIVES — no rollback runs here, and none is promised (audit1 I-2:
@@ -262,7 +240,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// nothing about its mailbox yet. A token-mint failure here is logged,
 	// not fatal: resend-confirm from the login screen is the escape hatch.
 	if s.cfg.Email.Enabled {
-		s.sendConfirmMail(r.Context(), user.ID, email, confirmPurposeSignup)
+		s.sendConfirmMail(r.Context(), user.ID, email)
 		s.logger.Info("user registered, confirmation pending", "user", user.ID, "ip", ip)
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"email":                       email, // echoed from the request
@@ -272,6 +250,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.newSessionAndCookie(w, r, user, s.rememberRequested(body.RememberMe)); err != nil {
+		if errors.Is(err, store.ErrStaleCredentials) {
+			invalidCredentials(w, r)
+			return
+		}
 		s.logger.Error("session create failed", "error", err)
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
@@ -319,8 +301,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	lockKey := "acct:" + email
 
-	if s.locks.Locked(lockKey) {
-		writeAPIError(w, r, http.StatusTooManyRequests, "account_locked", "too many failed attempts, try later")
+	if until := s.locks.LockedUntil(lockKey); !until.IsZero() {
+		writeLoginLockout(w, r, http.StatusTooManyRequests, "account_locked", until)
 		return
 	}
 
@@ -337,9 +319,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if !s.hashRun(w, r, func() error { auth.DummyVerify(s.cfg.Auth.Argon2); return nil }) {
 			return
 		}
-		s.locks.Fail(lockKey, s.cfg.Auth.MaxFailedLogins, 15*time.Minute)
 		s.logger.Warn("login failed", "reason", "unknown_email", "ip", ip)
-		invalidCredentials(w, r)
+		s.failedLogin(w, r, lockKey)
 		return
 	}
 	ok := false
@@ -347,18 +328,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok || user.Status != store.StatusEnabled {
-		s.locks.Fail(lockKey, s.cfg.Auth.MaxFailedLogins, 15*time.Minute)
 		s.logger.Warn("login failed", "reason", "bad_password", "ip", ip, "user", user.ID)
-		invalidCredentials(w, r)
+		s.failedLogin(w, r, lockKey)
 		return
 	}
 
-	s.locks.Reset(lockKey)
 	if err := s.newSessionAndCookie(w, r, user, s.rememberRequested(body.RememberMe)); err != nil {
+		if errors.Is(err, store.ErrStaleCredentials) {
+			invalidCredentials(w, r)
+			return
+		}
 		s.logger.Error("session create failed", "error", err)
 		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
+	s.locks.Reset(lockKey)
 	s.logger.Info("login ok", "user", user.ID, "ip", ip)
 	// The identity payload is the SAME shape on every door that says who
 	// you are (login, register, GET/PATCH /auth/me): the SPA seeds
@@ -367,10 +351,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, mePayload(user))
 }
 
-// invalidCredentials is the single generic 401 for every failure mode that
-// could distinguish accounts (spec §9.1).
+// invalidCredentials is the generic refusal when credentials cannot be accepted.
+// Ordinary wrong-password and unknown-account failures share failedLogin warnings.
 func invalidCredentials(w http.ResponseWriter, r *http.Request) {
 	writeAPIError(w, r, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
+}
+
+func (s *Server) failedLogin(w http.ResponseWriter, r *http.Request, key string) {
+	failure := s.locks.Fail(key, s.cfg.Auth.MaxFailedLogins, 15*time.Minute)
+	if !failure.LockedUntil.IsZero() {
+		writeLoginLockout(w, r, http.StatusUnauthorized, "invalid_credentials", failure.LockedUntil)
+		return
+	}
+	if !failure.Tracked {
+		invalidCredentials(w, r)
+		return
+	}
+	attempts := "attempts"
+	if failure.Remaining == 1 {
+		attempts = "attempt"
+	}
+	writeAPIError(w, r, http.StatusUnauthorized, "invalid_credentials",
+		fmt.Sprintf("invalid email or password; %d %s remaining before a 15-minute lockout", failure.Remaining, attempts))
+}
+
+func writeLoginLockout(w http.ResponseWriter, r *http.Request, status int, code string, until time.Time) {
+	seconds := max(int64(1), int64((time.Until(until)+time.Second-1)/time.Second))
+	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	writeAPIError(w, r, status, code,
+		"too many failed attempts; try again after "+until.UTC().Format(time.RFC1123))
 }
 
 // --- POST /api/v1/auth/logout ---------------------------------------------------------
@@ -417,6 +426,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
 	var body struct {
+		CurrentPassword     string  `json:"current_password"`
 		Name                *string `json:"name"`
 		Email               *string `json:"email"`
 		DefaultSystemPrompt *string `json:"default_system_prompt"`
@@ -448,59 +458,58 @@ func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Email-change routing (plan §5). Features ON: a changed address never
-	// writes the email column — it becomes the pending target plus a bound
-	// confirm mail, and the OLD (confirmed) mailbox gets a courtesy notice,
-	// so a stolen cookie cannot quietly reroute the account. Features OFF:
-	// the direct write also clears any stale pending target a previous
-	// enabled run left behind.
 	pendingAddr := ""
+	var updateErr error
 	if email != user.Email {
+		// Session possession is insufficient to change a recovery address.
+		if body.CurrentPassword == "" {
+			writeAPIError(w, r, http.StatusBadRequest, "password_required", "enter your current password to change your email address")
+			return
+		}
+		if !s.limiter.Allow("emailchange:"+user.ID, 5, emailRateWindow) ||
+			!s.limiter.Allow("emailchangeip:"+ClientIP(r), 20, emailRateWindow) ||
+			(s.cfg.Email.Enabled && !s.limiter.Allow("confirmset:"+ClientIP(r), 3, emailRateWindow)) {
+			w.Header().Set("Retry-After", "900")
+			writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited", "too many email change attempts, try again later")
+			return
+		}
+		valid := false
+		if !s.hashRun(w, r, func() error { valid = auth.VerifyPassword(body.CurrentPassword, user.PasswordHash); return nil }) {
+			return
+		}
+		if !valid {
+			writeAPIError(w, r, http.StatusForbidden, "invalid_password", "current password is incorrect")
+			return
+		}
+		now := time.Now()
+		var expiry time.Time
 		if s.cfg.Email.Enabled {
-			if !s.limiter.Allow("confirmset:"+ClientIP(r), 3, emailRateWindow) {
-				writeAPIError(w, r, http.StatusTooManyRequests, "rate_limited", "too many attempts, try later")
-				return
-			}
-			avail, err := s.store.EmailAvailable(r.Context(), email)
-			if err != nil {
-				s.logger.Error("email availability check failed", "error", err, "rid", RequestIDFrom(r.Context()))
-				writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-				return
-			}
-			if !avail {
-				writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
-				return
-			}
+			expiry = now.Add(store.ConfirmationTTL)
+		}
+		var token string
+		token, updateErr = s.store.ChangeEmail(r.Context(), user, sessionFrom(r.Context()).IDHash,
+			name, email, prompt, expiry, now)
+		if updateErr == nil && token != "" {
 			pendingAddr = email
-			email = user.Email // the confirmed address is not moved until the click
+			subject, message := mail.ConfirmationMailChange(s.cfg.Email.BaseURL, token)
+			s.mailer.Send(email, subject, message)
+			subject, message = mail.AddressChangedMail()
+			s.mailer.Send(user.Email, subject, message)
 		}
+	} else {
+		updateErr = s.store.UpdateProfile(r.Context(), user.ID, name, prompt, time.Now())
 	}
-
-	if err := s.store.UpdateProfile(r.Context(), user.ID, name, email, prompt, time.Now()); err != nil {
-		if errors.Is(err, store.ErrUserExists) {
+	if updateErr != nil {
+		switch {
+		case errors.Is(updateErr, store.ErrUserExists):
 			writeAPIError(w, r, http.StatusConflict, "duplicate_email", "an account with this email already exists")
-			return
-		}
-		s.logger.Error("profile update failed", "error", err, "rid", RequestIDFrom(r.Context()))
-		writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-	switch {
-	case pendingAddr != "":
-		if err := s.store.SetUnconfirmedEmail(r.Context(), user.ID, pendingAddr, time.Now()); err != nil {
-			s.logger.Error("pending email set failed", "error", err, "user", user.ID)
+		case errors.Is(updateErr, store.ErrStaleCredentials), errors.Is(updateErr, store.ErrUserNotFound):
+			writeAPIError(w, r, http.StatusConflict, "credentials_changed", "your account credentials changed during this request; sign in again")
+		default:
+			s.logger.Error("profile update failed", "error", updateErr, "rid", RequestIDFrom(r.Context()))
 			writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
-			return
 		}
-		s.sendConfirmMail(r.Context(), user.ID, pendingAddr, confirmPurposeChange)
-		if user.Email != "" {
-			subject, msg := mail.AddressChangedMail()
-			s.mailer.Send(user.Email, subject, msg)
-		}
-	case email != user.Email: // features off, address rewritten directly
-		if err := s.store.SetUnconfirmedEmail(r.Context(), user.ID, "", time.Now()); err != nil {
-			s.logger.Warn("stale pending email clear failed", "error", err, "user", user.ID)
-		}
+		return
 	}
 	fresh, err := s.store.UserByID(r.Context(), user.ID)
 	if err != nil || fresh == nil {

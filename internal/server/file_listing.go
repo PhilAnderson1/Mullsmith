@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"sort"
@@ -142,12 +143,21 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(fileCursor{Modified: last.info.ModTime().UnixNano(), Path: last.rel, Kind: kind})
 		next = base64.RawURLEncoding.EncodeToString(b)
 	}
-	used, err := scratch.DirSize(r.Context(), s.cfg.Scratchpad.Root, user.ID)
-	if err != nil {
+	usage, err := scratch.DirUsage(r.Context(), s.cfg.Scratchpad.Root, user.ID, s.cfg.Scratchpad.MaxEntries)
+	if err != nil && !errors.Is(err, scratch.ErrEntryLimit) {
 		writeAPIError(w, r, http.StatusServiceUnavailable, "storage_unverified", "Storage usage could not be verified; check scratchpad permissions.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": next, "quota": map[string]any{"used_bytes": used, "total_bytes": int64(s.cfg.Scratchpad.UserQuota)}})
+	quota := map[string]any{"total_bytes": int64(s.cfg.Scratchpad.UserQuota)}
+	if err == nil {
+		quota["used_bytes"] = usage.Bytes
+	} else {
+		// Return the listing so an over-limit user can still choose what to delete.
+		// The bounded scan did not establish exact totals; never present them as zero.
+		quota["used_bytes"] = nil
+		quota["entry_limit_reached"] = true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": next, "quota": quota})
 }
 
 func countTreeFiles(ctx context.Context, root, userID, rel string) (int, bool) {

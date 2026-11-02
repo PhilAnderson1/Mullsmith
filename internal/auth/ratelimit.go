@@ -116,11 +116,10 @@ func (l *Limiter) Allow(key string, rate int, window time.Duration) bool {
 	return true
 }
 
-// makeRoomLocked frees space for one new key: idle buckets first, then the
+// makeRoomLocked frees space for one new key: fully replenished buckets first, then the
 // least-recently-used quarter in a single batch (amortising the selection
-// over evictFraction later inserts). Idle buckets were within a refill of
-// expiry anyway; evicting one costs that IP a stale counter, never the
-// server's memory.
+// over evictFraction later inserts). Capacity eviction can reset active counters;
+// that deliberate memory bound is separate from safe ordinary garbage collection.
 func (l *Limiter) makeRoomLocked(now time.Time) bool {
 	l.gcLocked(now)
 	if len(l.buckets) < maxLimiterEntries {
@@ -145,10 +144,11 @@ func (l *Limiter) makeRoomLocked(now time.Time) bool {
 	return len(l.buckets) < maxLimiterEntries
 }
 
-// gcLocked drops buckets idle for more than 10 minutes; called opportunistically.
+// gcLocked drops only fully replenished buckets: recreating one must not grant
+// more tokens than retaining it would. Callers hold l.mu.
 func (l *Limiter) gcLocked(now time.Time) {
 	for k, b := range l.buckets {
-		if now.Sub(b.last) > 10*time.Minute {
+		if b.tokens+now.Sub(b.last).Seconds()*b.refill >= b.cap {
 			delete(l.buckets, k)
 		}
 	}
@@ -216,14 +216,30 @@ func (l *LoginLocks) Len() int {
 // absolute deadline: it stays effective regardless of what the counting
 // window or the garbage sweep has done.
 func (l *LoginLocks) Locked(key string) bool {
+	return !l.LockedUntil(key).IsZero()
+}
+
+// LockedUntil returns the active lock's deadline, or zero when login may proceed.
+func (l *LoginLocks) LockedUntil(key string) time.Time {
 	now := l.clockNow()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	r, ok := l.m[hashLockKey(key)]
 	if !ok {
-		return false
+		return time.Time{}
 	}
-	return now.Before(r.lockedUntil)
+	if now.Before(r.lockedUntil) {
+		return r.lockedUntil
+	}
+	return time.Time{}
+}
+
+// LoginFailure is the advisory warning recorded atomically with a failed attempt.
+// Tracked is false when map saturation prevents retaining a new failure record.
+type LoginFailure struct {
+	Remaining   int
+	LockedUntil time.Time
+	Tracked     bool
 }
 
 // Fail records one failed attempt against a fixed counting window that
@@ -240,7 +256,7 @@ func (l *LoginLocks) Locked(key string) bool {
 // key's failure is dropped instead of evicting someone's lockout. The
 // leftover exposure (a newcomer momentarily untracked) stays bounded by
 // the per-IP login bucket and the hash gate.
-func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
+func (l *LoginLocks) Fail(key string, max int, window time.Duration) LoginFailure {
 	now := l.clockNow()
 	hk := hashLockKey(key)
 	l.mu.Lock()
@@ -262,7 +278,7 @@ func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 			// immovable, so refusals stay O(1) instead of O(map) each.
 			if now.Before(l.noRoomUntil) || !l.makeRoomLocked(now) {
 				l.warn(now, "login-lock map saturated: every slot holds a live lockout — this failed login went untracked (existing lockouts preserved; per-IP buckets and the hash gate still apply) (audit1 L-1)")
-				return
+				return LoginFailure{}
 			}
 		}
 		r = &failRecord{count: 0, firstAt: now}
@@ -272,7 +288,7 @@ func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 	// Active lockout: this attempt counts for nothing and moves nothing —
 	// the deadline set when the threshold was crossed is the whole story.
 	if now.Before(r.lockedUntil) {
-		return
+		return LoginFailure{LockedUntil: r.lockedUntil, Tracked: true}
 	}
 	// Fixed window expired: open a fresh one at count 1. This is evaluated
 	// here rather than relying on deletion, so correctness holds even when
@@ -280,11 +296,13 @@ func (l *LoginLocks) Fail(key string, max int, window time.Duration) {
 	if !now.Before(r.firstAt.Add(window)) {
 		r.count = 0
 		r.firstAt = now
+		r.lockedUntil = time.Time{}
 	}
 	r.count++
 	if r.count >= max {
 		r.lockedUntil = now.Add(window)
 	}
+	return LoginFailure{Remaining: max - r.count, LockedUntil: r.lockedUntil, Tracked: true}
 }
 
 // makeRoomLocked evicts the oldest NON-locked records in a batch (unlocked

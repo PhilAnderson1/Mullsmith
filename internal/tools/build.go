@@ -22,7 +22,7 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	code runner.Runner, files *managed.Service,
 ) *Registry {
 	if files == nil {
-		files = managed.New(int64(cfg.Scratchpad.UserQuota))
+		files = managed.New(int64(cfg.Scratchpad.UserQuota), cfg.Scratchpad.MaxEntries)
 	}
 	reg := NewRegistry(func(name string) string {
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {

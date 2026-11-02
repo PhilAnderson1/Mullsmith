@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at            INTEGER NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_users_pending_email ON users(unconfirmed_email) WHERE unconfirmed_email IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS sessions (
   id_hash      BLOB PRIMARY KEY, -- sha256 of the cookie token
   user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   PRIMARY KEY (kind, token_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_authtokens_expiry ON auth_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_authtokens_live_address ON auth_tokens(user_id, kind, email, expires_at) WHERE used_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS conversations (
   id            TEXT PRIMARY KEY,
@@ -58,6 +61,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   thinking      TEXT NOT NULL DEFAULT '', -- '' = default thinking choice
   thinking_ctx  TEXT NOT NULL DEFAULT '' -- applicability fingerprint
 );
+-- Covers ownership-scoped record counts and the message-count join without
+-- fetching conversation rows (including their potentially large prompts).
+CREATE INDEX IF NOT EXISTS idx_conv_user_id ON conversations(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_conv_user_updated ON conversations(user_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS messages (

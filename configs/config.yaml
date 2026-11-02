@@ -34,6 +34,7 @@ scratchpad:
   root: "/var/lib/mullsmith/scratchpad"
   max_file_size: 25MiB
   user_quota: 1GiB
+  max_entries: 1000               # all descendants, including the 3 layout directories
   artifact_ttl: 168h              # shared artifacts expire after 7 days
   work_ttl: 24h                   # per-run work dirs swept past this age
   # Extensions that may not be uploaded. Empty/absent = no blocking: safety
@@ -138,7 +139,8 @@ tools:
     max_bytes: 1GiB              # larger responses fail without saving a partial file
     timeout: 60s
   agent:
-    max_tool_rounds: 20             # per reply; over-limit calls return an error to the model
+    max_tool_rounds: 20             # model continuations per reply
+    max_tool_calls_per_turn: 100    # all proposed calls across those rounds; excess calls are refused
     approval:
       web_search: auto
       web_fetch: auto
@@ -190,12 +192,16 @@ app_limits:
   # the control; omitting a key takes the default; 0 and any other
   # negative are a config error. (rate_limit: is retired — these knobs
   # all live here now.)
+  max_conversations_per_user: 1000 # stored threads, including the initial chat
+  max_messages_per_user: 10000     # all stored message rows across all threads
   concurrent_streams_per_user: 2  # parallel SSE generations per user
   concurrent_streams_total: 8     # all users combined (global backstop)
-  requests_per_minute: 120        # per authenticated user, non-chat endpoints
+  requests_per_minute: 120        # per authenticated user, including chat attempts
   chat_messages_per_hour: 120     # per user
   hash_concurrency: 1             # simultaneous Argon2 computations, all users
   concurrent_uploads: 8           # in-flight uploads, all users (§9.11)
+  concurrent_uploads_per_user: 2   # in-flight uploads per account
+  concurrent_downloads_per_user: 2 # active file downloads per account
 
 logging:
   level: info                     # debug | info | warn | error

@@ -1,14 +1,21 @@
 package server
 
 import (
-	"mullsmith/internal/chat"
+	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"mullsmith/internal/auth"
+	"mullsmith/internal/chat"
+	"mullsmith/internal/store"
 )
 
-// --- audit finding 3: the configured limits must actually bite ---------------
+// Request and generation limits refuse excess work before it starts.
 
 func TestUserAPILimitEnforced(t *testing.T) {
 	cfg := scratchCfg(t)
@@ -33,31 +40,112 @@ func TestUserAPILimitEnforced(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestChatStreamExemptFromMinuteBucket(t *testing.T) {
-	fake := newFakeLLM(t, scriptReply("ok"))
+func TestSendAndRegenerationShareAPIBudget(t *testing.T) {
+	var calls atomic.Int32
+	fake := newFakeLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		scriptReply("ok")(w, r)
+	})
 	cfg := chatCfg(t, fake.URL)
-	cfg.AppLimits.RequestsPerMinute = 1 // chat routes must ignore this
+	cfg.AppLimits.RequestsPerMinute = 3
 	a := signedInChat(t, cfg)
-
-	// Drain the (non-chat) bucket with an ordinary call, then prove the
-	// chat POST still streams, and ordinary calls stay refused.
-	conv := createConv(t, a, map[string]any{"title": "exempt"})
-	resp := a.do(http.MethodGet, "/api/v1/auth/me", nil) // ordinary: allowed (last token)
-	resp.Body.Close()
-
-	r := sendChat(t, a, conv.ID, "hello")
-	if r.StatusCode != http.StatusOK {
-		t.Fatalf("chat POST with drained API bucket: %d, want 200 (exempt)", r.StatusCode)
-	}
-	rd := newSSEReader(t, r)
-	rd.untilDone()
+	conv := createConv(t, a, map[string]any{"title": "Budget"}) // first token
+	r := sendChat(t, a, conv.ID, "hello")                       // second token
+	newSSEReader(t, r).untilDone()
 	r.Body.Close()
-
-	resp = a.do(http.MethodGet, "/api/v1/auth/me", nil)
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Errorf("ordinary route after drain: %d, want 429", resp.StatusCode)
+	items, _, err := a.db.ListMessages(context.Background(), ownerOf(t, a).ID, conv.ID, "", 100)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("history: %d %v", len(items), err)
 	}
-	resp.Body.Close()
+	r = a.do(http.MethodPost, "/api/v1/messages/"+items[1].ID+"/regenerate", map[string]any{}) // third token
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("regenerate: %d %s", r.StatusCode, dumpBody(r))
+	}
+	newSSEReader(t, r).untilDone()
+	r.Body.Close()
+	for _, path := range []string{"/api/v1/conversations/" + conv.ID + "/messages", "/api/v1/messages/" + items[1].ID + "/regenerate"} {
+		r = a.do(http.MethodPost, path, map[string]any{"content": "refused"})
+		if r.StatusCode != http.StatusTooManyRequests || apiErrCode(t, r) != "rate_limited" {
+			t.Fatalf("exhausted %s: %d", path, r.StatusCode)
+		}
+		if r.Header.Get("Retry-After") == "" {
+			t.Fatal("missing Retry-After")
+		}
+	}
+	r = a.do(http.MethodGet, "/api/v1/auth/me", nil)
+	if r.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("ordinary route: %d", r.StatusCode)
+	}
+	r.Body.Close()
+	if calls.Load() != 2 {
+		t.Fatalf("refused attempt reached model: %d calls", calls.Load())
+	}
+}
+
+// Track reads so a refusal proves the handler did not parse the request body.
+type trackedRequestBody struct {
+	io.Reader
+	reads int
+}
+
+func (b *trackedRequestBody) Read(p []byte) (int, error) { b.reads++; return b.Reader.Read(p) }
+
+func TestInvalidChatAttemptsSpendAPIBudget(t *testing.T) {
+	for _, kind := range []string{"invalid JSON", "empty", "attachment", "foreign conversation", "foreign message"} {
+		t.Run(kind, func(t *testing.T) {
+			cfg := chatCfg(t, "http://127.0.0.1:1/v1")
+			cfg.AppLimits.RequestsPerMinute = 2
+			cfg.AppLimits.ChatMessagesPerHour = 1
+			a := signedInChat(t, cfg)
+			conv := createConv(t, a, map[string]any{"title": "Attempts"}) // one API token left
+			foreign := mkStoreUser(t, a, "foreign@attempts.test")
+			fc := &store.Conversation{UserID: foreign.ID, Title: "Foreign"}
+			if err := a.db.CreateConversation(context.Background(), fc); err != nil {
+				t.Fatal(err)
+			}
+			fm := &store.Message{ConversationID: fc.ID, Role: "assistant", Content: "Private"}
+			if err := a.db.AddMessage(context.Background(), foreign.ID, fm); err != nil {
+				t.Fatal(err)
+			}
+			path, payload, status := "/api/v1/conversations/"+conv.ID+"/messages", `{"content":""}`, http.StatusBadRequest
+			switch kind {
+			case "invalid JSON":
+				payload = `{"content":`
+			case "attachment":
+				payload = `{"content":"hello","attachment_paths":["uploads/missing.txt"]}`
+			case "foreign conversation":
+				path, status = "/api/v1/conversations/"+fc.ID+"/messages", http.StatusNotFound
+			case "foreign message":
+				path, payload, status = "/api/v1/messages/"+fm.ID+"/regenerate", `{}`, http.StatusNotFound
+			}
+			request := func(body io.Reader) *http.Request {
+				r := httptest.NewRequest(http.MethodPost, path, body)
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set(auth.CSRFHeaderName, a.csrf)
+				for k, v := range a.cookies {
+					r.AddCookie(&http.Cookie{Name: k, Value: v})
+				}
+				return r
+			}
+			w := httptest.NewRecorder()
+			a.ts.Config.Handler.ServeHTTP(w, request(strings.NewReader(payload)))
+			if w.Code != status {
+				t.Fatalf("initial invalid attempt: %d %s", w.Code, w.Body.String())
+			}
+			for i := 0; i < 3; i++ {
+				body := &trackedRequestBody{Reader: strings.NewReader(payload + strings.Repeat(" ", 512<<10))}
+				w := httptest.NewRecorder()
+				a.ts.Config.Handler.ServeHTTP(w, request(body))
+				if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), `"rate_limited"`) || body.reads != 0 {
+					t.Fatalf("refusal: %d reads=%d body=%s", w.Code, body.reads, w.Body.String())
+				}
+			}
+			items, _, err := a.db.ListMessages(context.Background(), ownerOf(t, a).ID, conv.ID, "", 100)
+			if err != nil || len(items) != 0 {
+				t.Fatalf("invalid send changed history: %d %v", len(items), err)
+			}
+		})
+	}
 }
 
 func TestChatHourlyBucket(t *testing.T) {

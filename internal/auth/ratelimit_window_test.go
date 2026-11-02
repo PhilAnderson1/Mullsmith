@@ -151,3 +151,31 @@ func TestLoginLocksResetClearsCounter(t *testing.T) {
 		t.Fatal("Reset did not clear an active lockout")
 	}
 }
+
+func TestLoginFailureReportsRemainingAttemptsAndDeadline(t *testing.T) {
+	l, c := newFakeLocks()
+	for _, remaining := range []int{2, 1, 0} {
+		failure := l.Fail(winKey, 3, winWindow)
+		if !failure.Tracked || failure.Remaining != remaining {
+			t.Fatalf("failure = %+v, want %d remaining", failure, remaining)
+		}
+		if (remaining == 0) != !failure.LockedUntil.IsZero() {
+			t.Fatalf("wrong lockout state: %+v", failure)
+		}
+	}
+	until := l.LockedUntil(winKey)
+	if !until.Equal(c.now().Add(winWindow)) {
+		t.Fatal("incorrect lockout deadline")
+	}
+	c.after(time.Minute)
+	if got := l.Fail(winKey, 3, winWindow); got.Remaining != 0 || !got.LockedUntil.Equal(until) {
+		t.Fatalf("blocked attempt changed deadline: %+v", got)
+	}
+	c.after(winWindow)
+	if !l.LockedUntil(winKey).IsZero() {
+		t.Fatal("expired deadline returned as active")
+	}
+	if got := l.Fail(winKey, 3, winWindow); got.Remaining != 2 || !got.LockedUntil.IsZero() {
+		t.Fatalf("expired failures survived: %+v", got)
+	}
+}

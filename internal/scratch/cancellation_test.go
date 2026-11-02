@@ -26,10 +26,10 @@ func TestWalkStopsOnCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || visited != 1 {
 		t.Fatalf("walk continued: visited=%d err=%v", visited, err)
 	}
-	if _, err := DirSize(ctx, root, testULID); !errors.Is(err, context.Canceled) {
+	if _, err := DirSize(ctx, root, testULID, 1000); !errors.Is(err, context.Canceled) {
 		t.Fatalf("quota scan ignored cancellation: %v", err)
 	}
-	if _, err := DirSizeExceeds(ctx, root, testULID, 1<<20); !errors.Is(err, context.Canceled) {
+	if _, err := DirSizeExceeds(ctx, root, testULID, 1<<20, 1000); !errors.Is(err, context.Canceled) {
 		t.Fatalf("quota watchdog scan ignored cancellation: %v", err)
 	}
 }

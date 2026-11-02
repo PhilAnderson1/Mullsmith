@@ -286,7 +286,7 @@ func securityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 				h.Set("Strict-Transport-Security",
 					fmt.Sprintf("max-age=%d; includeSubDomains", cfg.Server.HSTSMaxAge))
 			}
-			h.Set("Cache-Control", cacheControl(r.URL.Path))
+			h.Set("Cache-Control", "no-store")
 
 			// Trusted proxies must overwrite the protocol header with one value.
 			peer := peerAddr(r)
@@ -299,31 +299,6 @@ func securityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		})
-	}
-}
-
-// cacheControl: API, health and the app shell are never cached. Assets
-// carry a one-hour max-age — OWNER-ACCEPTED (2026-10-26): deploys are
-// rare and one user. The hazard this used to imply — the shell build-
-// stamps only the URLs index.html references, while app.js imports
-// api.js/sse.js/markdown.js by bare URL, so a contract-changing deploy
-// could pair NEW app.js with OLD api.js — bit twice (the 405-delete
-// incident, then "api.deleteAccount is not a function" 2026-10-28) and
-// is CLOSED: staticAssetsHandler rewrites those import specifiers with
-// the same build stamp, so every module URL rotates per deploy and a
-// stale pairing can no longer happen. max-age stays an hour; the full
-// hash-in-filename upgrade is no longer needed.
-func cacheControl(path string) string {
-	switch {
-	case strings.HasSuffix(path, ".webmanifest"):
-		// The manifest names its own icon files; caching it for an hour
-		// meant icon fixes kept being served stale through reinstalls.
-		// Revalidate always — a 304 costs nothing on a LAN.
-		return "no-cache"
-	case strings.HasPrefix(path, "/assets/"):
-		return "public, max-age=3600"
-	default:
-		return "no-store"
 	}
 }
 

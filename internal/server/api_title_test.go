@@ -92,7 +92,7 @@ func TestAutoTitleFirstMessage(t *testing.T) {
 	fake := newFakeLLM(t, titleFake([]string{"Answ", "er."},
 		func() (int, string) { return 200, " “Quantum Entanglement Basics”\nleftovers" }, &hits))
 	a := signedInChat(t, chatCfg(t, fake.URL))
-	c := createConv(t, a, nil) // unnamed → "New chat"
+	c := createConv(t, a, map[string]any{}) // unnamed → "New chat"
 
 	resp := sendChat(t, a, c.ID, "explain quantum entanglement like I am five")
 	defer resp.Body.Close()
@@ -118,7 +118,7 @@ func TestAutoTitleOnlyUntilNamed(t *testing.T) {
 	fake := newFakeLLM(t, titleFake([]string{"ok"},
 		func() (int, string) { return 200, "Topic Name" }, &hits))
 	a := signedInChat(t, chatCfg(t, fake.URL))
-	c := createConv(t, a, nil)
+	c := createConv(t, a, map[string]any{})
 
 	r1 := sendChat(t, a, c.ID, "first question")
 	titles := collectUntilDone(t, r1)
@@ -153,7 +153,7 @@ func TestAutoTitleNeverOverridesUserRename(t *testing.T) {
 		return 200, "Machine Choice"
 	}, &hits))
 	a := signedInChat(t, chatCfg(t, fake.URL))
-	c := createConv(t, a, nil)
+	c := createConv(t, a, map[string]any{})
 
 	resp := sendChat(t, a, c.ID, "hello")
 	defer resp.Body.Close()
@@ -192,7 +192,7 @@ func TestAutoTitleFailureKeepsPlaceholderAndRetries(t *testing.T) {
 		return 200, "Recovered Topic"
 	}, &hits))
 	a := signedInChat(t, chatCfg(t, fake.URL))
-	c := createConv(t, a, nil)
+	c := createConv(t, a, map[string]any{})
 
 	r1 := sendChat(t, a, c.ID, "what makes bread rise")
 	titles := collectUntilDone(t, r1)
@@ -218,7 +218,7 @@ func TestRegenerateNeverTitles(t *testing.T) {
 	fake := newFakeLLM(t, titleFake([]string{"v1"},
 		func() (int, string) { return 200, "Should Not Happen" }, &hits))
 	a := signedInChat(t, chatCfg(t, fake.URL))
-	c := createConv(t, a, nil)
+	c := createConv(t, a, map[string]any{})
 
 	r1 := sendChat(t, a, c.ID, "original question")
 	collectUntilDone(t, r1)

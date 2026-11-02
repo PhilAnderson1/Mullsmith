@@ -1145,6 +1145,7 @@ body.settings-open .composer-stack { display: none; }
   max-width: 34rem;
 }
 .settings-form h3 { margin: 0.8rem 0 0.2rem; font-size: 1.02rem; }
+.settings-email-verification { display: contents; }
 .settings-form textarea { resize: vertical; }
 .settings-form .btn { align-self: flex-start; margin-top: 0.3rem; }
 .files-list {

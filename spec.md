@@ -124,13 +124,17 @@ server:
 
 app_limits:
   max_message_chars: 32000        # per chat message
+  max_conversations_per_user: 1000 # stored conversations, including initial chat
+  max_messages_per_user: 10000     # all stored message rows across all chats
   max_attachments: 8              # per message
   concurrent_streams_per_user: 2  # parallel SSE generations per user (§9.11)
   concurrent_streams_total: 8     # parallel SSE generations server-wide
-  requests_per_minute: 120        # per authenticated user, non-chat endpoints
+  requests_per_minute: 120        # per authenticated user, including chat attempts
   chat_messages_per_hour: 120     # per user
   hash_concurrency: 1             # simultaneous Argon2 computations (§9.11)
   concurrent_uploads: 8           # in-flight uploads, all users (§9.11)
+  concurrent_uploads_per_user: 2   # in-flight uploads per account
+  concurrent_downloads_per_user: 2 # active file downloads per account
   # Concurrency/rate-cap syntax (§9.11): values shown are the program
   # defaults spelled out; positive limits the control, -1 disables it,
   # omitting the key takes the default, and 0 or any other negative is a
@@ -144,6 +148,7 @@ scratchpad:
   root: "/var/lib/mullsmith/scratchpad"
   max_file_size: 25MiB
   user_quota: 1GiB                # total bytes per user
+  max_entries: 1000               # same ceiling for storage admission and quota scans
   artifact_ttl: 168h              # clean generated artifacts older than this
   work_ttl: 24h                   # clean the model's work/ desk older than this
   code_execution:
@@ -215,6 +220,7 @@ tools:
     timeout: 60s
   agent:
     max_tool_rounds: 20           # cap on tool-call loop per user turn
+    max_tool_calls_per_turn: 100  # total proposed calls across every round of that turn
     approval:
       web_search: auto            # auto | confirm
       web_fetch: auto
@@ -426,6 +432,10 @@ endpoint enforces §9.2 ownership scoping, request-size and field caps (§9.11),
 `Cache-Control: no-store`; errors use one envelope `{error:{code,message,request_id}}`
 with no internals leaked (§9.12).
 
+JSON request bodies must contain exactly one non-null object with only JSON whitespace
+after it. The complete body is read under the configured byte cap before a handler
+acts: malformed bodies return 400; exceeding the cap returns 413 `request_too_large`.
+
 ### 5.1 Auth
 
 | Method | Path | Description |
@@ -434,12 +444,12 @@ with no internals leaked (§9.12).
 | POST | `/api/v1/auth/login` | `{email, password, remember_me}` → sets session cookie; `remember_me` (from the login checkbox) selects persistent vs browser-session cookie (§9.1). Answers the same identity payload as `GET /auth/me` — one WHO-YOU-ARE shape on every door, the SPA seeds its client-side user from it. Rate limited + lockout. Never matches a pending (unconfirmed) account. |
 | POST | `/api/v1/auth/logout` | Destroys session. |
 | GET  | `/api/v1/auth/me` | `{id, email, unconfirmed_email, name, created_at, default_system_prompt}` |
-| PATCH | `/api/v1/auth/me` | Settings page: any subset of `{name, email, default_system_prompt}`; email rules mirror registration; taken email → 409. With `email.enabled` a changed address is never written directly: it becomes `unconfirmed_email` + a bound confirm mail (old mailbox gets a notice); the confirmed address keeps working until the click (§9.17). |
+| PATCH | `/api/v1/auth/me` | Settings page: any subset of `{name, email, default_system_prompt, current_password}`; changing the normalized email requires the current password (missing → 400 `password_required`, wrong → 403 `invalid_password`). Name/prompt-only saves and an unchanged email require no password. Email-change attempts have per-user/IP throttles and use the global hash gate. Taken email → 409. With `email.enabled` a changed address is never written directly: it becomes `unconfirmed_email` + a bound confirm mail (old mailbox gets a notice); the confirmed address keeps working until the click (§9.17). |
 | POST | `/api/v1/auth/password` | `{current, new}` change password; revokes other sessions and every outstanding reset link — a leaked link must not overwrite the fresh credential (§9.17). |
 | POST | `/api/v1/auth/forgot-password` | `{email}` — public, `email.enabled` only (404 otherwise). Mails a one-shot reset link (30 min) to a confirmed, enabled account. Answers one byte-identical generic 200 for every outcome (§9.17). Rate limited per IP and per address. |
-| POST | `/api/v1/auth/reset-password` | `{token, password}` — public. Policy checked before the token burns; one transaction consumes the link, applies the new hash ONLY while the link's bound address is still the account's confirmed one, and revokes every session; the status is never touched (§9.17). Dead links (any flavour — including a link to a mailbox the account has since moved off) → one generic 400 `invalid_token`. |
+| POST | `/api/v1/auth/reset-password` | `{token, password}` — public. Policy and a non-consuming token preflight are checked before hashing. One transaction rechecks and consumes the link, applies the new hash ONLY while the link's bound address is still the account's confirmed one, and revokes every session; the status is never touched (§9.17). Dead links (any flavour — including a link to a mailbox the account has since moved off) → one generic 400 `invalid_token`. |
 | POST | `/api/v1/auth/confirm-email` | `{token}` — public. The one copy `unconfirmed_email` → `email`, flips a pending sign-up to `enabled`. Address re-pointed / token spent → 400; claimed by someone else in the meantime → 409 `email_taken`. |
-| POST | `/api/v1/auth/resend-confirm` | `{email}` — public. Re-mails a never-confirmed sign-up (old link dies, 24 h window is not extended). Same generic-200 answer as forgot-password. |
+| POST | `/api/v1/auth/resend-confirm` | `{email}` — public. Re-mails an unexpired, never-confirmed sign-up: the old link dies and its replacement expires at the original signup deadline. No link is issued once that deadline has passed. Same generic-200 answer as forgot-password. |
 | POST | `/api/v1/auth/me/cancel-email` | Authenticated. Clears a pending address change (`unconfirmed_email` → null, confirm tokens deleted). Returns the fresh `me` payload. |
 | POST | `/api/v1/auth/me/delete` | Authenticated. Irreversible self-service deletion: the user row goes and every FK cascades with it (sessions, conversations → messages → tool calls & attachment links, `auth_tokens`); the scratchpad directory is removed immediately (not left to the orphan sweep); response 204 with the session cookie cleared. The UI gates the call behind a confirmation dialog (§10). |
 
@@ -525,12 +535,17 @@ everything else behind auth.
 4. Pump SSE to browser: `token` deltas for content and for tool-call arguments.
 5. If the model requests tool calls (agentic loop):
    - emit `tool_call` start event → UI shows a live "Searching the web…" / "Running code…" card;
+   - persist the proposed call before approval or execution;
    - if the tool's approval policy is `confirm` and not remembered for this conversation,
      pause and emit `awaiting_approval`; block until `/approval` or timeout (10 min → denied);
-   - execute with per-tool timeout; capture result, truncate to a per-tool budget
-     (e.g. 8 KiB, middle-elided), persist `tool_calls` row, emit `tool_call` end event;
-   - append tool result to messages and re-invoke the model;
-   - execute tools for at most `max_tool_rounds` rounds per reply (default 20; a round may contain multiple calls);
+   - after approval, transactionally reserve the paired role=`tool` result row against
+     `max_messages_per_user` **before execution**; reservation failure means the tool
+     does not run;
+   - execute with per-tool timeout; capture result and truncate it to a per-tool budget
+     (e.g. 8 KiB, middle-elided); atomically finalize the execution record and replace
+     the reserved interruption fallback with that result; emit `tool_call` end event;
+   - append the finalized result to the in-memory prompt and re-invoke the model;
+   - execute tools for at most `max_tool_rounds` rounds per reply (default 20; a round may contain multiple calls) and at most `max_tool_calls_per_turn` proposed calls in total (default 100, reset for each user message); unknown, malformed, denied and otherwise refused proposals count too;
    - over-limit calls are not executed or sent for approval. Persist and return `{"error":"tool call limit reached"}` as their normal tool results, keeping tool definitions available;
    - let the model respond to those errors without prescribing a recovery action. If it requests tools again, persist and refuse those calls, then stop with a durable limit-reached note.
 6. Persist final assistant message; bump `conversations.updated_at`; emit `done`
@@ -720,11 +735,13 @@ output is data, never instructions; approval gates bound the blast radius).
 **Register** (single transaction + filesystem step):
 1. Validate email format, uniqueness, password policy. The address is stored in
    canonical form (`auth.NormalizeEmail`, §9.17). With `registration: open` the
-   global creation budget `auth.max_signups_per_hour` is consumed here — after all
-   pre-flights, before the hash, so one unit spent equals one row actually created
-   (absent = 5/hour, -1 disables; see §9.11, audit1 M-2).
+   global creation budget `auth.max_signups_per_hour` reserves capacity after the
+   pre-flights, before hashing. Failed creation releases the reservation; successful
+   creation charges it, even if a later provisioning step fails. This counter is
+   independent of evictable per-client limits (absent = 5/hour, -1 disables).
 2. Insert `users` row (argon2id hash; hashing deliberately done outside the DB transaction)
-   and, in that transaction, one placeholder `New chat` conversation: a fresh login lands
+   and, in that transaction, recheck availability against both confirmed and pending
+   addresses and create one placeholder `New chat` conversation: a fresh login lands
    on the newest conversation with the composer ready, so a new user never has to click
    "New chat" before typing (the SPA already auto-selects it). Auto-titling renames the
    placeholder after the first exchange like any other untitled chat; a register refused
@@ -819,7 +836,16 @@ CLI mints codes), `closed` (admin CLI creates users).
   - A persistent cookie on a lost device is still revocable server-side: "sign out
     everywhere" (and password change) deletes session rows; per-session revocation with
     device info (`user_agent`) is a v1.1 candidate.
+- Login session creation atomically checks that the verified password hash, login
+  address, and enabled status are still current. A queued login cannot create a
+  session using credentials superseded by a completed reset or account change.
 - Login throttling: per-account lockout + per-IP token bucket (hardcoded; §9.11).
+  The default is ten failures followed by a fixed 15-minute lockout. Failed logins
+  report remaining attempts, and locked responses give a retry time and `Retry-After`.
+  Unknown addresses use the same counting and warnings as existing accounts. Counts
+  are advisory under concurrency. Existing valid sessions remain usable during a
+  password-login lockout. The risk of someone deliberately locking a known address
+  is accepted; progressive throttling is not used.
   Login enforces the same **254-byte email ceiling** as registration before the lock
   check, DB lookup, hashing, or lock-key construction — oversized emails were being
   retained verbatim as lockout keys (audit2 finding 1). Lock keys are stored as
@@ -1019,9 +1045,21 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
 - Enumeration itself is bounded too (astra finding 5): empty files cost ~zero metered
   bytes yet make every walk expensive, so no host path loads an unbounded listing —
   `fs_list` reads at most 200 entries (+1 to know more exist) and answers `truncated`;
-  a quota scan visits at most 50k entries and then returns **"usage could not be
-  verified"**, which the existing fail-closed doctrine already handles (watchdog kills
-  the run, writes are refused until the TTL sweep clears the flood); quota scans and
+  a quota scan uses `scratchpad.max_entries` (default **1000**, at least 3) as
+  both its work ceiling and per-user storage limit. It counts all descendants,
+  including the three layout directories, files, directories, links and special
+  entries; the user root is excluded. Bytes and entries are measured in the same
+  pass. Creation reserves room before placement under the existing write gate;
+  a full tree answers **"scratchpad entry limit reached; delete files or directories
+  to make room"** (`507 entry_limit` for uploads). Replacement of an existing file
+  remains possible at capacity: its temporary staged copy receives a one-entry
+  transient allowance, with the old entry deducted before admission. Missing
+  destination directories count as growth before they are created. Code execution
+  is cancelled on entry excess by the existing watchdog; it remains subject to the
+  documented app-level rather than kernel-level quota guarantee. An over-limit
+  Files listing still returns items for deletion, marks byte usage unknown and
+  displays a limit warning instead of a misleading zero. Other scan failures
+  still fail closed as unverified usage. Quota scans and
   `RemoveTree`'s plan walk stream in batches through pinned descriptors
   (astra2 finding 2) — the scans hold a batch per level of tree depth, plus
   the delete plan itself, never a whole directory listing;
@@ -1055,7 +1093,11 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   bytes under `artifacts/`, one file one fact, and deleting the bytes is the whole
   delete. `files_share` copies via a `.share-*` temp in the scratch ROOT placed
   with `RENAME_NOREPLACE` and a `name (N).ext` bump loop, so a racing concurrent
-  share can never overwrite bytes another share (or the user) just landed. The
+  share can never overwrite bytes another share (or the user) just landed. Before
+  creating that temp, it pins the source and admits the source's actual size
+  against both remaining user quota and the filesystem's 5% free-space floor
+  under the shared managed-write gate; a predictably impossible copy therefore
+  performs no bulk I/O. The post-copy measurement remains a fail-closed check. The
   checks run on segments **normalized by `ParseRel`**, the
   same normalizer the FS layer applies, so checker and doer cannot disagree: a raw-segment
   prefix check was bypassed by `./uploads/x`, whose leading `.` the FS layer strips
@@ -1075,8 +1117,12 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
 | `Cross-Origin-Resource-Policy` | `same-origin` | cross-origin embedding of user data |
 | `Cache-Control` | `no-store` on **all** `/api/v1` + authenticated HTML + SSE | proxies/shared caches holding chat data |
 
-Static embedded assets are content-hashed and may be `public, max-age=31536000, immutable`;
-the app fetches **no third-party assets at runtime** (no CDN fonts/scripts — CSP enforces,
+Successful static embedded asset responses use `public, max-age=3600`; the app shell
+and module imports carry a build stamp so asset URLs rotate on deployment. Manifests
+use `no-cache` for revalidation. Errors and redirects retain `no-store`, including
+overload responses for asset URLs.
+
+The app fetches **no third-party assets at runtime** (no CDN fonts/scripts — CSP enforces,
 which also matters for privacy). `Server` header is just `mullsmith` (no version detail).
 
 ### 9.9 Code execution sandbox (defense in depth)
@@ -1200,10 +1246,12 @@ open registration (startup warns).
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
 | Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded; **global sign-up budget** `auth.max_signups_per_hour` (default 5, -1 = off) applies only in `registration: open` — the per-IP register bucket is worthless to a proxy pool, and with `email.enabled` every flood account is a mail from the operator's SMTP host (audit1 M-2). Both auth maps hard-capped at 16,384 entries with lockout-preserving saturation, and the fail-open windows now WARN-logged (self-rate-limited to 1/min per map so a flood cannot flood the log; audit1 L-1); lock keys SHA-256-digested; login rejects emails over `auth.MaxEmailLen` (254 B) up front (audit2 finding 1) |
 | Password hashing | **global gate** (`app_limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
-| Upload capacity | `app_limits.concurrent_uploads` (default 8) gates in-flight uploads server-wide — full ⇒ instant `429 server_busy` + `Retry-After`, bounding temp bytes to N × `max_file_size` regardless of the request bucket. The quota decision itself is **atomic**: fresh usage re-read and rename under one mutex, so concurrent uploads can never share a stale "used" figure (audit finding 5). The whole upload request is capped by `http.MaxBytesReader` at `max_file_size` + 64 KiB framing allowance, part count at 64: ignored multipart fields and no-file bodies can no longer drain unboundedly past both body limits (audit finding 6) |
+| Upload capacity | `app_limits.concurrent_uploads_per_user` (default 2) first bounds uploads per account across all sessions; full ⇒ immediate `429 too_many_uploads` + `Retry-After: 2` before reading the body or using global capacity. Both gates release on every return, including global admission failure, malformed input and cancellation; idle account counters are removed. The per-user gate shares the download gate implementation with separate counts. Either upload limit can be disabled independently with -1. `app_limits.concurrent_uploads` (default 8) gates in-flight uploads server-wide — full ⇒ instant `429 server_busy` + `Retry-After`, bounding temp bytes to N × `max_file_size` regardless of the request bucket. The quota decision itself is **atomic**: fresh usage re-read and rename under one mutex, so concurrent uploads can never share a stale "used" figure (audit finding 5). The whole upload request is capped by `http.MaxBytesReader` at `max_file_size` + 64 KiB framing allowance, part count at 64: ignored multipart fields and no-file bodies can no longer drain unboundedly past both body limits (audit finding 6) |
 | Runaway script | a 1 s **storage watchdog** wraps every `code_run`: user bytes past `user_quota`, or the host past the 5 % free-space floor, cancels the run context — the runner kills the whole jail (process-group SIGKILL, §9.9). Partial output stays on disk; the over-quota user is blocked by the ordinary pre-checks until cleanup. Overrun per run ≈ one poll interval of writing, itself capped by the jail's memory budget (§9.9), versus unbounded before (audit finding 5). Sub-second runs cannot slip past: every run ends with a **final weigh-in** that reports an overrun truthfully, and staging sizes are pre-checked under the shared quota lock so the copies mullsmith makes can never overrun (audit2 finding 3) |
-| Static/other API | token bucket per authenticated **user** (`app_limits.requests_per_minute`, 429 + `Retry-After`); user-keyed because the session already proves identity and IP-keying is hostage to NAT/proxy topology. Chat-stream POSTs are exempt — they answer to the hourly chat bucket and the generation caps above |
-| Disabling limits | The two server admission caps and optional caps under `app_limits:` use **unset** → program default, **-1** → disabled, **0** or any other negative → configuration error. Transport defaults are 128 open connections and 32 active requests; other defaults are 2 / 8 / 120 / 120 / 1 / 8 for per-user generations / total generations / requests per minute / chat messages per hour / hash concurrency / concurrent uploads. Login/register throttle buckets are hardcoded and unaffected. |
+| Authenticated request attempts | Every protected route, including sends and regenerations, spends the per-user `app_limits.requests_per_minute` token bucket after session authentication and before handler body parsing or resource ownership lookups. Exhaustion returns `429 rate_limited` + `Retry-After`, including for invalid chat attempts. The hourly chat bucket and generation concurrency caps separately bound model work. |
+| Stored chat records | `app_limits.max_conversations_per_user` defaults to 1000 and `max_messages_per_user` to 10000 across all conversations. Every stored message row counts, including assistant drafts, tool results and synthetic turns. Indexed, bounded counts and writes share one transaction; a send requires room for both user and assistant rows, and regeneration counts after retiring its replaced turn. At capacity, HTTP 409 `conversation_limit` / `message_limit` explains that older conversations must be deleted; a mid-generation limit is reported through SSE and a durable status note. Deletion immediately restores room. Counts read covering indexes, not stored content; there are no cached usage counters. |
+| Disabling limits | The two server admission caps and optional caps under `app_limits:` use **unset** → program default, **-1** → disabled, **0** or any other negative → configuration error. Transport defaults are 128 open connections and 32 active requests; other defaults are 2 / 8 / 120 / 120 / 1 / 8 for per-user generations / total generations / requests per minute / chat messages per hour / hash concurrency / concurrent uploads. Per-user upload and download caps each default to 2; stored conversation/message caps default to 1000/10000. Login/register throttle buckets are hardcoded and unaffected. |
+| Download capacity | `app_limits.concurrent_downloads_per_user` defaults to 2 active requests per account, shared across all sessions. File GET and HEAD requests acquire a slot before path validation or opening a file and release it on every return, including cancellation and write failure. Excess receives immediate `429 too_many_downloads` + `Retry-After: 2`, without queuing. Only active accounts are retained in memory. The ordinary server-wide request/connection caps and rolling download deadlines still apply; there is no additional global download cap. Like other optional limits, -1 disables this gate. |
 | Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; **`WriteTimeout` defaults to 60 s** — a client that stops reading otherwise blocks a response write in the kernel forever (handler, goroutine and connection pinned; read and idle timeouts bound reads only; astra2 finding 1). Go arms the cap once per request, so surfaces with legitimately long writes self-manage: SSE lifts it per stream and carries a rolling 10 s per-frame deadline; scratchpad downloads carry a rolling 30 s per-chunk deadline — bound PROGRESS, never total transfer time. The lift and the rolls reach the connection via `ResponseController` through every middleware wrapper (`statusWriter` implements `Unwrap`; audit finding 10); `-1` is the operator off-switch |
 | SSE hygiene | server-side heartbeat comments every 15 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU). Every frame write+flush carries a **rolling 10 s write deadline** (armed per frame, cleared after): a stalled reader (TCP zero window, no FIN) once blocked the write in a syscall forever — heartbeat included, holding its mutex — pinning a generation slot until restart; now the deadline error surfaces, flush errors propagate (`statusWriter.FlushError`), and the generation cancels (audit finding 10) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; one pooled connection (`SetMaxOpenConns(1)` — a reader pool buys nothing at this scale and would only widen the writer's lock contention); TTL job deletes bounded per pass (≤ 1 000 rows/files) |
@@ -1322,21 +1370,42 @@ initiates a connection carrying credentials. Doctrine:
 - **Tokens**: minted with `crypto/rand`, stored only as SHA-256 hashes in
   `auth_tokens`, one-shot consumption, bound to the address they were minted
   for (constant-time compared against the pending target), reissue of a kind
-  invalidates the prior unconsumed token. TTLs: 30 min reset, 24 h confirm.
+  invalidates the prior unconsumed token. TTLs: 30 min reset, 24 h for address changes; signup links expire exactly
+  24 h after signup creation, so a resend gets only the remaining time.
   Both kinds consume inside their own applying transaction — no link is
   marked spent without its effect being decided in the same breath.
-  Completing a reset also revokes every session of the account. A reset
+  Completing a reset also revokes every session of the account. Password resets,
+  authenticated password changes and administrative password resets atomically
+  clear pending email changes on established accounts and invalidate their
+  unused confirmation links. Initial signup confirmations remain valid.
+  Address-change authorization checks the verified password hash, original
+  address, enabled status and still-valid session inside the transaction that
+  writes the pending address and confirmation token; a queued request cannot
+  reinstall a change after recovery or logout. Metadata saves never write the
+  email column. A reset
   link never outlives the owner's attempts to secure the account: a
   password change, or a completed address move off the mailbox the link
   was addressed to, deletes outstanding reset links in the same transaction
   as the change, and completion itself applies only while the bound address
   is still the account's confirmed one (astra2 review).
+- **Address reservations expire immediately**: availability preflights and the
+  registration/address-change transactions share one indexed rule. A confirmed
+  address remains occupied. An established account reserves a pending address
+  only while its matching unused confirmation link is live; an unconfirmed
+  signup reserves its address only until its original 24-hour deadline,
+  including the short interval before its first link is issued. Expiry takes
+  effect at the exact boundary without waiting for maintenance. The hourly sweep
+  clears expired pending changes and removes expired tokens (including consumed
+  ones), sessions and pending signup rows. Physical deletion may follow logical
+  expiry by up to the next scheduled sweep. No new expiry column or configurable
+  TTL is needed: the rule uses existing token expiry and signup creation time.
+  Cancellation clears a pending address and its links in one transaction.
 - **Pending sign-ups own nothing usable**: the address lives in `unconfirmed_email`
   with `email IS NULL` and `status = 'unconfirmed'`, invisible to login,
   forgot-password and every address-keyed lookup; the placeholder chat (§8)
   and scratchpad dirs come with the row and go with it — FK cascade plus
-  the orphan sweep — nothing lingers. Older than 24 h the row is
-  swept away hourly (admin CLI `list-users` names them, `delete-user` by id).
+  the orphan sweep — nothing lingers. At its original 24-hour deadline the row can no longer be confirmed
+  or block registration, even before it is swept away hourly (admin CLI `list-users` names them, `delete-user` by id).
   `status = 'disabled'` is administrative suspension and nothing else sets
   it: `admin disable-user` flips `enabled → disabled` and, in the same
   transaction, deletes every session and every outstanding one-shot token
@@ -1435,7 +1504,7 @@ When a send would cross a known window the server answers
 `context_full` and that line pins the "conversation is full — start a new chat"
 explanation in the danger colour until the next figure replaces it. |
 | **Files** | Per-user file manager over the three scratchpad directories — filter tabs All / Uploads / Artifacts / Work, and right-aligned a muted **"Delete older than…"** command dropdown (1 day / 1 week / 1 month / 1 year / All) that bulk-deletes within the **currently active tab** after a confirmation, then reloads the list and reports the count; one physical listing per request (no paging): the relative path is shown and is the identity, folders marked `dir` incl. empty ones with recursive delete behind explicit confirmation, size, modified date, computed artifact expiry, download, delete, quota bar. Deleting bytes never breaks anything else — a stale download card simply 404s. |
-| **Settings** | Display name, email address (with `email.enabled` a changed address waits in a pending state — visible notice with cancel — until the confirm mail is clicked; old mailbox gets a notice, §5.1/§9.17), change password, sign out everywhere; a red **Delete account** button in a bottom danger zone, gated by a confirmation dialog — one click deletes the account, all chats and all files irreversibly (§5.1). |
+| **Settings** | Display name, email address; a **Current password** field appears directly below the email field only when that address changes, with “Confirm your password to change your email address.” The field is cleared when the address is restored, after a submission, and on closing/reopening Settings. Name/default-prompt saves do not require it. Email behavior (with `email.enabled` a changed address waits in a pending state — visible notice with cancel — until the confirm mail is clicked; old mailbox gets a notice, §5.1/§9.17), change password, sign out everywhere; a red **Delete account** button in a bottom danger zone, gated by a confirmation dialog — one click deletes the account, all chats and all files irreversibly (§5.1). |
 
 Implementation notes: SSE client with auto-reconnect hint on dropped stream; conversations
 lazy-load messages; UI polls nothing (all live state via SSE). Accessible: focus-managed

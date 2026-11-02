@@ -284,7 +284,7 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	avail, err := db.EmailAvailable(ctx, "free@x.io")
+	avail, err := db.EmailAvailable(ctx, "free@x.io", time.Now())
 	if err != nil || !avail {
 		t.Fatalf("free address reported taken (avail=%v err=%v)", avail, err)
 	}
@@ -293,7 +293,7 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 	if err := db.CreateUser(ctx, taken); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := db.EmailAvailable(ctx, "taken@x.io"); ok {
+	if ok, _ := db.EmailAvailable(ctx, "taken@x.io", time.Now()); ok {
 		t.Error("confirmed email must not be available")
 	}
 	pend := mkUser("")
@@ -301,7 +301,7 @@ func TestEmailAvailableAndSweeps(t *testing.T) {
 	if err := db.CreateUser(ctx, pend); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := db.EmailAvailable(ctx, "pend@x.io"); ok {
+	if ok, _ := db.EmailAvailable(ctx, "pend@x.io", time.Now()); ok {
 		t.Error("pending email must not be available (both-column check)")
 	}
 
@@ -370,7 +370,7 @@ func TestPendingUserVisibility(t *testing.T) {
 	if got, _ := db.UserByEmail(ctx, "only@pending.io"); got != nil {
 		t.Error("pending address must not resolve via UserByEmail")
 	}
-	if ok, _ := db.EmailAvailable(ctx, "only@pending.io"); ok {
+	if ok, _ := db.EmailAvailable(ctx, "only@pending.io", time.Now()); ok {
 		t.Error("pending address must block re-registration")
 	}
 }
@@ -579,7 +579,7 @@ func TestResetLinkDiesOnCredentialAndAddressChanges(t *testing.T) {
 	}
 
 	// (c) The features-off direct write is the other address door and
-	// applies the same cut (UpdateProfile); an unrelated profile save
+	// applies the same cut (ChangeEmail); an unrelated profile save
 	// (same address) must not disturb a live link.
 	w := mkUser("plain@move.io")
 	if err := db.CreateUser(ctx, w); err != nil {
@@ -589,7 +589,7 @@ func TestResetLinkDiesOnCredentialAndAddressChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.UpdateProfile(ctx, w.ID, "Plain", "plain@move.io", "be brief", now); err != nil {
+	if err := db.UpdateProfile(ctx, w.ID, "Plain", "be brief", now); err != nil {
 		t.Fatal(err)
 	}
 	if !live(rawPlain) {
@@ -600,7 +600,16 @@ func TestResetLinkDiesOnCredentialAndAddressChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.UpdateProfile(ctx, w.ID, "Plain", "moved@move.io", "be brief", now); err != nil {
+	sessionHash := auth.HashToken("profile-test-session")
+	if err := db.CreateSession(ctx, &Session{IDHash: sessionHash, UserID: w.ID, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	// live() consumed the earlier reset by applying its hash; use current credentials.
+	w, err = db.UserByID(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ChangeEmail(ctx, w, sessionHash, "Plain", "moved@move.io", "be brief", time.Time{}, now); err != nil {
 		t.Fatal(err)
 	}
 	if live(rawPlain) {

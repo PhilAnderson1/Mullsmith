@@ -14,7 +14,7 @@ import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
-import { existsSync, readdirSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -634,4 +634,88 @@ test("slow chat creation and acceptance cannot masquerade as readiness or comple
     assert.equal(replies[0].streaming, false);
     assert.equal(replies[0].lastAssistant, true);
   } finally { await ctx.close(); }
+});
+
+test("settings email changes require a conditional password field", async () => {
+  const { ctx, page } = await newSession();
+  try {
+    const openSettings = async () => {
+      await page.locator("#btn-settings").click();
+      await page.waitForSelector("#settings-panel:not([hidden])");
+    };
+    await openSettings();
+    const email = page.locator("#settings-email");
+    const password = page.locator("#settings-email-password");
+    const original = await email.inputValue();
+    assert.equal(await password.isVisible(), false);
+    await page.locator("#settings-name").fill("Profile without password");
+    const saved = page.waitForResponse((r) => r.url().endsWith("/api/v1/auth/me") && r.request().method() === "PATCH");
+    await page.locator("#form-profile button[type=submit]").click();
+    const metadata = await saved;
+    assert.equal(metadata.status(), 200);
+    assert.equal("current_password" in metadata.request().postDataJSON(), false);
+    await page.waitForSelector("#settings-panel[hidden]", { state: "attached" });
+    await openSettings();
+    await email.fill("changed-browser@example.io");
+    assert.equal(await password.isVisible(), true);
+    const emailBox = await email.boundingBox();
+    const passwordBox = await password.boundingBox();
+    const promptBox = await page.locator("#settings-prompt").boundingBox();
+    assert.ok(passwordBox.y > emailBox.y && passwordBox.y < promptBox.y);
+    await password.fill("discard-this-secret");
+    await email.fill(original.toUpperCase());
+    assert.equal(await password.isVisible(), false);
+    assert.equal(await password.inputValue(), "");
+    await email.fill("changed-browser@example.io");
+    await page.locator("#form-profile button[type=submit]").click();
+    assert.equal(await password.evaluate((el) => document.activeElement === el), true);
+    await password.fill("wrong-password");
+    const refused = page.waitForResponse((r) => r.url().endsWith("/api/v1/auth/me") && r.request().method() === "PATCH");
+    await page.locator("#form-profile button[type=submit]").click();
+    assert.equal((await refused).status(), 403);
+    await page.waitForFunction(() => document.querySelector("#settings-email-password").value === "");
+    assert.equal(await page.locator("#settings-panel").isVisible(), true);
+    await password.fill("uncommon-password-9");
+    const changed = page.waitForResponse((r) => r.url().endsWith("/api/v1/auth/me") && r.request().method() === "PATCH");
+    await page.locator("#form-profile button[type=submit]").click();
+    const response = await changed;
+    assert.equal(response.status(), 200);
+    assert.equal((await response.json()).email, "changed-browser@example.io");
+    await page.waitForSelector("#settings-panel[hidden]", { state: "attached" });
+    await openSettings();
+    assert.equal(await email.inputValue(), "changed-browser@example.io");
+    assert.equal(await password.isVisible(), false);
+    assert.equal(await password.inputValue(), "");
+  } finally {
+    await ctx.close();
+  }
+});
+
+
+test("over-limit scratchpads remain manageable in Files", async () => {
+  const { ctx, page } = await newSession();
+  let fixture;
+  try {
+    const me = await (await page.request.get(`${app.base}/api/v1/auth/me`)).json();
+    const relative = "work/entry-ceiling-browser";
+    fixture = join(app.dir, "scratch", me.id, relative);
+    mkdirSync(fixture, { recursive: true });
+    for (let i = 0; i < 1001; i++) writeFileSync(join(fixture, `empty-${i}.txt`), "");
+    await page.click("#btn-files");
+    await page.click('.files-filter[data-kind="work"]');
+    await page.waitForFunction(() => document.querySelector("#quota-text").textContent.includes("entry limit exceeded") && document.querySelectorAll("#files-list .file-row").length > 0);
+    assert.ok(await page.locator("#files-list .file-row").count() > 0);
+    assert.equal(await page.locator(".quota-bar").isVisible(), false);
+    const csrf = (await ctx.cookies(app.base)).find((c) => c.name === "mullsmith_csrf").value;
+    const deleted = await page.request.delete(`${app.base}/api/v1/files?path=${encodeURIComponent(relative)}`, {
+      headers: { "X-Mullsmith-CSRF": csrf },
+    });
+    assert.equal(deleted.status(), 204);
+    await page.click('.files-filter[data-kind="work"]');
+    await page.waitForFunction(() => document.querySelector("#quota-text").textContent.includes(" of "));
+    assert.equal(await page.locator(".quota-bar").isVisible(), true);
+  } finally {
+    if (fixture) rmSync(fixture, { recursive: true, force: true });
+    await ctx.close();
+  }
 });

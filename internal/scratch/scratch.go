@@ -23,45 +23,51 @@ var errOverLimit = errors.New("scratch: over size limit")
 // makes every scan expensive while the quota looks nearly untouched.
 var errScanBudget = errors.New("scratch: entry budget exceeded")
 
-// scanEntryBudget caps how many filesystem entries one quota scan visits.
-// Going over it is an ERROR, not a partial total — incomplete accounting
-// is unknown accounting, and the fail-closed callers already act on that
-// (run watchdog kills the run, fs_write refuses). Only a pathological tree
-// gets near this; a var so tests can run small.
-var scanEntryBudget = 50_000
+// ErrEntryLimit identifies a complete refusal at the configured entry ceiling.
+// Other scan failures still mean unknown usage and must fail closed.
+var ErrEntryLimit = errors.New("scratchpad entry limit reached; delete files or directories to make room")
 
-// DirSizeExceeds reports whether the regular-file bytes under the user
-// root exceed limit, short-circuiting the walk as soon as the running
-// total crosses it (audit finding 5: the code_run watchdog polls once per
-// second while a hostile script floods new files into the tree).
-//
-// A non-nil error means usage is UNKNOWN — the result is not "false"
-// (fail closed, audit2 finding 3): callers must refuse the operation they
-// were about to authorize. A missing user root is the one incomplete tree
-// that legitimately reports zero usage: a fresh user holds no bytes.
-// Walking more than scanEntryBudget entries is itself such an error
-// (astra finding 5), so a flooded directory cannot burn CPU forever — and
-// the scan streams through pinned descriptors in batches, so even the
-// worst single directory cannot force a large allocation first (astra2
-// finding 2).
-func DirSizeExceeds(ctx context.Context, root, userID string, limit int64) (bool, error) {
-	var total int64
-	err := scanUserTree(ctx, root, userID, ".", scanEntryBudget, func(e scanEntry) error {
+// Usage collects bytes and entry count during the same bounded walk. Entries
+// include every descendant (directories, links and special files), including
+// the three layout directories; the user root itself is not counted.
+type Usage struct {
+	Bytes   int64
+	Entries int
+}
+
+func DirUsage(ctx context.Context, root, userID string, maxEntries int) (Usage, error) {
+	return dirUsage(ctx, root, userID, maxEntries, 0)
+}
+
+func dirUsage(ctx context.Context, root, userID string, maxEntries int, byteLimit int64) (Usage, error) {
+	if maxEntries <= 0 {
+		return Usage{}, errors.New("scratch: entry limit must be positive")
+	}
+	var usage Usage
+	err := scanUserTree(ctx, root, userID, ".", maxEntries, func(e scanEntry) error {
+		usage.Entries++
 		if e.st.Mode&unix.S_IFMT == unix.S_IFREG {
-			total += e.st.Size
-			if total > limit {
+			usage.Bytes += e.st.Size
+			if byteLimit > 0 && usage.Bytes > byteLimit {
 				return errOverLimit
 			}
 		}
 		return nil
 	})
-	switch {
-	case errors.Is(err, errOverLimit):
-		return true, nil
-	case err != nil:
-		return false, err
+	if errors.Is(err, errScanBudget) {
+		err = ErrEntryLimit
 	}
-	return false, nil
+	return usage, err
+}
+
+// DirSizeExceeds short-circuits on byte excess, while enforcing the same entry
+// ceiling as full quota scans. Any other error means usage is unverified.
+func DirSizeExceeds(ctx context.Context, root, userID string, limit int64, maxEntries int) (bool, error) {
+	_, err := dirUsage(ctx, root, userID, maxEntries, limit)
+	if errors.Is(err, errOverLimit) {
+		return true, nil
+	}
+	return false, err
 }
 
 // Subdirectories created for every user.
@@ -206,24 +212,9 @@ func RemoveUserDirs(root, userID string) error {
 	return os.RemoveAll(dir)
 }
 
-// DirSize sums bytes under the user root (drives the /me quota figure and
-// every quota decision). A non-nil error means usage is UNKNOWN, not zero
-// (fail closed, audit2 finding 3): an unreadable directory — a script's
-// chmod 000 trick — or unreadable metadata aborts the walk instead of
-// silently contributing nothing. A missing user root legitimately sums to
-// zero. Like DirSizeExceeds, exceeding scanEntryBudget entries (or the
-// depth cap) fails the scan as unknown, and the scan itself streams in
-// batches through pinned descriptors (astra2 finding 2).
-func DirSize(ctx context.Context, root, userID string) (int64, error) {
-	var total int64
-	err := scanUserTree(ctx, root, userID, ".", scanEntryBudget, func(e scanEntry) error {
-		if e.st.Mode&unix.S_IFMT == unix.S_IFREG {
-			total += e.st.Size
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return total, nil
+// DirSize returns only the byte count from the shared bounded usage scan.
+// A returned error means the count is incomplete and must not authorize writes.
+func DirSize(ctx context.Context, root, userID string, maxEntries int) (int64, error) {
+	usage, err := DirUsage(ctx, root, userID, maxEntries)
+	return usage.Bytes, err
 }

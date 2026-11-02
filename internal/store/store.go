@@ -17,7 +17,9 @@ var schemaSQL string
 
 // DB wraps the sql database handle.
 type DB struct {
-	sqlDB *sql.DB
+	sqlDB                   *sql.DB
+	maxConversationsPerUser int
+	maxMessagesPerUser      int
 }
 
 // Open opens the database file and initializes the current schema if needed.

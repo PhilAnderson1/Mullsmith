@@ -9,6 +9,7 @@ import (
 
 	"mullsmith/internal/id"
 	"mullsmith/internal/scratch"
+	"mullsmith/internal/store"
 )
 
 // Background scratchpad lifecycle (spec §8). The disk is the single source
@@ -53,10 +54,6 @@ const (
 	sweepPass           = 1000           // max deletions per directory per pass
 	sweepInspections    = 200_000        // max entries inspected per sweep pass (astra2 finding 3)
 
-	// pendingSignupTTL ages out never-confirmed sign-ups (unconfirmed + NULL
-	// email) from created_at; resends do NOT extend it. Equals the
-	// confirmation token TTL so links and rows die together (plan §3).
-	pendingSignupTTL = 24 * time.Hour
 )
 
 // RunMaintenance performs the file and auth-table sweeps immediately, then
@@ -78,18 +75,24 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 	}
 }
 
-// sweepAuthDB prunes expired one-shot tokens and deletes pending sign-ups
+// sweepAuthDB clears expired email-change reservations, prunes expired tokens
+// and deletes pending sign-ups
 // past their 24 h window (plan §3, §11.2 — dead data must not accumulate;
 // the unconfirmed+NULL-email predicate matches nothing else). No mail on
 // expiry: the address was never proven deliverable.
 func (s *Server) sweepAuthDB(ctx context.Context) {
 	now := time.Now()
+	if n, err := s.store.DeleteExpiredEmailChanges(ctx, now); err != nil {
+		s.logger.Warn("pending email-change sweep failed", "error", err)
+	} else if n > 0 {
+		s.logger.Info("cleared expired email changes", "count", n)
+	}
 	if n, err := s.store.DeleteExpiredTokens(ctx, now); err != nil {
 		s.logger.Warn("auth token sweep failed", "error", err)
 	} else if n > 0 {
 		s.logger.Info("purged expired auth tokens", "count", n)
 	}
-	if n, err := s.store.DeleteExpiredPendingUsers(ctx, now.Add(-pendingSignupTTL)); err != nil {
+	if n, err := s.store.DeleteExpiredPendingUsers(ctx, now.Add(-store.ConfirmationTTL)); err != nil {
 		s.logger.Warn("pending sign-up sweep failed", "error", err)
 	} else if n > 0 {
 		s.logger.Info("deleted expired unconfirmed sign-ups", "count", n)

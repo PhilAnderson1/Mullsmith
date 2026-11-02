@@ -44,7 +44,7 @@ func TestWebDownloadBinaryAndNoOverwrite(t *testing.T) {
 		_, _ = w.Write(data)
 	}))
 	defer srv.Close()
-	w := NewWebDownload(srv.Client(), 1024, managed.New(1024))
+	w := NewWebDownload(srv.Client(), 1024, managed.New(1024, 1000))
 	res, err := run(t, w, root, downloadArgs(t, srv.URL+"/redirect", "work/file.bin"))
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestWebDownloadFailuresLeaveNoFile(t *testing.T) {
 			root := toolRoot(t)
 			srv := httptest.NewServer(tc.serve)
 			defer srv.Close()
-			w := NewWebDownload(srv.Client(), 1024, managed.New(tc.quota))
+			w := NewWebDownload(srv.Client(), 1024, managed.New(tc.quota, 1000))
 			if _, err := run(t, w, root, downloadArgs(t, srv.URL, "artifacts/file.bin")); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
@@ -128,7 +128,7 @@ func TestWebDownloadExactLimit(t *testing.T) {
 		_, _ = io.WriteString(w, data)
 	}))
 	defer srv.Close()
-	w := NewWebDownload(srv.Client(), 1024, managed.New(1024))
+	w := NewWebDownload(srv.Client(), 1024, managed.New(1024, 1000))
 	if _, err := run(t, w, root, downloadArgs(t, srv.URL, "work/exact.bin")); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestWebDownloadCancellation(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer srv.Close()
-	w := NewWebDownload(srv.Client(), 1024, managed.New(4096))
+	w := NewWebDownload(srv.Client(), 1024, managed.New(4096, 1000))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -187,7 +187,7 @@ func TestWebDownloadPathBoundaries(t *testing.T) {
 		_, _ = io.WriteString(w, "data")
 	}))
 	defer srv.Close()
-	w := NewWebDownload(srv.Client(), 1024, managed.New(4096))
+	w := NewWebDownload(srv.Client(), 1024, managed.New(4096, 1000))
 	for _, path := range []string{"", "file.bin", "uploads/file.bin", "../file.bin", "/tmp/file.bin", "work", "work/escape/file.bin"} {
 		if _, err := run(t, w, root, downloadArgs(t, srv.URL, path)); err == nil {
 			t.Errorf("unsafe path accepted: %q", path)
@@ -203,7 +203,7 @@ func TestWebDownloadRegistrationAndGuard(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Tools.WebDownload.Enabled = true
 	// Code execution and its networking remain disabled throughout this test.
-	reg := BuildFor(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, managed.New(4096))
+	reg := BuildFor(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, managed.New(4096, 1000))
 	tool, ok := reg.Get("web_download")
 	if !ok || reg.Policy("web_download") != ApprovalAuto {
 		t.Fatal("download not registered with default policy")
@@ -237,7 +237,7 @@ func TestWebToolsRejectSpecialAndOwnAddresses(t *testing.T) {
 	client.Transport.(*http.Transport).DialContext = guard.DialContext
 	for _, tool := range []Tool{
 		NewWebFetch(client, 1024),
-		NewWebDownload(client, 1024, managed.New(4096)),
+		NewWebDownload(client, 1024, managed.New(4096, 1000)),
 	} {
 		for _, url := range []string{
 			"http://0.1.2.3/file", "http://192.0.2.1/file", "http://[64:ff9b::a00:1]/file",
@@ -273,7 +273,7 @@ func TestWebDownloadRedirectToPrivate(t *testing.T) {
 		}
 		return (&GuardedTransport{}).DialContext(ctx, network, addr)
 	}}
-	w := NewWebDownload(client, 1024, managed.New(4096))
+	w := NewWebDownload(client, 1024, managed.New(4096, 1000))
 	if _, err := run(t, w, root, downloadArgs(t, front.URL, "work/file.bin")); err == nil || !strings.Contains(err.Error(), "private or reserved") {
 		t.Fatalf("redirect error = %v", err)
 	}

@@ -81,12 +81,23 @@ func (d *DB) CreateConversation(ctx context.Context, c *Conversation) error {
 		c.CreatedAt = now
 	}
 	c.UpdatedAt = c.CreatedAt
-	_, err := d.sqlDB.ExecContext(ctx,
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := d.checkConversationLimit(ctx, tx, c.UserID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO conversations(id, user_id, title, model, system_prompt, created_at, updated_at)
 		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.UserID, c.Title, c.Model, c.SystemPrompt,
 		c.CreatedAt.Unix(), c.UpdatedAt.Unix())
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ConversationForUser returns the conversation owned by userID, or

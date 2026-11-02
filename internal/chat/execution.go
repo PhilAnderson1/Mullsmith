@@ -155,6 +155,20 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		}
 	}
 
+	// Capacity for the paired result is a prerequisite of every execution,
+	// not something discovered after a filesystem or external side effect.
+	// The durable fallback also leaves a protocol-valid explanation if the
+	// process dies between reservation and finalization (audit8 A9).
+	resultMsg, rerr := s.reserveToolResult(ctx, userID, convID, callID, g.ID)
+	if rerr != nil {
+		msg := "tool result could not be reserved; the tool was not executed"
+		content := `{"error":` + jsonQuote(msg) + `}`
+		c := card(msg, nil)
+		s.finishUnreservedToolCall(tc.ID, content, c.JSON(), callID)
+		emitEnd("error", c)
+		return content, "", rerr
+	}
+
 	started := time.Now()
 	execCtx, execCancel := context.WithTimeout(ctx, s.execTimeout(name))
 	tres, err := tool.Execute(execCtx, tools.Invocation{
@@ -169,8 +183,8 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		msg := tools.Elide(err.Error(), 200) // tool errors are pre-sanitized
 		content := `{"error":` + jsonQuote(msg) + `}`
 		c := card(msg, nil)
-		if ferr := s.finalizeToolCall(tc.ID, "error", content, c.JSON(),
-			dur, userID, convID, callID, g.ID); ferr != nil {
+		if ferr := s.finalizeToolCall(tc.ID, resultMsg.ID, "error", content, c.JSON(),
+			dur, callID); ferr != nil {
 			persistErr = ferr
 		}
 		emitEnd("error", c)
@@ -179,8 +193,8 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 
 	content := tools.TruncateMiddle(tres.Content, ToolResultBudgetRunes)
 	c := card(tres.Summary, tres.Data)
-	if ferr := s.finalizeToolCall(tc.ID, "ok", content, c.JSON(),
-		dur, userID, convID, callID, g.ID); ferr != nil {
+	if ferr := s.finalizeToolCall(tc.ID, resultMsg.ID, "ok", content, c.JSON(),
+		dur, callID); ferr != nil {
 		persistErr = ferr
 	}
 	emitEnd("ok", c)
@@ -203,35 +217,60 @@ func (s *Service) rejectToolCall(ctx context.Context, conn sink,
 	if err != nil {
 		s.logger.Error("refused tool audit insert failed", "error", err, "call", call.ID)
 	} else {
-		err = s.finalizeToolCall(tc.ID, "error", content, card.JSON(), 0, userID, convID, call.ID, genID)
+		var resultMsg *store.Message
+		resultMsg, err = s.reserveToolResult(ctx, userID, convID, call.ID, genID)
+		if err == nil {
+			err = s.finalizeToolCall(tc.ID, resultMsg.ID, "error", content, card.JSON(), 0, call.ID)
+		} else {
+			s.finishUnreservedToolCall(tc.ID, content, card.JSON(), call.ID)
+		}
 	}
 	_ = conn.Send(ToolFinished{CallID: call.ID, MessageID: messageID, Tool: call.Function.Name, Status: "error", Card: card})
 	return content, err
 }
 
-// finalizeToolCall performs the two REQUIRED writes that close one tool
-// call: the audit row's final state and the role='tool' answer row. Both
-// errors surface — a call whose answer never landed must not be replayed
-// from memory as though it had (review2 finding 2).
-func (s *Service) finalizeToolCall(tcID, status, content, display string, dur int64,
-	userID, convID, callID, genID string,
+const interruptedToolResult = `{"error":"tool execution was interrupted"}`
+
+// reserveToolResult consumes message capacity before execution. Its complete
+// fallback is intentionally replayable after a hard process stop; ordinary
+// completion atomically replaces it alongside the tool execution record.
+func (s *Service) reserveToolResult(ctx context.Context, userID, convID, callID, genID string) (*store.Message, error) {
+	tokens := int64(agent.EstimateTokens(interruptedToolResult))
+	m := &store.Message{
+		ConversationID: convID, Role: "tool", Content: interruptedToolResult,
+		Status: "complete", ToolCallID: callID, GenerationID: genID,
+		TokenCount: &tokens,
+	}
+	if err := s.store.AddMessage(ctx, userID, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// finishUnreservedToolCall closes a proposal that could not obtain result
+// capacity. There is deliberately no paired message: nothing executed, and
+// history replay drops unanswered protocol calls.
+func (s *Service) finishUnreservedToolCall(tcID, content, display, callID string) {
+	ctx, cancel := detachedCtx()
+	defer cancel()
+	if err := s.store.FinishToolCall(ctx, tcID, "error", content, display, 0); err != nil {
+		s.logger.Error("unexecuted tool finalize failed", "error", err, "call", callID)
+	}
+}
+
+// finalizeToolCall atomically closes the execution record and its pre-reserved
+// role='tool' result. A failure leaves the interruption fallback in place.
+func (s *Service) finalizeToolCall(tcID, resultMsgID, status, content, display string, dur int64,
+	callID string,
 ) error {
 	ctx, cancel := detachedCtx()
 	defer cancel()
-	if err := s.store.FinishToolCall(ctx, tcID, status, content, display, dur); err != nil {
+	tokens := int64(agent.EstimateTokens(content))
+	if err := s.store.FinishToolCallWithResult(ctx, tcID, resultMsgID, status, content, display, dur, tokens); err != nil {
 		s.logger.Error("tool audit finalize failed", "error", err, "call", callID)
-		if errors.Is(err, store.ErrRowGone) {
-			// The audit row went with its conversation (C6): the answer
-			// has nothing to be recorded against, and the caller reads
-			// this as cancellation.
-			return err
-		}
-		// The result row still goes in: an answer the model acted on
-		// should at least be replayable even if its audit tail is thin.
-		_ = s.appendToolResult(ctx, userID, convID, callID, genID, content)
 		return err
 	}
-	return s.appendToolResult(ctx, userID, convID, callID, genID, content)
+	return nil
 }
 
 // detachedCtx gives a final persistence write 5 s of independence from the
@@ -276,26 +315,6 @@ func (s *Service) awaitApproval(ctx context.Context, g *Generation, conn sink,
 	case <-timer.C:
 		return ApprovalDecision{}
 	}
-}
-
-// appendToolResult persists the role='tool' answer row (§4). The error
-// surfaces: replaying a result that never landed is exactly the live-vs-
-// history divergence review2 finding 2 names.
-func (s *Service) appendToolResult(ctx context.Context, userID, convID, callID, genID, content string) error {
-	m := &store.Message{
-		ConversationID: convID,
-		Role:           "tool",
-		GenerationID:   genID,
-		Content:        content,
-		Status:         "complete",
-		ToolCallID:     callID,
-		TokenCount:     int64ptr(int64(agent.EstimateTokens(content))),
-	}
-	if err := s.store.AddMessage(ctx, userID, m); err != nil {
-		s.logger.Error("tool result persist failed", "error", err, "call", callID)
-		return err
-	}
-	return nil
 }
 
 // ViewTurnMarker prefixes the persisted note of every synthetic

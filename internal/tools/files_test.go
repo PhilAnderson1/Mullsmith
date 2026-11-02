@@ -3,14 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"mullsmith/internal/managed"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"mullsmith/internal/managed"
 	"mullsmith/internal/scratch"
 )
 
@@ -61,7 +62,7 @@ func writeDirect(t *testing.T, root, rel, content string) {
 func TestFsWriteReadListRoundTrip(t *testing.T) {
 	root := toolRoot(t)
 
-	res, err := run(t, FsWrite{Files: managed.New(0)}, root, argsJSON(t, map[string]string{
+	res, err := run(t, FsWrite{Files: managed.New(0, 1000)}, root, argsJSON(t, map[string]string{
 		"path": "artifacts/reports/2026/q3.md", "content": "# Q3\nall good",
 	}))
 	if err != nil {
@@ -151,7 +152,7 @@ func TestFsToolsRejectEscapes(t *testing.T) {
 			!strings.Contains(err.Error(), "sandbox") {
 			t.Errorf("fs_read(%q) = %v, want sandbox rejection", p, err)
 		}
-		if _, err := run(t, FsWrite{Files: managed.New(0)}, root,
+		if _, err := run(t, FsWrite{Files: managed.New(0, 1000)}, root,
 			argsJSON(t, map[string]string{"path": p, "content": "x"})); err == nil ||
 			!strings.Contains(err.Error(), "sandbox") && !strings.Contains(err.Error(), "uploads") {
 			t.Errorf("fs_write(%q) = %v, want rejection", p, err)
@@ -192,14 +193,14 @@ func TestUploadsNamespaceProtected(t *testing.T) {
 		t.Fatalf("reading uploads: %v", err)
 	}
 	// Not writable, not deletable.
-	if _, err := run(t, FsWrite{Files: managed.New(0)}, root,
+	if _, err := run(t, FsWrite{Files: managed.New(0, 1000)}, root,
 		argsJSON(t, map[string]string{"path": "uploads/data.csv", "content": "pwned"})); err == nil ||
 		!strings.Contains(err.Error(), "read-only") {
 		t.Errorf("upload write = %v, want read-only refusal", err)
 	}
 	// (fs_delete CAN delete uploads files — see TestFsDeleteUploadsFiles.)
 	// Even a fresh file inside uploads/ is refused.
-	if _, err := run(t, FsWrite{Files: managed.New(0)}, root,
+	if _, err := run(t, FsWrite{Files: managed.New(0, 1000)}, root,
 		argsJSON(t, map[string]string{"path": "uploads/new.txt", "content": "x"})); err == nil ||
 		!strings.Contains(err.Error(), "read-only") {
 		t.Errorf("upload create = %v, want read-only refusal", err)
@@ -211,7 +212,7 @@ func TestUploadsNamespaceProtected(t *testing.T) {
 
 func TestFsWriteQuotaRollback(t *testing.T) {
 	root := toolRoot(t)
-	w := FsWrite{Files: managed.New(200)}
+	w := FsWrite{Files: managed.New(200, 1000)}
 
 	// 190 bytes fits.
 	if _, err := w.Execute(context.Background(), inv(root, argsJSON(t, map[string]string{
@@ -243,7 +244,7 @@ func TestFsWriteQuotaRollback(t *testing.T) {
 // only ever disappears into a SUCCESS.
 func TestFsWriteReplacementPreservesOriginalOnQuotaFailure(t *testing.T) {
 	root := toolRoot(t)
-	w := FsWrite{Files: managed.New(1000)}
+	w := FsWrite{Files: managed.New(1000, 1000)}
 
 	if _, err := w.Execute(context.Background(), inv(root, argsJSON(t, map[string]string{
 		"path": "work/keep.txt", "content": strings.Repeat("a", 900)}))); err != nil {
@@ -360,7 +361,7 @@ func listNames(t *testing.T, dir string) []string {
 
 func TestFilesShareCopiesIntoArtifacts(t *testing.T) {
 	root := toolRoot(t)
-	share := FilesShare{Files: managed.New(1 << 20)}
+	share := FilesShare{Files: managed.New(1<<20, 1000)}
 	writeDirect(t, root, "work/report.md", "# report\n42\n")
 
 	res, err := run(t, share, root, argsJSON(t, map[string]string{
@@ -439,19 +440,17 @@ func TestFilesShareCopiesIntoArtifacts(t *testing.T) {
 	}
 }
 
-// The share copy is a WRITE: same quota doctrine as fs_write — refused up
-// front when the tree is already full, and rolled back when a copy that
-// slipped past the pre-check crosses the line (audit2 finding 3).
+// The share copy is a WRITE: its known source size is admitted up front, then
+// the post-copy check remains as defense against filesystem errors and races.
 func TestFilesShareQuota(t *testing.T) {
 	root := toolRoot(t)
 	// Tree: work/a.txt 190 + work/b.txt 50 = 240 used, quota 250. The
-	// pre-check passes (240 < 250), but landing the 50-byte copy crosses
-	// the line ⇒ the fail-closed re-check must delete the copy (§9.7).
-	share := FilesShare{Files: managed.New(250)}
+	// source cannot fit in the remaining 10 bytes, so no copy may land.
+	share := FilesShare{Files: managed.New(250, 1000)}
 	writeDirect(t, root, "work/a.txt", strings.Repeat("x", 190))
 	writeDirect(t, root, "work/b.txt", strings.Repeat("y", 50))
 	_, err := run(t, share, root, argsJSON(t, map[string]string{"path": "work/b.txt"}))
-	if err == nil || !strings.Contains(err.Error(), "quota") {
+	if err == nil || !errors.Is(err, managed.ErrQuota) {
 		t.Fatalf("over-quota share = %v, want quota error", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, toolUser, "artifacts/b.txt")); !os.IsNotExist(err) {
@@ -462,7 +461,7 @@ func TestFilesShareQuota(t *testing.T) {
 	}
 
 	// A tree already at/over the line is refused up front: no copy lands.
-	shareFull := FilesShare{Files: managed.New(200)}
+	shareFull := FilesShare{Files: managed.New(200, 1000)}
 	if _, err := run(t, shareFull, root, argsJSON(t, map[string]string{"path": "work/b.txt"})); err == nil ||
 		!strings.Contains(err.Error(), "quota") {
 		t.Errorf("share over a full tree = %v, want quota error", err)
@@ -475,7 +474,7 @@ func TestFilesShareQuota(t *testing.T) {
 
 func TestToolsNeedScratchpad(t *testing.T) {
 	// A misassembled invocation (no root) must fail cleanly, not panic.
-	for _, tl := range []Tool{FsList{}, FsRead{}, FsWrite{Files: managed.New(0)}, FsDelete{}, FilesShare{Files: managed.New(0)}} {
+	for _, tl := range []Tool{FsList{}, FsRead{}, FsWrite{Files: managed.New(0, 1000)}, FsDelete{}, FilesShare{Files: managed.New(0, 1000)}} {
 		_, err := tl.Execute(context.Background(), Invocation{UserID: toolUser, Arguments: `{}`})
 		if err == nil || !strings.Contains(err.Error(), "scratchpad") {
 			t.Errorf("%s with no root = %v", tl.Name(), err)
@@ -516,7 +515,7 @@ func TestUploadsNamespaceCoversDotPrefixedPaths(t *testing.T) {
 	root := toolRoot(t)
 	writeDirect(t, root, "uploads/protected.txt", "user data\n")
 
-	w := FsWrite{Files: managed.New(1 << 20)}
+	w := FsWrite{Files: managed.New(1<<20, 1000)}
 	for _, bypass := range []string{"./uploads/protected.txt", "././uploads/protected.txt"} {
 		_, err := run(t, w, root, argsJSON(t, map[string]string{"path": bypass, "content": "clobbered"}))
 		if err == nil || !strings.Contains(err.Error(), "read-only") {
@@ -563,7 +562,7 @@ func TestUploadsNamespaceCoversDotPrefixedPaths(t *testing.T) {
 func TestFilesShareRejectsUploads(t *testing.T) {
 	root := toolRoot(t)
 	writeDirect(t, root, "uploads/protected.txt", "user data\n")
-	share := FilesShare{Files: managed.New(1 << 20)}
+	share := FilesShare{Files: managed.New(1<<20, 1000)}
 
 	for _, p := range []string{"uploads/protected.txt", "./uploads/protected.txt"} {
 		_, err := run(t, share, root, argsJSON(t, map[string]string{"path": p}))
@@ -593,7 +592,7 @@ func TestFilesShareRejectsUploads(t *testing.T) {
 // never a bare root-level name (files there are invisible to the Files
 // page and unaccounted for by the workflow).
 func TestWriteTargetRootIsReserved(t *testing.T) {
-	w := FsWrite{Files: managed.New(0)}
+	w := FsWrite{Files: managed.New(0, 1000)}
 	// Refused: bare root entries, the layout dirs, and the root itself.
 	for _, p := range []string{
 		"stray.txt", "mydir/nested.txt", "bin_listing.txt",
@@ -644,7 +643,7 @@ func TestFsDeleteUploadsFiles(t *testing.T) {
 		t.Error("directory named dir.png must survive")
 	}
 	// The exception is DELETIONS only: fs_write keeps its uploads wall.
-	if _, err := run(t, FsWrite{Files: managed.New(1 << 20)}, root,
+	if _, err := run(t, FsWrite{Files: managed.New(1<<20, 1000)}, root,
 		argsJSON(t, map[string]string{"path": "uploads/x.png", "content": "c"})); err == nil {
 		t.Error("fs_write into uploads must stay refused")
 	}

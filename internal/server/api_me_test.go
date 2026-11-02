@@ -29,6 +29,7 @@ func TestMeUpdateProfileRoundTrip(t *testing.T) {
 	resp := a.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{
 		"name":                  "Philip A",
 		"email":                 "PHIL@Example.IO",
+		"current_password":      "str0ng-passphrase-1",
 		"default_system_prompt": "Answer in iambic pentameter.",
 	})
 	if resp.StatusCode != http.StatusOK {
@@ -97,7 +98,7 @@ func TestMeUpdateRejectsTakenEmail(t *testing.T) {
 	if resp2.StatusCode != http.StatusCreated {
 		t.Fatalf("register intruder = %d", resp2.StatusCode)
 	}
-	resp := b.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": "OWNER@test.io"})
+	resp := b.do(http.MethodPatch, "/api/v1/auth/me", map[string]any{"email": "OWNER@test.io", "current_password": "str0ng-passphrase-2"})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("steal email = %d, want 409", resp.StatusCode)
 	}

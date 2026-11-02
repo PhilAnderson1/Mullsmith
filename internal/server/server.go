@@ -26,20 +26,23 @@ import (
 
 // Server is the assembled mullsmith HTTP application.
 type Server struct {
-	cfg       *config.Config
-	store     *store.DB
-	logger    *slog.Logger
-	appVer    string
-	indexHTML []byte // app shell with build-versioned asset URLs, built once
-	limiter   *auth.Limiter
-	locks     *auth.LoginLocks
-	chat      *chat.Service
-	httpSrv   *http.Server
+	cfg          *config.Config
+	store        *store.DB
+	logger       *slog.Logger
+	appVer       string
+	indexHTML    []byte // app shell with build-versioned asset URLs, built once
+	limiter      *auth.Limiter
+	signupBudget *auth.SignupBudget
+	locks        *auth.LoginLocks
+	chat         *chat.Service
+	httpSrv      *http.Server
 	// hashGate bounds concurrent Argon2 work globally (audit finding 4).
 	hashGate *auth.HashGate
 	// uploadSem bounds in-flight multipart bodies. files owns the shared
 	// quota critical section for all application-managed writes.
 	uploadSem chan struct{}
+	downloads *userTransferGate
+	uploads   *userTransferGate
 	files     *managed.Service
 	// mailer is the async SMTP outbox for confirmation/reset mail; nil
 	// when email.enabled is false. Every email handler gates on the config
@@ -99,6 +102,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	for _, warning := range cfg.Thinking.Warnings() {
 		logger.Warn("thinking control", "warning", warning)
 	}
+	db = db.WithRecordLimits(cfg.AppLimits.MaxConversationsPerUser, cfg.AppLimits.MaxMessagesPerUser)
 	s := &Server{
 		cfg:       cfg,
 		store:     db,
@@ -108,10 +112,15 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		locks:     auth.NewLoginLocks(logger),
 		hashGate:  buildHashGate(cfg),
 		uploadSem: buildUploadGate(cfg),
+		downloads: newUserTransferGate(cfg.AppLimits.ConcurrentDownloadsPerUser),
+		uploads:   newUserTransferGate(cfg.AppLimits.ConcurrentUploadsPerUser),
 		indexHTML: versionedIndex(appVer),
 		mailer:    mailer,
 	}
-	s.files = managed.New(int64(cfg.Scratchpad.UserQuota))
+	s.files = managed.New(int64(cfg.Scratchpad.UserQuota), cfg.Scratchpad.MaxEntries)
+	if cfg.Auth.Registration == "open" {
+		s.signupBudget = auth.NewSignupBudget(cfg.Auth.SignupsPerHour())
+	}
 	s.chat = chat.New(cfg, db, logger, tools.BuildFor(cfg, logger, nil, code, s.files))
 	s.chat.Window = s.overflowLine
 
@@ -275,6 +284,7 @@ func (s *Server) staticAssetsHandler() http.HandlerFunc {
 	files := http.FileServerFS(web.FS)
 	stamped := stampedModules(buildStamp(s.appVer))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w = &assetCacheWriter{ResponseWriter: w, manifest: strings.HasSuffix(r.URL.Path, ".webmanifest")}
 		if strings.HasSuffix(r.URL.Path, "/") {
 			s.handleNotFound(w, r)
 			return

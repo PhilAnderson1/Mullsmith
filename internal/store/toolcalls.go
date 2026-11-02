@@ -83,6 +83,46 @@ func (d *DB) FinishToolCall(ctx context.Context, id, status, result, display str
 	return nil
 }
 
+// FinishToolCallWithResult closes a tool execution and replaces its already-
+// reserved result message in one transaction. The reservation is inserted
+// before execution so message capacity is a prerequisite of side effects;
+// this transaction makes the final audit/result pair visible together.
+func (d *DB) FinishToolCallWithResult(ctx context.Context, id, resultMessageID,
+	status, result, display string, durationMS, tokenCount int64,
+) error {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tool_calls SET status = ?, result = ?, display = ?, duration_ms = ?, finished_at = ?
+		 WHERE id = ?`,
+		status, result, display, durationMS, now, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrRowGone
+	}
+	// Pair by the tool call's durable LLM id as well as the result row id.
+	// A caller cannot accidentally finalize a reservation belonging to a
+	// different call or conversation.
+	res, err = tx.ExecContext(ctx,
+		`UPDATE messages SET content = ?, status = 'complete', token_count = ?
+		 WHERE id = ? AND role = 'tool'
+		   AND tool_call_id = (SELECT llm_call_id FROM tool_calls WHERE id = ?)`,
+		result, tokenCount, resultMessageID, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrRowGone
+	}
+	return tx.Commit()
+}
+
 // ToolCallsForMessages returns audit rows grouped by assistant message id,
 // in proposal order (created_at, id). Missing ids simply get no entry.
 func (d *DB) ToolCallsForMessages(ctx context.Context, msgIDs []string) (map[string][]ToolCall, error) {

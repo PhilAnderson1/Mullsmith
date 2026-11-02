@@ -2,6 +2,8 @@ package managed
 
 import (
 	"context"
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,31 @@ import (
 	"mullsmith/internal/id"
 	"mullsmith/internal/scratch"
 )
+
+func TestAdmitAdditionChecksKnownGrowth(t *testing.T) {
+	root := t.TempDir()
+	user := id.New()
+	if err := scratch.EnsureUserDirs(root, user); err != nil {
+		t.Fatal(err)
+	}
+	s := New(10, 4) // three layout directories leave one entry
+	ctx := context.Background()
+	if _, err := s.admitAddition(ctx, root, user, 10, 1); err != nil {
+		t.Fatalf("exact byte and entry capacity refused: %v", err)
+	}
+	if _, err := s.admitAddition(ctx, root, user, 11, 1); !errors.Is(err, ErrQuota) {
+		t.Fatalf("byte excess = %v, want quota", err)
+	}
+	if _, err := s.admitAddition(ctx, root, user, 0, 2); !errors.Is(err, scratch.ErrEntryLimit) {
+		t.Fatalf("entry excess = %v, want entry limit", err)
+	}
+	if _, err := s.admitAddition(ctx, root, user, math.MaxInt64, 1); !errors.Is(err, ErrQuota) {
+		t.Fatalf("large addition = %v, want overflow-safe quota refusal", err)
+	}
+	if _, err := s.admitAddition(ctx, root, user, -1, 0); !errors.Is(err, ErrQuota) {
+		t.Fatalf("negative addition = %v, want quota refusal", err)
+	}
+}
 
 func TestStagePreservesSourceAliasesAndReplacesAtomically(t *testing.T) {
 	root := t.TempDir()
@@ -25,7 +52,7 @@ func TestStagePreservesSourceAliasesAndReplacesAtomically(t *testing.T) {
 	if err := os.Link(source, dest); err != nil {
 		t.Fatal(err)
 	}
-	service := New(1 << 20)
+	service := New(1<<20, 1000)
 	if _, err := service.Stage(context.Background(), root, user, []string{"uploads/input.csv", "work/input.csv"}); err != nil {
 		t.Fatal(err)
 	}

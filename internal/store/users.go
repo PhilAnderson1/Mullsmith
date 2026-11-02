@@ -123,7 +123,7 @@ func (d *DB) UserIDs(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// SetPassword updates the hash, revokes every outstanding reset link and
+// SetPassword updates the hash, cancels pending address changes and links, and
 // bumps updated_at, in one transaction. Changing the password is the owner's
 // attempt to evict an uninvited visitor — a mailbox-derived link that can
 // overwrite the fresh credential would silently undo that attempt (astra2
@@ -145,9 +145,7 @@ func (d *DB) SetPassword(ctx context.Context, userID, hash string, now time.Time
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrUserNotFound
 	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`,
-		TokenResetPassword, userID); err != nil {
+	if err := revokePasswordLinks(ctx, tx, userID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -209,9 +207,7 @@ func (d *DB) ChangePasswordAndRotate(ctx context.Context, userID, newHash, verif
 	}
 	// Policy (astra2, kept from SetPassword): a password change cuts every
 	// mailbox-derived path that could overwrite the fresh credential.
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`,
-		TokenResetPassword, userID); err != nil {
+	if err := revokePasswordLinks(ctx, tx, userID); err != nil {
 		return nil, err
 	}
 	// Every other device is out (spec §9.1)…
@@ -236,35 +232,93 @@ func (d *DB) ChangePasswordAndRotate(ctx context.Context, userID, newHash, verif
 	return &PasswordRotation{Raw: raw, ExpiresAt: expiresAt}, nil
 }
 
-// UpdateProfile changes the account's display details in one statement.
-// Taking the whole row (not pointers) keeps the settings page honest: what
-// the form shows is what is stored. A taken email maps to ErrUserExists.
-// It deliberately does NOT touch unconfirmed_email: clearing a pending
-// address change is the caller's explicit decision (the features-off
-// Settings email write does it via SetUnconfirmedEmail, §5). When the
-// confirmed address itself moves (the features-off door), reset links bound
-// to the abandoned mailbox die with it — the same rule ConfirmEmail applies
-// on the features-on door (astra2 review).
-func (d *DB) UpdateProfile(ctx context.Context, userID, name, email, defaultPrompt string, now time.Time) error {
-	tx, err := d.sqlDB.BeginTx(ctx, nil)
+// revokePasswordLinks cuts recovery paths in the password transition itself.
+// Pending signup confirmation is preserved: it establishes the first address,
+// whereas a pending change on an established account must be cancelled.
+func revokePasswordLinks(ctx context.Context, tx *sql.Tx, userID string) error {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET unconfirmed_email = NULL WHERE id = ? AND email IS NOT NULL`, userID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx,
+		`DELETE FROM auth_tokens WHERE user_id = ? AND used_at IS NULL
+		 AND (kind = ? OR (kind = ? AND EXISTS (SELECT 1 FROM users WHERE id = ? AND email IS NOT NULL)))`,
+		userID, TokenResetPassword, TokenConfirmEmail, userID)
+	return err
+}
+
+// UpdateProfile changes display details only. A stale metadata save must never
+// restore an old email address after a concurrent confirmation or recovery.
+func (d *DB) UpdateProfile(ctx context.Context, userID, name, defaultPrompt string, now time.Time) error {
+	res, err := d.sqlDB.ExecContext(ctx,
+		`UPDATE users SET name = ?, default_system_prompt = ?, updated_at = ? WHERE id = ?`, name, defaultPrompt, now.Unix(), userID)
 	if err != nil {
 		return err
 	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// ChangeEmail commits the password-verified address change, display details and
+// confirmation link together. A zero confirmation expiry selects a direct change
+// (email features off). Every authorization predicate is checked inside the same
+// transaction, so a recovery that won the race cannot be undone by this request.
+func (d *DB) ChangeEmail(ctx context.Context, verified *User, sessionHash []byte,
+	name, email, prompt string, confirmationExpiry, now time.Time,
+) (string, error) {
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
 	defer tx.Rollback()
+	var one int
+	err = tx.QueryRowContext(ctx,
+		`SELECT 1 FROM users u JOIN sessions s ON s.user_id = u.id
+		 WHERE u.id = ? AND u.password_hash = ? AND u.email = ? AND u.status = ?
+		 AND s.id_hash = ? AND s.expires_at > ?`,
+		verified.ID, verified.PasswordHash, verified.Email, StatusEnabled, sessionHash, now.Unix()).Scan(&one)
+	if errors.Is(err, ErrNoRows) {
+		return "", ErrStaleCredentials
+	}
+	if err != nil {
+		return "", err
+	}
+	available, err := emailAvailable(ctx, tx, email, verified.ID, now)
+	if err != nil {
+		return "", err
+	}
+	if !available {
+		return "", ErrUserExists
+	}
+	confirmed, pending := email, ""
+	if !confirmationExpiry.IsZero() {
+		confirmed, pending = verified.Email, email
+	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE users SET name = ?, email = ?, default_system_prompt = ?, updated_at = ? WHERE id = ?`,
-		name, nilIfEmpty(email), defaultPrompt, now.Unix(), userID); err != nil {
+		`UPDATE users SET name = ?, email = ?, default_system_prompt = ?, unconfirmed_email = ?, updated_at = ? WHERE id = ?`,
+		name, confirmed, prompt, nilIfEmpty(pending), now.Unix(), verified.ID); err != nil {
 		if isUnique(err, "users.email") {
-			return ErrUserExists
+			return "", ErrUserExists
 		}
-		return err
+		return "", err
 	}
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL AND email IS NOT ?`,
-		TokenResetPassword, userID, nilIfEmpty(email)); err != nil {
-		return err
+	var raw string
+	if pending != "" {
+		raw, err = createToken(ctx, tx, TokenConfirmEmail, verified.ID, pending, confirmationExpiry)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM auth_tokens WHERE user_id = ? AND used_at IS NULL
+			 AND (kind = ? OR (kind = ? AND email <> ?))`,
+			verified.ID, TokenConfirmEmail, TokenResetPassword, email); err != nil {
+			return "", err
+		}
 	}
-	return tx.Commit()
+	return raw, tx.Commit()
 }
 
 // Account-lifecycle values for users.status (spec §9.17).
@@ -355,6 +409,17 @@ func (d *DB) Register(ctx context.Context, u *User, invite string) error {
 			return ErrInviteInvalid
 		}
 	}
+	address := u.Email
+	if address == "" {
+		address = u.UnconfirmedEmail
+	}
+	available, err := emailAvailable(ctx, tx, address, "", time.Now())
+	if err != nil {
+		return err
+	}
+	if !available {
+		return ErrUserExists
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO users(id, email, name, password_hash, status, unconfirmed_email, created_at, updated_at)
@@ -440,48 +505,53 @@ func (d *DB) DeleteUser(ctx context.Context, userID string) (bool, error) {
 // path). It does not mint the token — the caller pairs this with
 // CreateToken(confirm_email) bound to the same address.
 func (d *DB) SetUnconfirmedEmail(ctx context.Context, userID, email string, now time.Time) error {
-	res, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE users SET unconfirmed_email = ?, updated_at = ? WHERE id = ?`,
-		nilIfEmpty(email), now.Unix(), userID)
+	tx, err := d.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE users SET unconfirmed_email = ?, updated_at = ? WHERE id = ?`, nilIfEmpty(email), now.Unix(), userID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrUserNotFound
 	}
-	return nil
-}
-
-// EmailAvailable reports whether an address may be claimed at sign-up:
-// it must match neither any confirmed email nor any pending unconfirmed
-// one. Without the second column a typo'd pending sign-up's address could
-// be registered by someone else, stranding both parties (plan §3).
-// Comparisons are plain binary: every stored address and every caller
-// passes auth.NormalizeEmail's canonical form, so NOCASE collation would
-// only paper over callers that skip it (audit1 L-3).
-func (d *DB) EmailAvailable(ctx context.Context, email string) (bool, error) {
-	var one int
-	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT 1 FROM users WHERE email = ? OR unconfirmed_email = ? LIMIT 1`,
-		email, email).Scan(&one)
-	switch {
-	case errors.Is(err, ErrNoRows):
-		return true, nil
-	case err != nil:
-		return false, err
+	if email == "" {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tokens WHERE kind = ? AND user_id = ? AND used_at IS NULL`, TokenConfirmEmail, userID); err != nil {
+			return err
+		}
 	}
-	return false, nil
+	return tx.Commit()
 }
 
-// UserByPendingEmail finds a never-confirmed sign-up by its pending
-// address — exactly the pending invariant's shape (unconfirmed + NULL
-// email), which is all resend-confirm may match. Enabled accounts
-// mid-Settings-change are deliberately NOT matched: that flow lives behind
-// an authenticated session, where a second PATCH re-points the target.
-// Binary comparison per the normalization doctrine above (audit1 L-3).
-func (d *DB) UserByPendingEmail(ctx context.Context, email string) (*User, error) {
-	return scanUser(d.sqlDB.QueryRowContext(ctx,
-		`SELECT `+userCols+` FROM users
-		 WHERE email IS NULL AND status = ? AND unconfirmed_email = ?`,
-		StatusUnconfirmed, email))
+// A reservation on an established account exists only while its matching
+// confirmation link is live. Signup reservations use the fixed signup window,
+// including the interval between account creation and first token issuance.
+const liveConfirmationQuery = `SELECT 1 FROM auth_tokens t
+ WHERE t.user_id = u.id AND t.kind = 'confirm_email' AND t.email = u.unconfirmed_email
+ AND t.used_at IS NULL AND t.expires_at > ?`
+
+const emailAvailabilityQuery = `SELECT NOT EXISTS (
+ SELECT 1 FROM users u WHERE u.id <> ? AND
+ (u.email = ? OR (u.unconfirmed_email = ? AND
+ ((u.email IS NULL AND u.status = 'unconfirmed' AND u.created_at > ?)
+ OR (u.email IS NOT NULL AND EXISTS (` + liveConfirmationQuery + `))))))`
+
+type accountQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func emailAvailable(ctx context.Context, q accountQueryer, email, exceptUser string, now time.Time) (bool, error) {
+	var available bool
+	err := q.QueryRowContext(ctx, emailAvailabilityQuery, exceptUser, email, email,
+		now.Add(-ConfirmationTTL).Unix(), now.Unix()).Scan(&available)
+	return available, err
+}
+
+// EmailAvailable disregards expired reservations before the hourly sweep.
+// The same rule runs in the transactions that register or change an address.
+func (d *DB) EmailAvailable(ctx context.Context, email string, now time.Time) (bool, error) {
+	return emailAvailable(ctx, d.sqlDB, email, "", now)
 }
