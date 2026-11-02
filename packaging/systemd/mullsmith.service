@@ -25,9 +25,11 @@ RestartSec=2s
 KillSignal=SIGTERM
 TimeoutStopSec=45
 
-# TLS via tmpfs-staged certificates (§9.12) — OFF by default. mullsmith starts
-# with server.tls.enabled: false (plain HTTP on loopback; acceptable on a
-# private network — read the README Security section before exposing it).
+# TLS via tmpfs-staged certificates (§9.12) — OFF by default. Mullsmith starts
+# on plain HTTP port 3210 on every IPv4/IPv6 interface, so it is immediately
+# reachable on a trusted local network. Do not expose that port to the public
+# internet without TLS or a TLS-terminating reverse proxy; read the README
+# Security section first.
 # Enabling SSL takes two steps: un-comment the line at the end of this
 # block, and set server.tls.enabled: true in the config. Deliberately NO
 # ExecReload= line: mullsmith reads its cert at startup and does not catch
@@ -44,9 +46,11 @@ RuntimeDirectoryMode=0700
   # `systemctl try-restart mullsmith`.
   # ExecStartPre=+/bin/sh -c 'install -m 600 -o mullsmith -g mullsmith "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem)" /run/mullsmith/key.pem && install -m 600 -o mullsmith -g mullsmith "$(readlink -f /etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem)" /run/mullsmith/cert.pem'
 
-# Sandboxing (§9). ProtectHome is NOT used: the scratchpad may live under
-# /home on small installs — ProtectSystem=strict + explicit ReadWritePaths
-# still confine all writes.
+# Sandboxing (§9). ProtectSystem=strict makes the filesystem read-only except
+# for /var/lib/mullsmith below (and systemd-managed /run/mullsmith). Mount a
+# dedicated scratch filesystem beneath /var/lib/mullsmith to keep this unit
+# unchanged. Configured database/scratchpad paths elsewhere, including /home,
+# need a systemd drop-in adding those paths to ReadWritePaths (README).
 NoNewPrivileges=true
 ProtectSystem=strict
 # NOTE: ProtectKernelTunables is deliberately NOT set — it remounts /proc
@@ -67,6 +71,8 @@ LockPersonality=true
 # Go never needs writable-executable memory; keeping W^X enforcement off
 # matches the Go runtime's expectations.
 MemoryDenyWriteExecute=false
+# This covers the shipped database and scratchpad defaults. Additional
+# ReadWritePaths lines in a drop-in augment it; do not weaken ProtectSystem.
 ReadWritePaths=/var/lib/mullsmith
 PrivateTmp=true
 # AF_NETLINK is required, not incidental: bubblewrap creates a net namespace

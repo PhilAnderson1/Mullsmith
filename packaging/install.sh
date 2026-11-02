@@ -72,7 +72,9 @@ install -d -o root -g mullsmith -m 0750 /etc/mullsmith
 # deployment can consume lives below it: putting /var/lib/mullsmith on its
 # own bounded filesystem (or enabling filesystem project quotas) is the
 # operator's step and the only defence against entry-count (inode) pressure
-# and files deleted while still open. Optional — nothing here depends on it.
+# and files deleted while still open. Mounting it directly at
+# /var/lib/mullsmith/scratchpad needs no systemd unit override. Optional —
+# nothing here depends on it.
 install -d -o mullsmith -g mullsmith -m 0700 /var/lib/mullsmith
 install -d -o root -g root -m 0755 /usr/local/share/mullsmith
 install -o root -g root -m 0644 "$readme_source" /usr/local/share/mullsmith/README.md
@@ -123,12 +125,20 @@ EOF
 fi
 
 if [ -f "$service_source" ] && command -v systemctl >/dev/null 2>&1; then
-    install -m 0644 "$service_source" /etc/systemd/system/mullsmith.service
+    # Native packages keep documentation under /usr/share/doc; manual
+    # installs belong under /usr/local. Derive the installed variant from the
+    # same unit template rather than maintaining a duplicate service file.
+    service_unit=$(mktemp)
+    sed 's@Documentation=file:/usr/share/doc/mullsmith/README.md@Documentation=file:/usr/local/share/mullsmith/README.md@' \
+        "$service_source" > "$service_unit"
+    install -m 0644 "$service_unit" /etc/systemd/system/mullsmith.service
+    rm -f -- "$service_unit"
     systemctl daemon-reload
     echo "Installed the systemd service (not enabled or started)."
     echo ""
-    echo "TLS is OFF by default: mullsmith serves plain HTTP on loopback, which"
-    echo "is fine on a private network only. To serve HTTPS with certbot"
+    echo "TLS is OFF by default: mullsmith serves plain HTTP on port 3210 on"
+    echo "every interface for immediate trusted-LAN access. Do not forward that"
+    echo "port from the internet without TLS. To serve HTTPS with certbot"
     echo "certificates, un-comment the ExecStartPre line in"
     echo "/etc/systemd/system/mullsmith.service, replace YOUR.HOSTNAME with"
     echo "your certbot domain, and set server.tls.enabled: true in the config."

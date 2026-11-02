@@ -106,10 +106,12 @@ Let's Encrypt keys stay `0600 root:root` by certbot policy, and mullsmith runs
 unprivileged. The shipped unit solves this without a second on-disk copy:
 `ExecStartPre` (root) stages cert+key into the RAM-only `RuntimeDirectory`
 `/run/mullsmith`, and a certbot *deploy hook* (`systemctl try-restart mullsmith`)
-picks up renewals. That line ships **commented out** — the default install is
-plain HTTP on loopback (private networks only); un-comment it, set
-`YOUR.HOSTNAME`, and enable `server.tls` to serve HTTPS directly. If you
-terminate TLS at a proxy instead, bind mullsmith to loopback and skip all of it.
+picks up renewals. That line ships **commented out** — by default Mullsmith
+listens on plain HTTP port 3210 on every IPv4/IPv6 interface, making it
+immediately reachable from a trusted local network. Do not forward that port
+from the public internet; un-comment the line, set `YOUR.HOSTNAME`, and enable
+`server.tls` to serve HTTPS directly. If you terminate TLS at a proxy instead,
+bind Mullsmith to loopback and skip all of it.
 
 ### CLI
 
@@ -211,6 +213,27 @@ All state lives in two directories named by the config:
   your confirmation every time — scripts in the `code_run` jail never can.
 
 Plus `/etc/mullsmith/config.yaml` and `/etc/mullsmith/env`.
+
+The shipped systemd unit uses `ProtectSystem=strict` and permits writes only
+beneath `/var/lib/mullsmith`. For a hard storage boundary around code
+execution, the simplest arrangement is therefore to mount a dedicated,
+size-limited filesystem at `/var/lib/mullsmith/scratchpad` (or mount one at
+`/var/lib/mullsmith` for all application state). The configured paths may live
+elsewhere, but Unix ownership alone is not enough: add every external database
+or scratchpad location to the service's writable-path allowlist:
+
+```sh
+sudo systemctl edit mullsmith
+```
+
+```ini
+[Service]
+ReadWritePaths=/mnt/mullsmith-scratch /srv/mullsmith-db
+```
+
+Create those directories as `mullsmith:mullsmith`, then run
+`sudo systemctl restart mullsmith`. The drop-in augments the packaged
+`/var/lib/mullsmith` allowance; retain `ProtectSystem=strict`.
 
 Deployment policy for this development installation: do not create deployment
 backups. Run the relevant checks before installing a binary and verify service

@@ -115,7 +115,9 @@ stage_native_payload() {
     install -m 0755 "$work_dir/mullsmith" "$payload/usr/bin/mullsmith"
     sed 's@ExecStart=/usr/local/bin/mullsmith@ExecStart=/usr/bin/mullsmith@' \
         packaging/systemd/mullsmith.service > "$payload/usr/lib/systemd/system/mullsmith.service"
-    install -m 0640 configs/config.yaml "$payload/etc/mullsmith/config.yaml"
+    chmod 0644 "$payload/usr/lib/systemd/system/mullsmith.service"
+    install -m 0640 configs/config.yaml configs/endpoints.yaml \
+        configs/thinking-profiles.yaml "$payload/etc/mullsmith/"
     install -m 0644 README.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$payload/usr/share/doc/mullsmith/"
     cp -R THIRD_PARTY_LICENSES "$payload/usr/share/doc/mullsmith/THIRD_PARTY_LICENSES"
     cat > "$payload/usr/share/doc/mullsmith/PACKAGED_INSTALL.md" <<'EOF'
@@ -125,8 +127,10 @@ On Ubuntu, install the downloaded `.deb` with `sudo apt install ./mullsmith_*.de
 On AlmaLinux, install the `.rpm` with `sudo dnf install ./mullsmith-*.rpm`.
 
 The package installs `/usr/bin/mullsmith`, creates the `mullsmith` account,
-and installs a systemd unit. It does not enable or start the service. Edit
-`/etc/mullsmith/config.yaml` (endpoint, paths, registration policy) and create
+and enables and starts the systemd service on first installation. The default
+listener is immediately reachable from the local network at
+`http://SERVER-IP:3210`; edit `/etc/mullsmith/config.yaml` to configure the
+endpoint, models and registration policy. Create
 `/etc/mullsmith/env` with any secrets the config references through `${ENV}`
 expansion, for example `MULLSMITH_SEARCH_API_KEY=...` (mode 0640,
 root:mullsmith).
@@ -140,20 +144,23 @@ dials the mail server; that probe warns but never fails, so a mail outage
 cannot block restarts. See the README section "Password reset & email
 confirmation" for relay options including unauthenticated LAN relays.
 
-TLS: OFF by default — mullsmith starts on plain HTTP bound to loopback, which
-is acceptable on a private network only. To serve HTTPS with certbot
-certificates, un-comment the `ExecStartPre` staging line in the unit
+TLS: OFF by default — when started, Mullsmith listens on plain HTTP port 3210
+on every IPv4/IPv6 interface so it is immediately reachable from a trusted
+local network. Do not expose that port to the public internet without TLS. To
+serve HTTPS with certbot certificates, un-comment the `ExecStartPre` staging
+line in the unit
 (`sudo systemctl edit --full mullsmith`), replace `YOUR.HOSTNAME` with your
 certbot domain, and set `server.tls.enabled: true` in the config; the unit
 then stages cert+key into RAM-only `/run/mullsmith` at every service start.
 Certbot renewals are picked up by a deploy hook doing
 `systemctl try-restart mullsmith`. If a reverse proxy terminates TLS instead,
-keep `server.tls.enabled: false` and bind mullsmith to loopback.
+keep `server.tls.enabled: false`, bind Mullsmith to loopback, and expose only
+the proxy.
 
-Check the configuration and endpoint before starting:
+Check the configuration and endpoint after editing it, then restart:
 
     sudo sh -c 'set -a; . /etc/mullsmith/env 2>/dev/null; set +a; /usr/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config'
-    sudo systemctl enable --now mullsmith
+    sudo systemctl restart mullsmith
 
 Then create the first account:
 
@@ -195,6 +202,8 @@ Description: Self-hosted chat assistant for a local OpenAI-compatible LLM
 EOF
     cat > "$deb_root/DEBIAN/conffiles" <<'EOF'
 /etc/mullsmith/config.yaml
+/etc/mullsmith/endpoints.yaml
+/etc/mullsmith/thinking-profiles.yaml
 EOF
     cat > "$deb_root/DEBIAN/preinst" <<'EOF'
 #!/bin/sh
@@ -212,18 +221,23 @@ EOF
 set -e
 if [ "$1" = configure ]; then
     install -d -o root -g mullsmith -m 0750 /etc/mullsmith
-    path=/etc/mullsmith/config.yaml
-    if [ -f "$path" ] && [ ! -L "$path" ]; then
-        chown root:mullsmith "$path"
-        chmod 0640 "$path"
-    fi
+    for path in /etc/mullsmith/config.yaml /etc/mullsmith/endpoints.yaml /etc/mullsmith/thinking-profiles.yaml; do
+        if [ -f "$path" ] && [ ! -L "$path" ]; then
+            chown root:mullsmith "$path"
+            chmod 0640 "$path"
+        fi
+    done
     install -d -o mullsmith -g mullsmith -m 0700 /var/lib/mullsmith
     if command -v systemctl >/dev/null 2>&1; then
         if [ -e /etc/systemd/system/mullsmith.service ]; then
             echo "WARNING: /etc/systemd/system/mullsmith.service overrides the packaged unit; check for an earlier tarball installation." >&2
         fi
         systemctl daemon-reload || true
-        if [ -n "${2:-}" ] && systemctl is-active --quiet mullsmith.service; then
+        if [ -z "${2:-}" ]; then
+            systemctl enable mullsmith.service || true
+            systemctl start mullsmith.service || \
+                echo "WARNING: Mullsmith did not start; check: systemctl status mullsmith" >&2
+        elif systemctl is-active --quiet mullsmith.service; then
             systemctl try-restart mullsmith.service || true
         fi
     fi
@@ -305,6 +319,11 @@ if command -v systemctl >/dev/null 2>&1; then
         echo "WARNING: /etc/systemd/system/mullsmith.service overrides the packaged unit; check for an earlier tarball installation." >&2
     fi
     systemctl daemon-reload || true
+    if [ "\$1" -eq 1 ]; then
+        systemctl enable mullsmith.service || true
+        systemctl start mullsmith.service || \
+            echo "WARNING: Mullsmith did not start; check: systemctl status mullsmith" >&2
+    fi
 fi
 
 %posttrans
@@ -326,6 +345,8 @@ fi
 %defattr(-,root,root,-)
 %dir %attr(0750,root,mullsmith) /etc/mullsmith
 %config(noreplace) %attr(0640,root,mullsmith) /etc/mullsmith/config.yaml
+%config(noreplace) %attr(0640,root,mullsmith) /etc/mullsmith/endpoints.yaml
+%config(noreplace) %attr(0640,root,mullsmith) /etc/mullsmith/thinking-profiles.yaml
 /usr/bin/mullsmith
 /usr/lib/systemd/system/mullsmith.service
 %doc /usr/share/doc/mullsmith/README.md

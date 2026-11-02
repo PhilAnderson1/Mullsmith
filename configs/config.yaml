@@ -28,9 +28,12 @@ server:
   shutdown_grace: 15s             # in-flight grace on SIGTERM
 
 database:
-  dir: "/var/lib/mullsmith/db"
+  dir: "/var/lib/mullsmith/db"     # outside /var/lib/mullsmith, the shipped
+                                    # systemd unit needs a ReadWritePaths override
 
 scratchpad:
+  # A dedicated filesystem may be mounted directly here without changing the
+  # shipped systemd unit. A root elsewhere needs a ReadWritePaths override.
   root: "/var/lib/mullsmith/scratchpad"
   max_file_size: 25MiB
   user_quota: 1GiB
