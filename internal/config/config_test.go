@@ -94,6 +94,9 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.MaxToolCallsPerTurn != 100 {
 		t.Errorf("max_tool_calls_per_turn default = %d, want 100", cfg.Tools.Agent.MaxToolCallsPerTurn)
 	}
+	if cfg.Tools.Agent.MaxNetworkCallsPerTurn != 10 {
+		t.Errorf("max_network_tool_calls_per_turn default = %d, want 10", cfg.Tools.Agent.MaxNetworkCallsPerTurn)
+	}
 	if cfg.Tools.WebDownload.Enabled || cfg.Tools.WebDownload.MaxBytes != 1<<30 || cfg.Tools.WebDownload.Timeout != Duration(time.Minute) {
 		t.Errorf("web_download defaults = %+v", cfg.Tools.WebDownload)
 	}
@@ -614,6 +617,11 @@ llm: {endpoint: "http://x/v1", models: [{id: m, context_size: 4096}], max_tokens
 			"max_tool_calls_per_turn",
 		},
 		{
+			"negative network tool call cap",
+			minimalYAML + "tools:\n  agent:\n    max_network_tool_calls_per_turn: -1\n",
+			"max_network_tool_calls_per_turn",
+		},
+		{
 			"negative download size",
 			minimalYAML + "tools:\n  web_download:\n    max_bytes: -1\n",
 			"invalid size",
@@ -950,6 +958,9 @@ func TestLoadVisionPerModel(t *testing.T) {
 	if !cfg.LLM.AnyVision() {
 		t.Error("AnyVision must be true when one entry sees")
 	}
+	if cfg.LLM.VisionMaxImagesPerConversation != 8 {
+		t.Errorf("vision image conversation cap = %d, want default 8", cfg.LLM.VisionMaxImagesPerConversation)
+	}
 	// Outside the picker → the default entry (here "seer" is default).
 	if !cfg.LLM.VisionFor("somewhere-else") {
 		t.Error("a model outside the picker must read the default entry")
@@ -957,6 +968,11 @@ func TestLoadVisionPerModel(t *testing.T) {
 	cfg, err = Load(writeCfg(t, minimalBase+modelsYAML("    - id: \"blind\"\n")))
 	if err != nil || cfg.LLM.AnyVision() || cfg.LLM.VisionFor("blind") {
 		t.Errorf("no entry sees: err=%v AnyVision=%v", err, cfg.LLM.AnyVision())
+	}
+	if _, err := Load(writeCfg(t, minimalBase+
+		"  vision_max_images_per_conversation: -1\n"+
+		modelsYAML("    - id: \"seer\"\n      vision: true\n"))); err == nil {
+		t.Error("negative vision_max_images_per_conversation accepted")
 	}
 }
 

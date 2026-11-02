@@ -147,6 +147,44 @@ func TestChatViewImageAttachesPictureTurn(t *testing.T) {
 	}
 }
 
+func TestChatViewImageRequestCountLimit(t *testing.T) {
+	a, script, _ := newRealToolServerTuned(t, [][]string{
+		{
+			toolCallChunk(0, "call_v1", "view_image", `{"path":"uploads/photo.png"}`),
+			toolCallChunk(1, "call_v2", "view_image", `{"path":"uploads/photo.png"}`),
+			finishChunk("tool_calls"),
+		},
+		{answerChunk("I saw one picture."), finishChunk("stop")},
+	}, func(cfg *config.Config) {
+		cfg.LLM.Models[0].Vision = true
+		cfg.LLM.VisionMaxImagesPerConversation = 1
+	})
+
+	uploadOK(t, a, "photo.png", pngBytes(24))
+	c := createConv(t, a, map[string]any{"title": "One image"})
+	resp := sendChat(t, a, c.ID, "look twice")
+	defer resp.Body.Close()
+	if es := drainSSE(t, newSSEReader(t, resp)); es.done["status"] != "complete" {
+		t.Fatalf("done = %v", es.done)
+	}
+
+	// The first call embeds one picture. The second is a normal tool error,
+	// and therefore cannot add another synthetic image turn to this or any
+	// later replay of the conversation.
+	users := payloadRole(t, script.roundBody(1), "user")
+	if len(users) != 2 {
+		t.Fatalf("user messages in continuation = %d, want original + one image turn", len(users))
+	}
+	imageDataPart(t, users[1])
+	toolResults := payloadRole(t, script.roundBody(1), "tool")
+	if len(toolResults) != 2 {
+		t.Fatalf("tool results = %d, want two protocol answers", len(toolResults))
+	}
+	if got, _ := toolResults[1]["content"].(string); !strings.Contains(got, "image limit reached") {
+		t.Fatalf("second tool result = %q, want image-limit refusal", got)
+	}
+}
+
 // Vision is a property of the MODEL: with a seeing sibling in the picker
 // the registry holds view_image, yet a conversation on a vision-less
 // entry is never offered it — and a hallucinated call is answered as an

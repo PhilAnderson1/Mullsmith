@@ -291,6 +291,11 @@ type LLM struct {
 	// all vision models (default 4 MiB); which models may see at all is
 	// per entry (llm.models[].vision).
 	VisionMaxImageBytes Size `yaml:"vision_max_image_bytes"`
+	// VisionMaxImagesPerConversation bounds the active image context carried
+	// by one conversation. view_image turns persist into later requests, so
+	// the cap applies both while a tool loop grows and when history is rebuilt
+	// (default 8; deleted or expired image files no longer consume a slot).
+	VisionMaxImagesPerConversation int `yaml:"vision_max_images_per_conversation"`
 
 	// Upstream progress budgets (C8) — PROGRESS budgets, never total
 	// timeouts: a long reasoning run that keeps sending data is legitimate
@@ -397,9 +402,10 @@ type WebDownload struct {
 }
 
 type Agent struct {
-	MaxToolRounds       int               `yaml:"max_tool_rounds"`
-	MaxToolCallsPerTurn int               `yaml:"max_tool_calls_per_turn"`
-	Approval            map[string]string `yaml:"approval"` // tool → auto | confirm
+	MaxToolRounds          int               `yaml:"max_tool_rounds"`
+	MaxToolCallsPerTurn    int               `yaml:"max_tool_calls_per_turn"`
+	MaxNetworkCallsPerTurn int               `yaml:"max_network_tool_calls_per_turn"`
+	Approval               map[string]string `yaml:"approval"` // tool → auto | confirm
 }
 
 type Auth struct {
@@ -1015,6 +1021,9 @@ func (c *Config) setDefaults() {
 	if c.LLM.VisionMaxImageBytes == 0 {
 		c.LLM.VisionMaxImageBytes = 4 << 20
 	}
+	if c.LLM.VisionMaxImagesPerConversation == 0 {
+		c.LLM.VisionMaxImagesPerConversation = 8
+	}
 	// Upstream progress budgets (C8): absent takes the shipped default;
 	// the off sentinel (-1) survives to mean "no cap" for the client.
 	if c.LLM.UpstreamHeaderTimeout == 0 {
@@ -1046,6 +1055,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Tools.Agent.MaxToolCallsPerTurn == 0 {
 		c.Tools.Agent.MaxToolCallsPerTurn = 100
+	}
+	if c.Tools.Agent.MaxNetworkCallsPerTurn == 0 {
+		c.Tools.Agent.MaxNetworkCallsPerTurn = 10
 	}
 	if c.Tools.Agent.Approval == nil {
 		c.Tools.Agent.Approval = map[string]string{}
@@ -1327,6 +1339,9 @@ func (c *Config) Validate() error {
 	if c.LLM.VisionMaxImageBytes < 0 {
 		f.bad("llm.vision_max_image_bytes: must be >= 0")
 	}
+	if c.LLM.VisionMaxImagesPerConversation < 1 {
+		f.bad("llm.vision_max_images_per_conversation: must be > 0")
+	}
 
 	switch c.Tools.WebSearch.Provider {
 	case "brave":
@@ -1344,6 +1359,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Tools.Agent.MaxToolCallsPerTurn <= 0 {
 		f.bad("tools.agent.max_tool_calls_per_turn: must be > 0")
+	}
+	if c.Tools.Agent.MaxNetworkCallsPerTurn <= 0 {
+		f.bad("tools.agent.max_network_tool_calls_per_turn: must be > 0")
 	}
 	for tool, mode := range c.Tools.Agent.Approval {
 		if mode != "auto" && mode != "confirm" {

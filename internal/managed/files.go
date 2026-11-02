@@ -40,6 +40,52 @@ type File struct {
 func (s *Service) Check(ctx context.Context, root, userID string) error {
 	return s.checkQuotaAllowing(ctx, root, userID, 0, 0, 1)
 }
+
+// PreflightDownload rejects work that is already known to be impossible
+// before the response body is read. plannedBytes is zero when the server did
+// not declare a length. This is deliberately a preflight, not a reservation:
+// CommitDownload repeats every admission check after the transfer and remains
+// the authority if another write lands in between.
+func (s *Service) PreflightDownload(ctx context.Context, root, userID, rel string, plannedBytes int64) error {
+	if err := WriteTarget(rel); err != nil {
+		return safeError("web_download", err)
+	}
+	if plannedBytes < 0 {
+		plannedBytes = 0
+	}
+	if err := s.acquire(ctx); err != nil {
+		return err
+	}
+	defer s.release()
+
+	if _, err := scratch.Stat(root, userID, rel); err == nil {
+		return errors.New("web_download: destination already exists; choose another path")
+	} else if !errors.Is(err, scratch.ErrNotFound) {
+		return safeError("web_download", err)
+	}
+	parent := path.Dir(rel)
+	fi, err := scratch.Stat(root, userID, parent)
+	if err != nil {
+		return safeError("web_download destination parent", err)
+	}
+	if !fi.IsDir() {
+		return errors.New("web_download: destination parent is not a directory")
+	}
+	usage, err := s.admitAddition(ctx, root, userID, plannedBytes, 1)
+	if err != nil {
+		return err
+	}
+	// Preserve the existing fail-fast rule for an unknown or empty body:
+	// a user already at quota has no byte capacity worth opening a request.
+	if plannedBytes == 0 && s.quota > 0 && usage.Bytes >= s.quota {
+		return ErrQuota
+	}
+	if !scratch.DiskFloorAllows(root, plannedBytes) {
+		return ErrDiskLow
+	}
+	return nil
+}
+
 func (s *Service) Exceeds(ctx context.Context, root, userID string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

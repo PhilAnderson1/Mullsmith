@@ -120,6 +120,55 @@ func TestWebDownloadFailuresLeaveNoFile(t *testing.T) {
 	}
 }
 
+type countedBody struct {
+	reader io.Reader
+	reads  int
+}
+
+func (b *countedBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.reader.Read(p)
+}
+func (*countedBody) Close() error { return nil }
+
+func TestWebDownloadPreflightAvoidsPredictableTransfer(t *testing.T) {
+	t.Run("declared size exceeds remaining quota", func(t *testing.T) {
+		root := toolRoot(t)
+		body := &countedBody{reader: strings.NewReader(strings.Repeat("x", 100))}
+		client := &http.Client{Transport: egressRoundTripper(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK, ContentLength: 100, Body: body,
+				Header: make(http.Header), Request: req,
+			}, nil
+		})}
+		w := NewWebDownload(client, 1024, managed.New(99, 1000))
+		if _, err := run(t, w, root, downloadArgs(t, "https://example.com/file", "work/file.bin")); !errors.Is(err, managed.ErrQuota) {
+			t.Fatalf("error = %v, want quota refusal", err)
+		}
+		if body.reads != 0 {
+			t.Fatalf("response body read %d time(s) after predictable quota refusal", body.reads)
+		}
+		assertNoDownloadTemps(t, root)
+	})
+
+	t.Run("existing destination avoids request", func(t *testing.T) {
+		root := toolRoot(t)
+		writeDirect(t, root, "work/file.bin", "keep")
+		requests := 0
+		client := &http.Client{Transport: egressRoundTripper(func(req *http.Request) (*http.Response, error) {
+			requests++
+			return nil, errors.New("request should not run")
+		})}
+		w := NewWebDownload(client, 1024, managed.New(4096, 1000))
+		if _, err := run(t, w, root, downloadArgs(t, "https://example.com/file", "work/file.bin")); err == nil || !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("error = %v, want existing-destination refusal", err)
+		}
+		if requests != 0 {
+			t.Fatalf("made %d request(s) for an existing destination", requests)
+		}
+	})
+}
+
 func TestWebDownloadExactLimit(t *testing.T) {
 	root := toolRoot(t)
 	data := strings.Repeat("x", 1024)

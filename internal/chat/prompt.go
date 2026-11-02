@@ -81,6 +81,10 @@ func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool
 	}
 	// Pass 2: emit, pairing both directions on `replayed`.
 	out := make([]llm.ChatMessage, 0, len(hist))
+	imagesLeft := 0
+	if visionOn {
+		imagesLeft = s.visionMaxImages()
+	}
 	for _, m := range hist {
 		switch m.Role {
 		case "tool":
@@ -106,11 +110,12 @@ func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool
 				// Uploads ride as manifest lines; only synthetic rows
 				// (view_image turns, §7.2) carry their bytes, decided by
 				// the DB flag, not by sniffing the note text.
-				embed := visionOn && m.Synthetic
+				embed := visionOn && m.Synthetic && imagesLeft > 0
 				var manifest string
 				manifest, imgs = attachmentManifest(s.cfg.Scratchpad.Root, userID,
 					m.Attachments, manifestOpts{visionOn: visionOn, embed: embed,
-						maxBytes: s.visionMaxBytes()})
+						maxBytes: s.visionMaxBytes(), maxImages: imagesLeft})
+				imagesLeft -= len(imgs)
 				content += manifest
 			}
 			out = append(out, llm.ChatMessage{Role: m.Role, Content: content, Images: imgs})
@@ -149,9 +154,10 @@ func jsonQuote(s string) string {
 func int64ptr(v int64) *int64 { return &v }
 
 type manifestOpts struct {
-	visionOn bool
-	embed    bool
-	maxBytes int64
+	visionOn  bool
+	embed     bool
+	maxBytes  int64
+	maxImages int
 }
 
 // attachmentManifest tells the model where a turn's attachments live so
@@ -185,7 +191,7 @@ func attachmentManifest(root, userID string, atts []store.Attachment,
 			continue
 		}
 		note := ""
-		if o.embed {
+		if o.embed && len(urls) < o.maxImages {
 			if url, ok := imageDataURL(root, userID, a.Path, o.maxBytes); ok {
 				urls = append(urls, url)
 				note = " inline=yes"

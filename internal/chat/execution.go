@@ -325,6 +325,15 @@ func (s *Service) awaitApproval(ctx context.Context, g *Generation, conn sink,
 const ViewTurnMarker = "[view_image attached "
 
 func (s *Service) visionMaxBytes() int64 { return int64(s.cfg.LLM.VisionMaxImageBytes) }
+func (s *Service) visionMaxImages() int  { return s.cfg.LLM.VisionMaxImagesPerConversation }
+
+func requestImageCount(msgs []llm.ChatMessage) int {
+	var n int
+	for _, m := range msgs {
+		n += len(m.Images)
+	}
+	return n
+}
 
 // attachImageView realises a view_image call: tool answers are text, so
 // the picture instead joins the conversation as a synthetic user turn —
@@ -343,7 +352,8 @@ func (s *Service) visionMaxBytes() int64 { return int64(s.cfg.LLM.VisionMaxImage
 func (s *Service) attachImageView(userID, convID, rel, genID string) (llm.ChatMessage, bool, error) {
 	att := store.Attachment{Path: rel}
 	manifest, urls := attachmentManifest(s.cfg.Scratchpad.Root, userID,
-		[]store.Attachment{att}, manifestOpts{visionOn: true, embed: true, maxBytes: s.visionMaxBytes()})
+		[]store.Attachment{att}, manifestOpts{visionOn: true, embed: true,
+			maxBytes: s.visionMaxBytes(), maxImages: 1})
 	if len(urls) == 0 {
 		s.logger.Warn("view_image embedded nothing (file gone or unreadable?)",
 			"path", rel, "user", userID)

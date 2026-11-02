@@ -66,10 +66,10 @@ func (w *WebDownload) Execute(ctx context.Context, inv Invocation) (Result, erro
 	}
 	segs, _ := scratch.ParseRel(rel) // already validated by WriteTarget
 	rel = strings.Join(segs, "/")
-	if !scratch.DiskFloorOK(root) {
-		return Result{}, managed.ErrDiskLow
-	}
-	if err := w.files.Check(ctx, root, inv.UserID); err != nil {
+	// Reject a destination conflict, missing parent, full scratchpad or low
+	// disk before making even the outbound request. This is not a reservation;
+	// final placement repeats every check after the transfer.
+	if err := w.files.PreflightDownload(ctx, root, inv.UserID, rel, 0); err != nil {
 		return Result{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSpace(args.URL), nil)
@@ -95,6 +95,14 @@ func (w *WebDownload) Execute(ctx context.Context, inv Invocation) (Result, erro
 	}
 	if resp.ContentLength > w.maxBytes {
 		return Result{}, errors.New("web_download: response exceeds the download size limit")
+	}
+	// A declared size lets the shared quota helper reject a predictably
+	// impossible transfer before reading its body. Unknown/chunked responses
+	// retain the bounded stream-and-final-check path below.
+	if resp.ContentLength >= 0 {
+		if err := w.files.PreflightDownload(ctx, root, inv.UserID, rel, resp.ContentLength); err != nil {
+			return Result{}, err
+		}
 	}
 	// Stage outside the user's tree on the same filesystem. Failed downloads
 	// never become user files; quota checking and final placement share the

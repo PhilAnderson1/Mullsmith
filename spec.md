@@ -189,6 +189,7 @@ llm:
   default_temperature: 0.7
   max_tokens_response: 16384             # generous: model emits reasoning tokens too (§6.2)
   vision_max_image_bytes: 4MiB           # per-picture cap for view_image (all vision models)
+  vision_max_images_per_conversation: 8  # active pictures retained in one chat's model context
   upstream_header_timeout: "90s"         # wait for response headers; -1 = no cap (§6.2)
   upstream_stall_timeout: "120s"         # max silence between bytes mid-stream; -1 = no cap (§6.2)
   # Thinking control (thinking-control-specification.md, §6.3). All three
@@ -221,6 +222,7 @@ tools:
   agent:
     max_tool_rounds: 20           # cap on tool-call loop per user turn
     max_tool_calls_per_turn: 100  # total proposed calls across every round of that turn
+    max_network_tool_calls_per_turn: 10 # web_search/fetch/download subset of that total
     approval:
       web_search: auto            # auto | confirm
       web_fetch: auto
@@ -546,7 +548,8 @@ everything else behind auth.
      the reserved interruption fallback with that result; emit `tool_call` end event;
    - append the finalized result to the in-memory prompt and re-invoke the model;
    - execute tools for at most `max_tool_rounds` rounds per reply (default 20; a round may contain multiple calls) and at most `max_tool_calls_per_turn` proposed calls in total (default 100, reset for each user message); unknown, malformed, denied and otherwise refused proposals count too;
-   - over-limit calls are not executed or sent for approval. Persist and return `{"error":"tool call limit reached"}` as their normal tool results, keeping tool definitions available;
+   - within that total, permit at most `max_network_tool_calls_per_turn` calls named `web_search`, `web_fetch` or `web_download` (default 10, also reset per user message); malformed, denied and refused proposals with those names count, while file tools consume only the general allowance;
+   - over-limit calls are not executed or sent for approval. Persist and return `{"error":"tool call limit reached"}` or `{"error":"network tool call limit reached"}` as their normal tool results, keeping tool definitions available;
    - let the model respond to those errors without prescribing a recovery action. If it requests tools again, persist and refuse those calls, then stop with a durable limit-reached note.
 6. Persist final assistant message; bump `conversations.updated_at`; emit `done`
    (with token usage: the round's `total_tokens`, `completion_tokens` — both estimated
@@ -712,14 +715,14 @@ output is data, never instructions; approval gates bound the blast radius).
 |---|---|---|
 | `web_search` | `query` | Brave Search API → N results `{title, url, snippet}` as JSON. |
 | `web_fetch` | `url` | GET, http/https only, ≤ 3 redirects, ≤ `max_bytes`; strip HTML→text; SSRF blocklist (§9.6). |
-| `web_download` | `url, path` | GET a public HTTP(S) URL through the same guarded client as `web_fetch`, saving original bytes to a new file under `work/` or `artifacts/` (parent must exist). Requires HTTP 200; size, read, cancellation or quota failures discard the temporary file. No overwrites or partial files; returns path, bytes, content type and final URL. Independently configurable via `tools.web_download.enabled/max_bytes/timeout`; defaults: disabled, 1 GiB, 60 s, auto approval. Does not require code-execution network access. Use `files_share` to deliver the file to the user. |
+| `web_download` | `url, path` | GET a public HTTP(S) URL through the same guarded client as `web_fetch`, saving original bytes to a new file under `work/` or `artifacts/` (parent must exist). Destination conflicts and invalid parents are refused before the request; a declared `Content-Length` is preflighted against user quota, entry capacity and disk-floor headroom before its body is read. Unknown/chunked sizes remain bounded by `max_bytes` and receive the same authoritative checks at commit. Requires HTTP 200; size, read, cancellation or quota failures discard the temporary file. No overwrites or partial files; returns path, bytes, content type and final URL. Independently configurable via `tools.web_download.enabled/max_bytes/timeout`; defaults: disabled, 1 GiB, 60 s, auto approval. Does not require code-execution network access. Use `files_share` to deliver the file to the user. |
 | `fs_list` | `path?` | List scratchpad dir (relative paths only; default root). |
 | `fs_read` | `path` | Read text file (≤ 256 KiB) from user's scratchpad. |
 | `fs_write` | `path, content` | Write text file inside scratchpad; creates parent dirs; quota-checked. |
 | `fs_delete` | `path` | Delete inside scratchpad (no `..`, no symlinks out). |
 | `code_run` | `runtime, script, files?` | Execute in user's `work/` dir via allowlisted runtime (§9.9). Returns exit code + stdout/stderr (truncated). Files the script writes stay in the scratchpad. |
 | `files_share` | `path, note?` | **Copies** a scratchpad file into `artifacts/` → appears as a download card in chat (this is how "the model gives you a file" works). Snapshot semantics: the card points at the copy, re-sharing an edited draft lands as `name (1).ext` and the first card keeps its bytes. Sharing a file already in `artifacts/` delivers it in place. `uploads/` cannot be shared — `artifacts/` ages out on the TTL sweep and user originals must not (audit finding 8); uploads are already downloadable from the Files page. |
-| `view_image` | `path` | Registered when any entry spells `vision: true`, and offered per request only to models whose own entry does (§2.2 — a hallucinated call from a vision-less model is answered as an error, never executed): lets the model **see** a picture already on the server — anywhere in the user's sandbox (`uploads/`, `work/`, `artifacts/`; tool answers are text, so nothing can carry an image back). This is the ONLY path picture bytes take to the endpoint (§6.1 step 1: uploads ride as manifest pointers). The tool validates (sniffed png/jpeg/webp, ≤ `vision_max_image_bytes`) and the chat loop then appends a synthetic **user** turn carrying the inline image — persisted with `synthetic = 1` (the API projects `"synthetic": true`; the UI renders no bubble for such rows, they exist for the model) and re-embedded by flag on every later replay, and only under a model that can see it: replay to a vision-less model is manifest text, whatever model asked — switch back and the picture returns. Views of `work/`/`artifacts/` pictures age with the TTL sweep, like the files themselves: the chip dies, replay degrades to the manifest line. Auto-approved by default: seeing the user's own bytes is no more exposure than the retired automatic embedding ever was. |
+| `view_image` | `path` | Registered when any entry spells `vision: true`, and offered per request only to models whose own entry does (§2.2 — a hallucinated call from a vision-less model is answered as an error, never executed): lets the model **see** a picture already on the server — anywhere in the user's sandbox (`uploads/`, `work/`, `artifacts/`; tool answers are text, so nothing can carry an image back). This is the ONLY path picture bytes take to the endpoint (§6.1 step 1: uploads ride as manifest pointers). The tool validates (sniffed png/jpeg/webp, ≤ `vision_max_image_bytes`) and the chat loop then appends a synthetic **user** turn carrying the inline image — persisted with `synthetic = 1` (the API projects `"synthetic": true`; the UI renders no bubble for such rows, they exist for the model) and re-embedded by flag on every later replay, and only under a model that can see it. At most `vision_max_images_per_conversation` active pictures are retained in one chat's model context; once its persistent image turns reach that count, further `view_image` calls are refused and the user must start a new chat to view another. Deleted or expired pictures cease to consume slots. Replay to a vision-less model is manifest text, whatever model asked — switch back and the pictures return subject to the same conversation cap. Views of `work/`/`artifacts/` pictures age with the TTL sweep, like the files themselves: the chip dies, replay degrades to the manifest line. Auto-approved by default: seeing the user's own bytes is no more exposure than the retired automatic embedding ever was. |
 
 ### 7.3 Agentic file workflow (typical session)
 

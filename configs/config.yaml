@@ -94,6 +94,7 @@ llm:
   max_tokens_response: 4096
   show_reasoning: false
   vision_max_image_bytes: 4MiB    # per-picture cap for view_image (all vision models)
+  vision_max_images_per_conversation: 8 # active pictures retained in one chat's model context
   # Upstream PROGRESS budgets — silence caps, never total stream timeouts.
   # A long reasoning run that keeps sending data is never cut short.
   upstream_header_timeout: "90s"  # wait for the endpoint's response headers
@@ -141,6 +142,7 @@ tools:
   agent:
     max_tool_rounds: 20             # model continuations per reply
     max_tool_calls_per_turn: 100    # all proposed calls across those rounds; excess calls are refused
+    max_network_tool_calls_per_turn: 10 # web_search/fetch/download calls across one submitted turn
     approval:
       web_search: auto
       web_fetch: auto
