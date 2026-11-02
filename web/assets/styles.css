@@ -690,6 +690,37 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   .model-picker { max-width: none; flex-shrink: 1; }
 }
 
+/* ---------- tablet ≥740: compact conversation title ---------- */
+
+@media (min-width: 740px) {
+  .topbar-title {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin: 0;
+    color: var(--fg);
+    font-size: 1.1em;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+}
+
+/* On tablets the first grid track grows from the burger's touch target to
+   the conversation inset. The title therefore follows whichever edge is
+   farther right without JavaScript or another breakpoint. */
+@media (min-width: 740px) and (max-width: 1023px) {
+  .topbar {
+    display: grid;
+    grid-template-columns:
+      max(var(--tap), calc((100% - var(--thread-max)) / 2 - 0.95rem))
+      minmax(0, 1fr) auto auto auto;
+  }
+  .topbar-title { text-align: left; }
+}
+
 /* ---------- desktop ≥1024: persistent sidebar grid ---------- */
 
 @media (min-width: 1024px) {
@@ -709,19 +740,6 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
        on the base-sized bar: resolving the ch-based thread width on the
        larger title itself would shift the title to the left. */
     padding-inline-start: max(1.75rem, calc((100% - var(--thread-max)) / 2 - 0.5rem));
-  }
-  .topbar-title {
-    display: block;
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    margin: 0;
-    color: var(--fg);
-    font-size: 1.1em;
-    font-weight: 600;
-    line-height: 1.25;
   }
   #btn-menu { display: none; }
   #sidebar {

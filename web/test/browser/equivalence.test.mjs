@@ -598,7 +598,7 @@ test("older-chat pagination follows the list without covering rows or skipping l
       });
       assert.equal(response.status(), 201);
     }
-    for (const width of [1280, 390]) {
+    for (const width of [1280, 900, 744, 390]) {
       await page.setViewportSize({ width, height: 800 });
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.waitForFunction(() => !document.querySelector("#composer-input").disabled);
@@ -637,8 +637,28 @@ test("older-chat pagination follows the list without covering rows or skipping l
         assert.ok(shell.chatHeight > shell.viewportHeight * 0.6, "long history collapsed the chat area");
       }
       assert.equal(await page.locator("#topbar-title").count(), 1);
-      assert.equal(await page.locator("#topbar-title").isVisible(), width >= 1024,
-        "conversation title visibility should follow the persistent-sidebar breakpoint");
+      assert.equal(await page.locator("#topbar-title").isVisible(), width >= 740,
+        "conversation title should be visible at tablet and desktop widths");
+      if (width === 744 || width === 900) {
+        const tabletHeader = await page.evaluate(() => {
+          const topbar = document.querySelector(".topbar");
+          const title = document.querySelector("#topbar-title").getBoundingClientRect();
+          const menu = document.querySelector("#btn-menu").getBoundingClientRect();
+          const probe = document.createElement("div");
+          probe.className = "msg";
+          document.querySelector(".thread").append(probe);
+          const conversationLeft = probe.getBoundingClientRect().left;
+          probe.remove();
+          const burgerClearance = menu.right + parseFloat(getComputedStyle(topbar).columnGap);
+          return {
+            centreOffset: (title.top + title.height / 2) - (menu.top + menu.height / 2),
+            leftOffset: title.left - Math.max(burgerClearance, conversationLeft),
+          };
+        });
+        assert.ok(Math.abs(tabletHeader.centreOffset) < 1, "tablet title should share the controls row");
+        assert.ok(Math.abs(tabletHeader.leftOffset) < 1,
+          "tablet title should follow the greater of the burger and conversation edges");
+      }
       assert.equal(before.initiallyBelow, true, "pagination floated over the visible list");
       assert.ok(before.lastBottom <= before.buttonTop, "pagination covered the oldest visible chat");
       assert.ok(before.buttonHeight >= 44, "pagination lost its touch target");
