@@ -1099,6 +1099,8 @@ details.tool-card summary::-webkit-details-marker { display: none; }
 }
 body.files-open .thread,
 body.files-open .composer-stack { display: none; }
+body.files-open .topbar-title,
+body.settings-open .topbar-title { display: none; }
 .files-head { display: flex; align-items: center; justify-content: space-between; }
 .files-head h2 { margin: 0; font-size: 1.25rem; }
 .quota-wrap { display: flex; align-items: center; gap: 0.7rem; }
@@ -1231,8 +1233,8 @@ body.settings-open .composer-stack { display: none; }
   opacity: 0.85;
 }
 .danger-text { color: var(--danger); }
-@media (max-width: 480px) {
-  /* Phones: stack the row — name/meta across the full width, buttons
+@media (max-width: 640px) {
+  /* Compact screens: stack the row — name/meta across the full width, buttons
      on their own line sharing it evenly. flex-wrap alone never fired,
      because .f-main's min-width:0 lets the info squash to nothing
      instead of forcing the buttons onto a second line. */

@@ -148,7 +148,11 @@ test("files load more preserves tabs and supports retries after a failed page", 
     writeFileSync(newest, "newest");
     const stamp = new Date(Date.now() + 60_000);
     utimesSync(newest, stamp, stamp);
+    assert.equal(await page.locator("#topbar-title").isVisible(), true);
     await page.click("#btn-files");
+    await page.waitForSelector("#files-panel:not([hidden])");
+    assert.equal(await page.locator("#topbar-title").isVisible(), false,
+      "the hidden conversation must not label the Files view");
     await page.click('.files-filter[data-kind="work"]');
     await page.waitForFunction(() => document.querySelectorAll("#files-list .file-row").length === 50 && !document.querySelector("#btn-files-more").hidden);
     assert.equal(await page.locator("#files-list .f-name").first().textContent(), "z-pagination-newest.txt");
@@ -171,6 +175,10 @@ test("files load more preserves tabs and supports retries after a failed page", 
     assert.equal(await page.locator("#files-list .f-name").filter({ hasText: "pagination-" }).count(), 0);
     await page.click('.files-filter[data-kind="work"]');
     await page.waitForFunction(() => document.querySelectorAll("#files-list .file-row").length === 50 && !document.querySelector("#btn-files-more").hidden);
+    await page.click("#btn-files-close");
+    await page.waitForSelector("#files-panel[hidden]", { state: "attached" });
+    assert.equal(await page.locator("#topbar-title").isVisible(), true,
+      "closing Files should restore the conversation title");
   } finally { await ctx.close(); }
 });
 
@@ -206,12 +214,18 @@ test("account deletion cannot proceed without confirmation", async () => {
   try {
     await page.click("#btn-settings");
     await page.waitForSelector("#settings-panel:not([hidden])");
+    assert.equal(await page.locator("#topbar-title").isVisible(), false,
+      "the hidden conversation must not label the Settings view");
     await page.click("#btn-delete-account");
     await page.waitForSelector("#confirm-dialog[open]");
     assert.match(await page.locator("#confirm-text").textContent(), /Delete your account permanently/);
     await page.click('#confirm-dialog button[value="cancel"]');
     assert.equal((await page.request.get(`${app.base}/api/v1/auth/me`)).status(), 200);
     assert.equal(await page.locator("#settings-panel").isVisible(), true);
+    await page.click("#btn-settings-close");
+    await page.waitForSelector("#settings-panel[hidden]", { state: "attached" });
+    assert.equal(await page.locator("#topbar-title").isVisible(), true,
+      "closing Settings should restore the conversation title");
   } finally { await ctx.close(); }
 });
 
