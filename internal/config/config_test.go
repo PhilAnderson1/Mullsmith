@@ -88,6 +88,12 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if got := cfg.Auth.SignupsPerHour(); got != 5 {
 		t.Errorf("max_signups_per_hour default = %d, want 5", got)
 	}
+	if cfg.Tools.Agent.MaxToolRounds != 20 {
+		t.Errorf("max_tool_rounds default = %d, want 20", cfg.Tools.Agent.MaxToolRounds)
+	}
+	if cfg.Tools.WebDownload.Enabled || cfg.Tools.WebDownload.MaxBytes != 25<<20 || cfg.Tools.WebDownload.Timeout != Duration(time.Minute) {
+		t.Errorf("web_download defaults = %+v", cfg.Tools.WebDownload)
+	}
 	if cfg.Tools.Agent.Approval["code_run"] != "confirm" {
 		t.Errorf("code_run approval default = %q, want confirm", cfg.Tools.Agent.Approval["code_run"])
 	}
@@ -387,6 +393,7 @@ func TestShippedTemplateMirrorsCodeDefaults(t *testing.T) {
 		"auth.remember_login":                        "bool zero-collapse — template opts in; code default keeps the checkbox off",
 		"tools.web_search.api_key":                   "secret via ${ENV} expansion — environment-dependent at test time",
 		"tools.web_fetch.enabled":                    "bool zero-collapse — template opts into guarded egress; code default is off",
+		"tools.web_download.enabled":                 "bool zero-collapse — template opts into guarded downloads; code default is off",
 		"email.smtp.password":                        "secret via ${ENV} expansion — environment-dependent at test time",
 		"email.smtp.from":                            "sender identity is operator- and domain-specific; the template shows the shape",
 	}
@@ -578,6 +585,21 @@ llm: {endpoint: "http://x/v1", models: [{id: m, context_size: 4096}], max_tokens
 			"bad approval",
 			minimalYAML + "tools:\n  agent:\n    approval:\n      web_search: maybe\n",
 			"approval",
+		},
+		{
+			"negative download size",
+			minimalYAML + "tools:\n  web_download:\n    max_bytes: -1\n",
+			"invalid size",
+		},
+		{
+			"overflowing download size",
+			minimalYAML + "tools:\n  web_download:\n    max_bytes: 9223372036854775807\n",
+			"tools.web_download.max_bytes",
+		},
+		{
+			"negative download timeout",
+			minimalYAML + "tools:\n  web_download:\n    timeout: -1s\n",
+			"tools.web_download.timeout",
 		},
 		{
 			"registration enum",

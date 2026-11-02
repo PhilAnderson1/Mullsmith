@@ -244,7 +244,8 @@ func TestChatToolLoopEndToEnd(t *testing.T) {
 	if strings.Join(es.events, ",") != strings.Join(want, ",") {
 		t.Fatalf("events = %v, want %v", es.events, want)
 	}
-	if es.data["tool_start"]["tool"] != "web_search" || es.data["tool_start"]["call_id"] != "call_9" {
+	canonicalID := es.data["tool_start"]["call_id"].(string)
+	if es.data["tool_start"]["tool"] != "web_search" || canonicalID == "" || canonicalID == "call_9" {
 		t.Errorf("tool_start = %v", es.data["tool_start"])
 	}
 	if es.data["tool_end"]["status"] != "ok" || es.data["tool_end"]["summary"] != "Searched — 3 result(s)" {
@@ -263,7 +264,7 @@ func TestChatToolLoopEndToEnd(t *testing.T) {
 		t.Fatalf("upstream rounds = %d, want 2", script.roundCount())
 	}
 	toolMsgs := payloadRole(t, script.roundBody(1), "tool")
-	if len(toolMsgs) != 1 || toolMsgs[0]["tool_call_id"] != "call_9" ||
+	if len(toolMsgs) != 1 || toolMsgs[0]["tool_call_id"] != canonicalID ||
 		toolMsgs[0]["content"] != `{"results":[]}` {
 		t.Errorf("round-2 tool message = %+v", toolMsgs)
 	}
@@ -292,13 +293,13 @@ func TestChatToolLoopEndToEnd(t *testing.T) {
 		hist[2].Role != "tool" || hist[3].Role != "assistant" {
 		t.Fatalf("roles = %s/%s/%s/%s", hist[0].Role, hist[1].Role, hist[2].Role, hist[3].Role)
 	}
-	if len(hist[1].Calls) != 1 || hist[1].Calls[0].LLMCallID != "call_9" || hist[1].Calls[0].Status != "ok" {
+	if len(hist[1].Calls) != 1 || hist[1].Calls[0].LLMCallID != canonicalID || hist[1].Calls[0].Status != "ok" {
 		t.Errorf("audit on assistant row: %+v", hist[1].Calls)
 	}
 	if hist[1].Calls[0].Result != `{"results":[]}` {
 		t.Errorf("audit result = %q", hist[1].Calls[0].Result)
 	}
-	if hist[2].ToolCallID != "call_9" || hist[2].Content != `{"results":[]}` {
+	if hist[2].ToolCallID != canonicalID || hist[2].Content != `{"results":[]}` {
 		t.Errorf("tool row = %+v", hist[2])
 	}
 	if hist[3].Content != "Kyoto is lovely." {
@@ -478,36 +479,129 @@ func TestApprovalUnknownOrForeignIs404(t *testing.T) {
 // --- round cap, unknown tools, truncation -------------------------------------------------
 
 func TestToolRoundCap(t *testing.T) {
-	// The fake insists on calling tools every round; once the cap is
-	// reached the server must advertise no tools and must not execute the
-	// past-cap proposal.
-	search := &fakeTool{name: "web_search", content: `{}`, summary: "s"}
-	reg := registryFor(map[string]string{"web_search": "auto"}, search)
-	cfg := toolChatCfg(t, 2, map[string]string{"web_search": "auto"})
-	a, script := newToolServer(t, cfg, reg, [][]string{
-		{toolCallChunk(0, "c1", "web_search", `{}`), finishChunk("tool_calls")},
-		{toolCallChunk(0, "c2", "web_search", `{}`), finishChunk("tool_calls")},
-		{toolCallChunk(0, "c3", "web_search", `{}`), finishChunk("tool_calls")}, // past cap: must not run
-	})
-	c := createConv(t, a, map[string]any{"title": "Cap"})
-	resp := sendChat(t, a, c.ID, "go")
-	defer resp.Body.Close()
-	es := drainSSE(t, newSSEReader(t, resp))
-
-	if es.done["status"] != "complete" {
-		t.Fatalf("done = %v", es.done)
-	}
-	if script.roundCount() != 3 {
-		t.Fatalf("rounds = %d, want 3 (2 tool rounds + forced final)", script.roundCount())
-	}
-	if _, ok := script.roundBody(2)["tools"]; ok {
-		t.Error("past-cap round still advertises tools")
-	}
-	if _, ok := script.roundBody(0)["tools"]; !ok {
-		t.Error("first round must advertise tools")
-	}
-	if search.callCount() != 2 {
-		t.Errorf("tool ran %d times, want 2 (c1+c2, not c3)", search.callCount())
+	for _, repeats := range []bool{false, true} {
+		name := "model responds to limit error"
+		if repeats {
+			name = "repeated request stops"
+		}
+		t.Run(name, func(t *testing.T) {
+			search := &fakeTool{name: "web_search", content: `{}`, summary: "s"}
+			dangerous := &fakeTool{name: "dangerous", content: `{}`}
+			policies := map[string]string{"web_search": "auto", "dangerous": "confirm"}
+			cfg := toolChatCfg(t, 2, policies)
+			// Three successful calls in two rounds: this is a ROUND budget.
+			replies := [][]string{
+				{toolCallChunk(0, "c1a", "web_search", `{}`), toolCallChunk(1, "c1b", "web_search", `{}`), finishChunk("tool_calls")},
+				{toolCallChunk(0, "c2", "web_search", `{}`), finishChunk("tool_calls")},
+				{toolCallChunk(0, "c3", "web_search", `{}`), toolCallChunk(1, "c4", "dangerous", `{}`), finishChunk("tool_calls")},
+				{answerChunk("Which source should I prioritize next?"), finishChunk("stop")},
+			}
+			if repeats {
+				replies[3] = []string{toolCallChunk(0, "c5", "dangerous", `{}`), finishChunk("tool_calls")}
+			}
+			a, script := newToolServer(t, cfg, registryFor(policies, search, dangerous), replies)
+			c := createConv(t, a, map[string]any{"title": "Cap"})
+			resp := sendChat(t, a, c.ID, "go")
+			defer resp.Body.Close()
+			rd := newSSEReader(t, resp)
+			var done map[string]any
+			var failure string
+			var lastToolCall string
+			for done == nil {
+				event, data := rd.next()
+				switch event {
+				case "tool_end":
+					lastToolCall = data["call_id"].(string)
+				case "awaiting_approval":
+					t.Fatal("an over-limit call requested approval")
+				case "error":
+					failure = stringOf(data["code"])
+				case "done":
+					done = data
+				}
+			}
+			wantStatus := "complete"
+			if repeats {
+				wantStatus = "error"
+				if failure != "tool_call_limit" {
+					t.Fatalf("failure code=%q", failure)
+				}
+			}
+			if done["status"] != wantStatus {
+				t.Fatalf("done=%v", done)
+			}
+			if script.roundCount() != 4 {
+				t.Fatalf("model rounds=%d, want 4", script.roundCount())
+			}
+			if search.callCount() != 3 || dangerous.callCount() != 0 {
+				t.Fatalf("executions: search=%d dangerous=%d", search.callCount(), dangerous.callCount())
+			}
+			for i := 0; i < 4; i++ {
+				if _, ok := script.roundBody(i)["tools"]; !ok {
+					t.Fatalf("round %d lost its tool definitions", i)
+				}
+			}
+			// The model sees an ordinary, paired tool error for every refused call.
+			messages := script.roundBody(3)["messages"].([]any)
+			proposals := payloadRole(t, script.roundBody(3), "assistant")
+			calls := proposals[len(proposals)-1]["tool_calls"].([]any)
+			for i := range calls {
+				id := calls[i].(map[string]any)["id"]
+				message := messages[len(messages)-2+i].(map[string]any)
+				if message["role"] != "tool" || message["tool_call_id"] != id || message["content"] != `{"error":"tool call limit reached"}` {
+					t.Fatalf("bad refusal feedback=%v", message)
+				}
+			}
+			history, err := a.db.ContextHistory(context.Background(), c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := map[string]bool{}
+			for _, call := range calls {
+				refused[call.(map[string]any)["id"].(string)] = false
+			}
+			if repeats {
+				refused[lastToolCall] = false
+			}
+			results := map[string]bool{}
+			for _, message := range history {
+				if _, ok := refused[message.ToolCallID]; ok {
+					if message.Content != `{"error":"tool call limit reached"}` {
+						t.Fatalf("stored result=%q", message.Content)
+					}
+					results[message.ToolCallID] = true
+				}
+				for _, call := range message.Calls {
+					if _, ok := refused[call.LLMCallID]; ok {
+						if call.Status != "error" || call.Result != `{"error":"tool call limit reached"}` || !strings.Contains(call.Display, "tool call limit reached") {
+							t.Fatalf("refusal audit=%+v", call)
+						}
+						refused[call.LLMCallID] = true
+					}
+				}
+			}
+			for id, found := range refused {
+				if !found || !results[id] {
+					t.Fatalf("refusal %s was not durably paired", id)
+				}
+			}
+			var page struct {
+				Items []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+					Note    string `json:"status_note"`
+				} `json:"items"`
+			}
+			getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
+			last := page.Items[len(page.Items)-1]
+			if repeats {
+				if last.Note != "Tool call limit reached." {
+					t.Fatalf("missing durable limit note: %+v", last)
+				}
+			} else if last.Content != "Which source should I prioritize next?" {
+				t.Fatalf("model did not choose its own response: %+v", last)
+			}
+		})
 	}
 }
 

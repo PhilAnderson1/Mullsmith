@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS messages (
   completion_tokens INTEGER,
   duration_ms       INTEGER, -- model round only, excluding tool execution
   synthetic         INTEGER NOT NULL DEFAULT 0, -- server-generated image-view turn
-  generation_id     TEXT NOT NULL DEFAULT '', -- groups assistant rounds for regeneration
+  generation_id     TEXT NOT NULL DEFAULT '', -- owns assistant rounds, tool results and synthetic turns
   status_note       TEXT NOT NULL DEFAULT '' -- durable terminal explanation
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);

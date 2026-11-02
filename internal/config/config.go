@@ -364,9 +364,10 @@ func (l *LLM) ThinkingProfileFor(model string) string {
 }
 
 type Tools struct {
-	WebSearch WebSearch `yaml:"web_search"`
-	WebFetch  WebFetch  `yaml:"web_fetch"`
-	Agent     Agent     `yaml:"agent"`
+	WebSearch   WebSearch   `yaml:"web_search"`
+	WebFetch    WebFetch    `yaml:"web_fetch"`
+	WebDownload WebDownload `yaml:"web_download"`
+	Agent       Agent       `yaml:"agent"`
 }
 
 type WebSearch struct {
@@ -377,6 +378,12 @@ type WebSearch struct {
 }
 
 type WebFetch struct {
+	Enabled  bool     `yaml:"enabled"`
+	MaxBytes Size     `yaml:"max_bytes"`
+	Timeout  Duration `yaml:"timeout"`
+}
+
+type WebDownload struct {
 	Enabled  bool     `yaml:"enabled"`
 	MaxBytes Size     `yaml:"max_bytes"`
 	Timeout  Duration `yaml:"timeout"`
@@ -987,14 +994,20 @@ func (c *Config) setDefaults() {
 	if c.Tools.WebFetch.Timeout == 0 {
 		c.Tools.WebFetch.Timeout = Duration(15 * time.Second)
 	}
+	if c.Tools.WebDownload.MaxBytes == 0 {
+		c.Tools.WebDownload.MaxBytes = 25 << 20
+	}
+	if c.Tools.WebDownload.Timeout == 0 {
+		c.Tools.WebDownload.Timeout = Duration(60 * time.Second)
+	}
 	if c.Tools.Agent.MaxToolRounds == 0 {
-		c.Tools.Agent.MaxToolRounds = 8
+		c.Tools.Agent.MaxToolRounds = 20
 	}
 	if c.Tools.Agent.Approval == nil {
 		c.Tools.Agent.Approval = map[string]string{}
 	}
 	for tool, def := range map[string]string{
-		"web_search": "auto", "web_fetch": "auto", "fs_list": "auto", "fs_read": "auto",
+		"web_search": "auto", "web_fetch": "auto", "web_download": "auto", "fs_list": "auto", "fs_read": "auto",
 		"fs_write": "auto", "files_share": "auto", "code_run": "confirm",
 	} {
 		if _, ok := c.Tools.Agent.Approval[tool]; !ok {
@@ -1087,6 +1100,7 @@ func (c *Config) Validate() error {
 		{"scratchpad.work_ttl", c.Scratchpad.WorkTTL},
 		{"scratchpad.code_execution.timeout", c.Scratchpad.CodeExec.Timeout},
 		{"tools.web_fetch.timeout", c.Tools.WebFetch.Timeout},
+		{"tools.web_download.timeout", c.Tools.WebDownload.Timeout},
 	} {
 		if k.v < 0 {
 			f.bad("%s: must be >= 0 (durations take no off-sentinel)", k.name)
@@ -1274,6 +1288,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Tools.WebFetch.MaxBytes <= 0 {
 		f.bad("tools.web_fetch.max_bytes: must be > 0")
+	}
+	if c.Tools.WebDownload.MaxBytes <= 0 || c.Tools.WebDownload.MaxBytes == Size(1<<63-1) {
+		f.bad("tools.web_download.max_bytes: must be > 0 and less than 9223372036854775807")
 	}
 	for tool, mode := range c.Tools.Agent.Approval {
 		if mode != "auto" && mode != "confirm" {

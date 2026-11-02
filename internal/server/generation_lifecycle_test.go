@@ -12,7 +12,7 @@ import (
 	"mullsmith/internal/store"
 )
 
-// C6: deletion, cancellation and final persistence are one lifecycle. A
+// Deletion, cancellation and final persistence are one lifecycle. A
 // live generation must stop when its conversation or account is deleted,
 // required UPDATEs must distinguish "saved" from "row gone", and terminal
 // events must only ever name rows that exist.
@@ -26,7 +26,7 @@ func newBlockingChat(t *testing.T, release <-chan struct{}, arrived chan<- struc
 		arrived <- struct{}{}
 		select {
 		case <-release:
-		case <-r.Context().Done(): // the model call was cancelled (C6)
+		case <-r.Context().Done(): // the model call was cancelled
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -42,7 +42,7 @@ func newBlockingChat(t *testing.T, release <-chan struct{}, arrived chan<- struc
 	t.Cleanup(ts.Close)
 	a := newAuthTestOn(t, ts, db)
 	a.invite("gk-code-1")
-	if resp := a.register("c6@b.io", "uncommon-password-9", false); resp.StatusCode != 201 {
+	if resp := a.register("generation-lifecycle@b.io", "uncommon-password-9", false); resp.StatusCode != 201 {
 		t.Fatalf("register: %d %s", resp.StatusCode, dumpBody(resp))
 	}
 	return a, s
@@ -66,7 +66,7 @@ func TestConversationDeleteCancelsLiveGeneration(t *testing.T) {
 	release := make(chan struct{})
 	arrived := make(chan struct{}, 2)
 	a, s := newBlockingChat(t, release, arrived)
-	c := createConv(t, a, map[string]any{"title": "C6"})
+	c := createConv(t, a, map[string]any{"title": "Conversation deletion"})
 
 	resp := sendChat(t, a, c.ID, "hello") // returns once the SSE start is out
 	<-arrived
@@ -95,7 +95,7 @@ func TestAccountDeleteCancelsLiveGeneration(t *testing.T) {
 	release := make(chan struct{})
 	arrived := make(chan struct{}, 2)
 	a, s := newBlockingChat(t, release, arrived)
-	c := createConv(t, a, map[string]any{"title": "C6d"})
+	c := createConv(t, a, map[string]any{"title": "Account deletion"})
 
 	resp := sendChat(t, a, c.ID, "hello")
 	<-arrived
@@ -132,7 +132,7 @@ func TestRequiredUpdatesReportRowGone(t *testing.T) {
 	if err := db.AddMessage(ctx, u.ID, m); err != nil {
 		t.Fatal(err)
 	}
-	tc := &store.ToolCall{MessageID: m.ID, LLMCallID: "c1", Tool: "web_search",
+	tc := &store.ToolCall{MessageID: m.ID, LLMCallID: "search-call", Tool: "web_search",
 		Arguments: "{}", Status: "running"}
 	if err := db.AddToolCall(ctx, tc); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestToolRoundPlaceholderFailureNamesRealRow(t *testing.T) {
 		{toolCallChunk(0, "call_q", "web_search", `{"query":"y"}`), finishChunk("tool_calls")},
 		{answerChunk("never streamed"), finishChunk("stop")},
 	})
-	c := createConv(t, a, map[string]any{"title": "C6c"})
+	c := createConv(t, a, map[string]any{"title": "Tool-round persistence"})
 	// The ACCEPTED turn still inserts (no assistant row exists yet); the
 	// tool-round placeholder is the second assistant insert and fails.
 	if err := a.db.ExecForTest(`CREATE TRIGGER no_second_assistant BEFORE INSERT ON messages

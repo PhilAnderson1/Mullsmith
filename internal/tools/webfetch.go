@@ -128,6 +128,15 @@ func (w *WebFetch) Execute(ctx context.Context, inv Invocation) (Result, error) 
 	truncated := len(raw) > int(w.maxBytes)
 	if truncated {
 		raw = raw[:w.maxBytes]
+		// A cut can leave an incomplete UTF-8 rune. Remove only that suffix;
+		// invalid bytes elsewhere must still be rejected as binary below.
+		start := len(raw) - 1
+		for start > 0 && !utf8.RuneStart(raw[start]) {
+			start--
+		}
+		if !utf8.FullRune(raw[start:]) {
+			raw = raw[:start]
+		}
 	}
 
 	ct := resp.Header.Get("Content-Type")

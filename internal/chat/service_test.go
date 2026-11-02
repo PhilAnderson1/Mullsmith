@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"mullsmith/internal/config"
+	"mullsmith/internal/llm"
 	"mullsmith/internal/store"
 	"mullsmith/internal/tools"
 )
@@ -41,6 +43,54 @@ func chatFixture(t *testing.T) (*Service, *store.DB, *store.Conversation) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(cfg, db, logger, tools.BuildFor(cfg, logger, nil, nil, nil)), db, conv
+}
+
+func TestToolTimeoutsHonorConfiguration(t *testing.T) {
+	s, _, _ := chatFixture(t)
+	s.cfg.Tools.WebFetch.Timeout = config.Duration(90 * time.Second)
+	s.cfg.Tools.WebDownload.Timeout = config.Duration(2 * time.Minute)
+	for name, want := range map[string]time.Duration{"web_fetch": 95 * time.Second, "web_download": 125 * time.Second, "fs_read": 30 * time.Second} {
+		if got := s.execTimeout(name); got != want {
+			t.Errorf("%s timeout %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestUnknownToolRefusalIsDurableAndRegenerable(t *testing.T) {
+	s, db, conv := chatFixture(t)
+	ctx := context.Background()
+	op, err := s.Begin(ctx, "user", Command{ConversationID: conv.ID, Content: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer op.Close()
+	if err := s.finishMessage(op.draft.ID, "trying a tool", "complete", "", 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	call := llm.ChatToolCall{ID: "canonical-call", Function: llm.ChatToolCallFunc{Name: `unknown"tool`, Arguments: `{}`}}
+	var end ToolFinished
+	content, _, err := s.runToolCall(ctx, op.generation, sink{emit: func(e Event) error {
+		if event, ok := e.(ToolFinished); ok {
+			end = event
+		}
+		return nil
+	}}, "user", conv.ID, op.draft.ID, call, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid([]byte(content)) || end.Status != "error" {
+		t.Fatalf("invalid refusal: %s / %+v", content, end)
+	}
+	hist, err := db.ContextHistory(ctx, conv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 3 || len(hist[1].Calls) != 1 || hist[2].ToolCallID != call.ID || hist[2].Content != content {
+		t.Fatalf("not durable: %+v", hist)
+	}
+	if _, err := db.BeginTurnRegeneration(ctx, "user", conv.ID, op.draft.ID, "next-generation"); err != nil {
+		t.Fatalf("stopped tool turn cannot regenerate: %v", err)
+	}
 }
 
 func TestOperationReservationAndDisconnectPersistence(t *testing.T) {

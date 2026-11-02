@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"mullsmith/internal/config"
+	"mullsmith/internal/id"
 	"mullsmith/internal/llm"
 )
 
@@ -37,8 +38,8 @@ func genFor(t *testing.T, ts *httptest.Server) *Generator {
 
 func TestRoundAccumulatesToolCallsByIndex(t *testing.T) {
 	ts := sseServer(t,
-		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"web_fetch","arguments":"{\"u"}}]}}]}`,
-		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"web_search","arguments":"{\"q"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"reused","function":{"name":"web_fetch","arguments":"{\"u"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"reused","function":{"name":"web_search","arguments":"{\"q"}}]}}]}`,
 		`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"rl\":\"x\"}"}}]}}]}`,
 		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"uery\":\"hi\"}"}}]}}]}`,
 		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
@@ -58,8 +59,11 @@ func TestRoundAccumulatesToolCallsByIndex(t *testing.T) {
 	if len(res.ToolCalls) != 2 {
 		t.Fatalf("calls = %+v, want 2", res.ToolCalls)
 	}
+	if !id.Valid(res.ToolCalls[0].ID) || !id.Valid(res.ToolCalls[1].ID) || res.ToolCalls[0].ID == res.ToolCalls[1].ID {
+		t.Fatalf("endpoint IDs were not replaced by distinct canonical IDs: %+v", res.ToolCalls)
+	}
 	// Order follows the index even though index 1 streamed first.
-	if res.ToolCalls[0].ID != "call_a" || res.ToolCalls[1].ID != "call_b" {
+	if res.ToolCalls[0].Function.Name != "web_search" || res.ToolCalls[1].Function.Name != "web_fetch" {
 		t.Errorf("order wrong: %s then %s", res.ToolCalls[0].ID, res.ToolCalls[1].ID)
 	}
 	if got := res.ToolCalls[0].Function.Arguments; got != `{"query":"hi"}` {
@@ -80,7 +84,7 @@ func TestRoundDropsNamelessCall(t *testing.T) {
 	)
 	g := genFor(t, ts)
 	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
-	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "real" {
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Function.Name != "web_search" || !id.Valid(res.ToolCalls[0].ID) {
 		t.Fatalf("calls = %+v, want only [real]", res.ToolCalls)
 	}
 }
@@ -185,17 +189,17 @@ func TestRoundFreezesPublishedToolCallID(t *testing.T) {
 	}
 }
 
-// The mirror case (finding 6): an endpoint that DOES send an id keeps it —
-// absorb takes the endpoint's identity whenever it arrives before one has
-// been published.
-func TestRoundKeepsEndpointIDWhenPresent(t *testing.T) {
+// Endpoint IDs may repeat across calls and requests. Each invocation gets a
+// unique application identity, regardless of the endpoint's proposed ID.
+func TestRoundOwnsCallIDsAcrossRequests(t *testing.T) {
 	ts := sseServer(t,
 		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_first","function":{"name":"web_search","arguments":"{}"}}]}}]}`,
 		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
 	)
 	g := genFor(t, ts)
 	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
-	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "call_first" {
-		t.Fatalf("calls = %+v, want the endpoint's own id kept", res.ToolCalls)
+	again := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil }, nil)
+	if len(res.ToolCalls) != 1 || len(again.ToolCalls) != 1 || !id.Valid(res.ToolCalls[0].ID) || res.ToolCalls[0].ID == again.ToolCalls[0].ID {
+		t.Fatalf("endpoint ID leaked or repeated: %+v / %+v", res.ToolCalls, again.ToolCalls)
 	}
 }

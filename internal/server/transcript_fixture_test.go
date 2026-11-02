@@ -1,6 +1,6 @@
 package server
 
-// C7 Stage 0: the recorded transcript IS the contract. This runs the real
+// The recorded transcript defines the streaming/history contract. This runs the real
 // chat handler against the scripted upstream for a two-round tool exchange
 // and pins what the wire and the history API agree on: the events'
 // message_ids, the done.rounds entries and the assistant rows a reload
@@ -11,7 +11,7 @@ package server
 //
 // Regenerate after an intentional wire change with:
 //
-//	UPDATE_TRANSCRIPT=1 go test ./internal/server -run TestC7TranscriptFixture
+//	UPDATE_TRANSCRIPT=1 go test ./internal/server -run TestTranscriptFixture
 //
 // and review the diff — that diff is the compatibility statement.
 
@@ -24,22 +24,22 @@ import (
 	"testing"
 )
 
-const c7FixtureRel = "testdata/c7-two-round.json"
+const transcriptFixtureRel = "testdata/two-round-transcript.json"
 
-// c7Fixture is the recorded exchange: raw SSE bytes, the event-name
+// transcriptFixture is the recorded exchange: raw SSE bytes, the event-name
 // sequence, and the exact /messages page the same conversation returns.
-type c7Fixture struct {
-	Events     []string         `json:"events"`
-	Frames     string           `json:"frames"`
-	Messages   c7Page           `json:"messages"`
-	Generation string           `json:"generation_id"`
-	Rounds     []map[string]any `json:"rounds"`
+type transcriptFixture struct {
+	Events     []string           `json:"events"`
+	Frames     string             `json:"frames"`
+	Messages   messageHistoryPage `json:"messages"`
+	Generation string             `json:"generation_id"`
+	Rounds     []map[string]any   `json:"rounds"`
 }
 
-func c7FixturePath() string { return filepath.Join(".", c7FixtureRel) }
+func transcriptFixturePath() string { return filepath.Join(".", transcriptFixtureRel) }
 
-// recordC7Exchange drives the exchange and captures everything verbatim.
-func recordC7Exchange(t *testing.T) c7Fixture {
+// recordTranscriptExchange drives the exchange and captures everything verbatim.
+func recordTranscriptExchange(t *testing.T) transcriptFixture {
 	t.Helper()
 	search := &fakeTool{name: "web_search", content: `{"results":[]}`, summary: "Searched — 3 result(s)"}
 	reg := registryFor(map[string]string{"web_search": "auto"}, search)
@@ -88,31 +88,31 @@ func recordC7Exchange(t *testing.T) c7Fixture {
 		t.Fatal("recorded transcript has no start/done")
 	}
 	rounds := roundsOf(t, done)
-	var page c7Page
+	var page messageHistoryPage
 	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
-	return c7Fixture{Events: evs, Frames: string(raw), Messages: page, Generation: gen, Rounds: rounds}
+	return transcriptFixture{Events: evs, Frames: string(raw), Messages: page, Generation: gen, Rounds: rounds}
 }
 
-func TestC7TranscriptFixture(t *testing.T) {
-	got := recordC7Exchange(t)
+func TestTranscriptFixture(t *testing.T) {
+	got := recordTranscriptExchange(t)
 	if os.Getenv("UPDATE_TRANSCRIPT") == "1" {
 		b, err := json.MarshalIndent(got, "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(filepath.Dir(c7FixturePath()), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(transcriptFixturePath()), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(c7FixturePath(), b, 0o644); err != nil {
+		if err := os.WriteFile(transcriptFixturePath(), b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		t.Skip("transcript fixture rewritten")
 	}
-	want, err := os.ReadFile(c7FixturePath())
+	want, err := os.ReadFile(transcriptFixturePath())
 	if err != nil {
-		t.Fatalf("fixture missing: regenerate with UPDATE_TRANSCRIPT=1 go test ./internal/server -run TestC7TranscriptFixture (%v)", err)
+		t.Fatalf("fixture missing: regenerate with UPDATE_TRANSCRIPT=1 go test ./internal/server -run TestTranscriptFixture (%v)", err)
 	}
-	var fx c7Fixture
+	var fx transcriptFixture
 	if err := json.Unmarshal(want, &fx); err != nil {
 		t.Fatal(err)
 	}
@@ -135,10 +135,10 @@ func TestC7TranscriptFixture(t *testing.T) {
 	var startID, roundID string
 	for _, frame := range strings.Split(fx.Frames, "\n\n") {
 		if strings.Contains(frame, "event: start") {
-			startID = c7FrameField(t, frame, "message_id")
+			startID = transcriptFrameField(t, frame, "message_id")
 		}
 		if strings.Contains(frame, "event: round") {
-			roundID = c7FrameField(t, frame, "message_id")
+			roundID = transcriptFrameField(t, frame, "message_id")
 		}
 	}
 	if startID == "" || roundID == "" || startID == roundID {
@@ -152,8 +152,8 @@ func TestC7TranscriptFixture(t *testing.T) {
 	}
 }
 
-// c7FrameField reads one top-level string field out of a frame's data line.
-func c7FrameField(t *testing.T, frame, field string) string {
+// transcriptFrameField reads one top-level string field out of a frame's data line.
+func transcriptFrameField(t *testing.T, frame, field string) string {
 	t.Helper()
 	_, data, _ := strings.Cut(frame, "data: ")
 	var d map[string]any

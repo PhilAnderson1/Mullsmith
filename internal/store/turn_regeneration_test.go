@@ -1,7 +1,7 @@
 package store
 
-// C7 store half: the turn (not the row) as the durable unit. Regenerate has
-// to retire every row a generation wrote — its assistant rounds, the
+// Turn regeneration retires every row a generation wrote: its assistant
+// rounds, the
 // role='tool' answers of its calls, the synthetic view_image turns — and
 // admission/prompt building has to see the SAME set before the swap, or the
 // retry quotes rows that are seconds from deletion.
@@ -14,10 +14,10 @@ import (
 	"mullsmith/internal/id"
 )
 
-// c7Turn lays down one generation's worth of rows under genID: an
+// seedGenerationTurn lays down one generation's worth of rows under genID: an
 // assistant round, its tool call (audit row + role='tool' answer), a
 // synthetic image turn, and the answering round. Returns their ids.
-func c7Turn(t *testing.T, db *DB, ctx context.Context, userID, convID, genID string,
+func seedGenerationTurn(t *testing.T, db *DB, ctx context.Context, userID, convID, genID string,
 ) (round1, toolRow, synthRow, round2 string) {
 	t.Helper()
 	round1 = id.New()
@@ -62,18 +62,42 @@ func idSet(ids []string) map[string]bool {
 	return s
 }
 
+func TestRegenerationNeverRetiresAnotherGenerationsResult(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	u := mkUser("repeated-call@x.io")
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	conv, _ := mkConvMsg(t, db, ctx, u.ID, "t")
+	_, oldResult, _, _ := seedGenerationTurn(t, db, ctx, u.ID, conv.ID, "old-generation")
+	_, _, _, last := seedGenerationTurn(t, db, ctx, u.ID, conv.ID, "new-generation")
+	if err := db.ExecForTest("UPDATE tool_calls SET llm_call_id='repeated'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ExecForTest("UPDATE messages SET tool_call_id='repeated' WHERE role='tool'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.BeginTurnRegeneration(ctx, u.ID, conv.ID, last, "retry-generation"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetMessageForUser(ctx, u.ID, oldResult); err != nil {
+		t.Fatalf("earlier result deleted: %v", err)
+	}
+}
+
 // TurnRetireIDs must name exactly what BeginTurnRegeneration deletes, and
 // ContextHistory minus that set must be exactly the history the retry is
 // built from.
 func TestTurnRetireSetPredictsTheSwap(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	u := mkUser("c7turn@x.io")
+	u := mkUser("turn-retirement@x.io")
 	if err := db.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	conv, userMsg := mkConvMsg(t, db, ctx, u.ID, "t")
-	r1, toolRow, synth, r2 := c7Turn(t, db, ctx, u.ID, conv.ID, "gen_A")
+	r1, toolRow, synth, r2 := seedGenerationTurn(t, db, ctx, u.ID, conv.ID, "gen_A")
 
 	ids, err := db.TurnRetireIDs(ctx, conv.ID, r2)
 	if err != nil {
@@ -124,12 +148,12 @@ func TestTurnRetireSetPredictsTheSwap(t *testing.T) {
 func TestTurnNewestnessIgnoresOwnRoundsOnly(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	u := mkUser("c7new@x.io")
+	u := mkUser("turn-newestness@x.io")
 	if err := db.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	conv, _ := mkConvMsg(t, db, ctx, u.ID, "t")
-	r1, _, _, _ := c7Turn(t, db, ctx, u.ID, conv.ID, "gen_A")
+	r1, _, _, _ := seedGenerationTurn(t, db, ctx, u.ID, conv.ID, "gen_A")
 
 	// Same turn, later rows exist: still the newest TURN, so the swap goes
 	// through (aimed at its first round).
@@ -152,11 +176,11 @@ func TestTurnNewestnessIgnoresOwnRoundsOnly(t *testing.T) {
 
 // SetStatusNote is the durable half of "the stream's reason survives a
 // reload": it sticks on the row, and a row deleted underneath it is
-// ErrRowGone (C6's rule), not a silent success.
+// ErrRowGone rather than a silent success.
 func TestSetStatusNote(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	u := mkUser("c7note@x.io")
+	u := mkUser("status-note@x.io")
 	if err := db.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +213,7 @@ func TestSetStatusNote(t *testing.T) {
 func TestContextHistoryMultipleExcludes(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	u := mkUser("c7excl@x.io")
+	u := mkUser("history-exclusions@x.io")
 	if err := db.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}

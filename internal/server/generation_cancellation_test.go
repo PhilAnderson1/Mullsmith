@@ -14,18 +14,13 @@ import (
 	"mullsmith/internal/tools"
 )
 
-// review3 regressions:
-//
-// Issue 1 — a FOREIGN account's conversation DELETE answers 404 and must
-// leave the owner's live generation, rows and remembered consent untouched;
-// the registry itself is owner-aware so no caller can cancel by convention
-// alone.
-//
-// Issue 3 — cancellation between tool rounds (during approval, during
-// execution, between calls) ends the generation as ABORTED: the proposing
-// round's "complete" describes that round, never the whole request.
+// Generation cancellation enforces ownership and reports the whole request's
+// outcome independently of individual model rounds. Foreign deletion attempts
+// must leave the owner's generation, persisted rows and remembered consent
+// untouched. Cancellation during tool approval or execution must stop later
+// calls and report an aborted generation.
 
-// --- issue 1 ----------------------------------------------------------------
+// --- cancellation authorization ---------------------------------------------
 
 func TestForeignDeleteCannotCancelOwnersGeneration(t *testing.T) {
 	release := make(chan struct{})
@@ -87,7 +82,7 @@ func TestForeignDeleteCannotCancelOwnersGeneration(t *testing.T) {
 }
 
 // The registry refuses a foreign (conv, user) pair even if a caller ever
-// forgets to authorize first — defence in depth (review3 issue 1).
+// forgets to authorize first — defence in depth.
 func TestAbortConvIsOwnerAware(t *testing.T) {
 	r := chat.NewRegistry()
 	cancelled := 0
@@ -113,7 +108,7 @@ func TestAbortConvIsOwnerAware(t *testing.T) {
 	}
 }
 
-// --- issue 3 ----------------------------------------------------------------
+// --- cancellation during tool rounds ----------------------------------------
 
 // untilEvent drains rd to one named event (skipping the async titler's
 // title frames) and returns its payload.
@@ -180,7 +175,7 @@ func newBlockingToolServer(t *testing.T, policies map[string]string, tool tools.
 	t.Cleanup(ts.Close)
 	a := newAuthTestOn(t, ts, db)
 	a.invite("gk-code-1")
-	if resp := a.register("review3@b.io", "uncommon-password-9", false); resp.StatusCode != http.StatusCreated {
+	if resp := a.register("generation-cancellation@b.io", "uncommon-password-9", false); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register: %d %s", resp.StatusCode, dumpBody(resp))
 	}
 	return a, script, s

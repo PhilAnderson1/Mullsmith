@@ -386,6 +386,21 @@ test("control: an earlier page from the CURRENT visit inserts", async () => {
   assert.equal(elFor("#thread").children.length, 1); // the row landed
 });
 
+test("a failed earlier-page request can be retried", async () => {
+  reset("A");
+  let attempts = 0;
+  fetcher = async () => ++attempts === 1
+    ? new Response(JSON.stringify({ error: { code: "temporary", message: "try again" } }), { status: 503 })
+    : ok({ items: [ASSISTANT_MSG], next_cursor: "" });
+  const button = earlierButton("cur1");
+  await button.listeners.click[0]();
+  assert.equal(button.disabled, false);
+  assert.equal(elFor("#thread").children.length, 0);
+  await button.listeners.click[0]();
+  assert.equal(attempts, 2);
+  assert.equal(elFor("#thread").children.length, 1);
+});
+
 test("an earlier page from a PREVIOUS visit to the same ID is dropped (C5)", async () => {
   reset("A");
   const settlePage = gatedEarlierPage();

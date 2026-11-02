@@ -60,6 +60,10 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 		timeout := cfg.Tools.WebFetch.Timeout.D()
 		reg.Register(NewWebFetch(NewGuardedClient(timeout), int64(cfg.Tools.WebFetch.MaxBytes)))
 	}
+	if cfg.Tools.WebDownload.Enabled {
+		reg.Register(NewWebDownload(NewGuardedClient(cfg.Tools.WebDownload.Timeout.D()),
+			int64(cfg.Tools.WebDownload.MaxBytes), files))
+	}
 
 	// Scratchpad file tools (§7.2): always available, the root exists by
 	// construction (config validation + EnsureDirs at startup).

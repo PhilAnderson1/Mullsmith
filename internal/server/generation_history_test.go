@@ -52,7 +52,7 @@ func TestModelFinishReasonIsDurable(t *testing.T) {
 			if len(outcomes) != wantRounds {
 				t.Fatalf("outcomes=%v", outcomes)
 			}
-			var page c7Page
+			var page messageHistoryPage
 			getJSON(t, a, "/api/v1/conversations/"+conv.ID+"/messages", &page)
 			last := page.Items[len(page.Items)-1]
 			if last.Status != status || last.StatusNote != tc.note || last.ID != lastRoundID(t, events.done) {

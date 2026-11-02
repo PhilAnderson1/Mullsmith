@@ -114,9 +114,15 @@ export const api = {
   changePassword: (current, next) =>
     request("POST", "/api/v1/auth/password", { current, new: next }),
   // kind is the plural directory name: uploads | artifacts | work ("" = all).
-  listFiles: (kind) => request("GET", "/api/v1/files" + (kind ? "?kind=" + encodeURIComponent(kind) : "")),
+  listFiles: (kind, cursor) => {
+    const p = new URLSearchParams();
+    if (kind) p.set("kind", kind);
+    if (cursor) p.set("cursor", cursor);
+    return request("GET", "/api/v1/files" + (p.size ? "?" + p.toString() : ""));
+  },
   // The one file identity is the scratchpad-relative path — for the three
-  // layout directories alike. No ids, no cursors: the disk is the truth.
+  // layout directories alike. File operations address paths; listing cursors
+  // only describe a position in the modification-time/path order.
   deleteFile: (path) => request("DELETE", "/api/v1/files?path=" + encodeURIComponent(path)),
   // Bulk housekeeping: aged content of one kind ("" = all three layout
   // dirs). Tokens are the conversation-prune ones: 1d|1w|1mo|1y|all.

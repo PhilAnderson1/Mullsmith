@@ -14,7 +14,7 @@ import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,8 +88,8 @@ test.test.afterEach(() => { llm.state.queue.length = 0; });
 
 // Isolate each scenario in a fresh browser context and conversation, while
 // reusing the authenticated account to respect the real registration limit.
-async function newSession() {
-  const ctx = await browser.newContext(sessionState ? { storageState: sessionState } : {});
+async function newSession(contextOptions = {}) {
+  const ctx = await browser.newContext({ ...(sessionState ? { storageState: sessionState } : {}), ...contextOptions });
   const page = await ctx.newPage();
   if (!sessionState) {
     await registerAndOpen(page, app.base, `browser${++userSeq}@example.io`);
@@ -98,6 +98,7 @@ async function newSession() {
     await page.goto(`${app.base}/`, { waitUntil: "domcontentloaded" });
     await waitForConversation(page);
   }
+  if (await page.locator("#btn-menu").isVisible()) await page.locator("#btn-menu").click();
   await newConversation(page);
   return { ctx, page };
 }
@@ -119,6 +120,59 @@ async function reloadAndWait(page) {
     !document.querySelector(".msg-body.streaming") &&
     document.querySelectorAll("#thread .msg").length > 0, null, { timeout: 15_000 });
 }
+
+test("a full deep-link load waits for the requested older conversation", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession();
+  try {
+    const older = await page.evaluate(() => location.hash.slice(4));
+    await newConversation(page);
+    await page.route(`**/api/v1/conversations/${older}`, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await route.continue();
+    });
+    await page.goto("about:blank");
+    await page.goto(`${app.base}/#/c/${older}`, { waitUntil: "domcontentloaded" });
+    await waitForConversation(page, older);
+    assert.equal(await page.evaluate(() => location.hash), `#/c/${older}`);
+  } finally { await ctx.close(); }
+});
+
+test("files load more preserves tabs and supports retries after a failed page", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession();
+  try {
+    const me = await (await page.request.get(`${app.base}/api/v1/auth/me`)).json();
+    const work = join(app.dir, "scratch", me.id, "work");
+    mkdirSync(work, { recursive: true });
+    for (let i = 0; i < 55; i++) writeFileSync(join(work, `pagination-${String(i).padStart(2, "0")}.txt`), "notes");
+    const newest = join(work, "z-pagination-newest.txt");
+    writeFileSync(newest, "newest");
+    const stamp = new Date(Date.now() + 60_000);
+    utimesSync(newest, stamp, stamp);
+    await page.click("#btn-files");
+    await page.click('.files-filter[data-kind="work"]');
+    await page.waitForFunction(() => document.querySelectorAll("#files-list .file-row").length === 50 && !document.querySelector("#btn-files-more").hidden);
+    assert.equal(await page.locator("#files-list .f-name").first().textContent(), "z-pagination-newest.txt");
+    let failed = false;
+    await page.route("**/api/v1/files?*", async (route) => {
+      if (new URL(route.request().url()).searchParams.has("cursor") && !failed) {
+        failed = true;
+        await route.fulfill({ status: 503, json: { error: { code: "temporary", message: "temporary file page failure" } } });
+      } else await route.continue();
+    });
+    await page.click("#btn-files-more");
+    await page.waitForFunction(() => document.body.textContent.includes("temporary file page failure"));
+    await page.click("#btn-files-more");
+    await page.waitForFunction(() => document.querySelector("#btn-files-more").hidden);
+    const names = await page.locator("#files-list .f-name").allTextContents();
+    assert.equal(names.filter((name) => name.startsWith("pagination-")).length, 55);
+    assert.equal(new Set(names).size, names.length);
+    await page.click('.files-filter[data-kind="uploads"]');
+    await page.waitForFunction(() => !document.querySelector("#btn-files-more").disabled);
+    assert.equal(await page.locator("#files-list .f-name").filter({ hasText: "pagination-" }).count(), 0);
+    await page.click('.files-filter[data-kind="work"]');
+    await page.waitForFunction(() => document.querySelectorAll("#files-list .file-row").length === 50 && !document.querySelector("#btn-files-more").hidden);
+  } finally { await ctx.close(); }
+});
 
 test("tool turn with a late call ID: live DOM equals reloaded DOM", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
@@ -158,6 +212,13 @@ test("tool turn with a late call ID: live DOM equals reloaded DOM", { timeout: 1
 
 test("tool-only and whitespace rounds have no blank bubble while the answer streams or after reload", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
+  const proseBeforeTools = () => {
+    const round = document.querySelectorAll(".from-assistant")[2];
+    const body = round.querySelector(".msg-body");
+    const cards = round.querySelector(".tool-cards");
+    return Boolean(body.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+      body.getBoundingClientRect().bottom <= cards.getBoundingClientRect().top;
+  };
   try {
     llm.queueScripts(
       toolScript("empty_write", "fs_write", { path: "work/empty-card.txt", content: "hello" }),
@@ -183,6 +244,8 @@ test("tool-only and whitespace rounds have no blank bubble while the answer stre
     assert.equal(active[3].bodyVisible, true, "the active answer keeps its waiting spinner");
     assert.equal(await page.locator(".from-assistant .tool-card:visible").count(), 3,
       "hiding empty prose must not hide the tool cards");
+    assert.equal(await page.evaluate(proseBeforeTools), true,
+      "a round's introductory prose must precede its tool cards while streaming");
 
     await waitIdle(page);
     const live = await digest(page);
@@ -190,10 +253,14 @@ test("tool-only and whitespace rounds have no blank bubble while the answer stre
     assert.deepEqual(settled.map((m) => m.bodyVisible), [false, false, true, true]);
     assert.equal(settled[2].text, "The file is ready.");
     assert.equal(settled[3].text, "Here is the final answer.");
+    assert.equal(await page.evaluate(proseBeforeTools), true,
+      "settling a round must preserve prose before its tools");
 
     await reloadAndWait(page);
     assert.deepEqual(comparable(await digest(page)), comparable(live),
       "the visibility of answer bodies must agree live and after reload");
+    assert.equal(await page.evaluate(proseBeforeTools), true,
+      "reloaded prose must precede the calls it introduced");
   } finally { await ctx.close(); }
 });
 
@@ -386,6 +453,40 @@ test("an output-limited tool proposal leaves no phantom card", { timeout: 120_00
   } finally { await ctx.close(); }
 });
 
+test("mobile add-menu preserves composer focus without opening the keyboard unnecessarily", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession({ isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 } });
+  try {
+    const input = page.locator("#composer-input");
+    const add = page.locator("#btn-add");
+    await input.fill("A draft to keep editing");
+    await input.evaluate((el) => {
+      el.setSelectionRange(7, 7);
+      window.composerBlurCount = 0;
+      el.addEventListener("blur", () => { window.composerBlurCount++; });
+    });
+    for (const open of [true, false]) {
+      await add.tap();
+      assert.deepEqual(await page.evaluate(() => ({
+        focused: document.activeElement === document.querySelector("#composer-input"),
+        blurs: window.composerBlurCount,
+        selection: document.querySelector("#composer-input").selectionStart,
+        open: !document.querySelector("#add-menu").hidden,
+      })), { focused: true, blurs: 0, selection: 7, open });
+    }
+    assert.equal(await input.inputValue(), "A draft to keep editing");
+    // A tap with no active editor must not bring up the keyboard.
+    await input.blur();
+    await add.tap();
+    assert.equal(await input.evaluate((el) => document.activeElement === el), false);
+    assert.equal(await page.locator("#add-menu").isVisible(), true);
+    // Focus and activation by keyboard remain available.
+    await add.focus();
+    await add.press("Space");
+    assert.equal(await page.locator("#add-menu").isVisible(), false);
+    assert.equal(await add.evaluate((el) => document.activeElement === el), true);
+  } finally { await ctx.close(); }
+});
+
 test("floating composer preserves scroll clearance as drafts and attachments grow", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
   try {
@@ -493,10 +594,8 @@ test("older-chat pagination follows the list without covering rows or skipping l
         assert.ok(Math.abs(shell.sidebarBottom - shell.viewportHeight) < 1);
         assert.ok(shell.headerHeight < 100, "long history stretched the header row");
         assert.ok(shell.chatHeight > shell.viewportHeight * 0.6, "long history collapsed the chat area");
-        assert.equal(await page.locator("#topbar-title").isVisible(), false);
-      } else {
-        assert.equal(await page.locator("#topbar-title").isVisible(), true);
       }
+      assert.equal(await page.locator("#topbar-title").count(), 0, "conversation title should live only in the sidebar");
       assert.equal(before.initiallyBelow, true, "pagination floated over the visible list");
       assert.ok(before.lastBottom <= before.buttonTop, "pagination covered the oldest visible chat");
       assert.ok(before.buttonHeight >= 44, "pagination lost its touch target");

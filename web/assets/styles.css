@@ -213,22 +213,13 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
   min-width: 0; /* grid items default to min-width:auto: the nowrap topbar
                    children used to stretch the whole app past 320 px (§10.1) */
 }
-.topbar-title {
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* the chat title runs up against the model picker without this */
-  margin-inline-end: 14px;
-}
 .topbar .icon-btn { color: var(--fg-muted); }
 .topbar .icon-btn svg { width: 20px; height: 20px; }
+#btn-menu svg { width: 26px; height: 26px; }
 .topbar .icon-btn:hover, .topbar .icon-btn:focus-visible { color: var(--fg); }
 .model-picker {
   flex: 0 0 auto;
+  margin-inline-start: auto;
   width: auto;
   min-width: 0;
   min-height: var(--tap);
@@ -691,7 +682,7 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 }
 
 @media (max-width: 639px) {
-  .model-picker { max-width: 30vw; }
+  .model-picker { max-width: none; flex-shrink: 1; }
 }
 
 /* ---------- desktop ≥1024: persistent sidebar grid ---------- */
@@ -708,7 +699,6 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   }
   .topbar { justify-content: flex-end; border-bottom: none; }
   #btn-menu { display: none; }
-  #topbar-title { display: none; }
   #sidebar {
     grid-area: sidebar;
     position: static;
@@ -871,6 +861,7 @@ details.thinking pre {
    arguments when expanded, result links, and live approval controls. */
 
 .tool-cards { display: flex; flex-direction: column; gap: 0.4rem; margin: 0 0 0.5rem; }
+.msg-body:not([hidden]) + .tool-cards { margin-top: 0.5rem; }
 
 details.tool-card {
   border: 1px solid var(--border);

@@ -4,20 +4,17 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
-	"mullsmith/internal/id"
 	"mullsmith/internal/managed"
 	"mullsmith/internal/scratch"
 )
@@ -27,8 +24,7 @@ import (
 // The disk is the single source of truth: a file exists iff its bytes
 // exist, its identity is its path (kind = top-level directory), and the
 // Files page lists exactly what a walk finds. There is no registry, no
-// ids, no cursor — each directory listing is capped like the old Work
-// view. Ownership is structural: ?path= resolves only inside the SESSION
+// ids: listings use modification-time/path cursors over bounded scans. Ownership is structural: ?path= resolves only inside the SESSION
 // user's tree through the fd-pinned sandbox (§9.7), so every rejection
 // answers 404 — "no such thing" and "not yours" are the same answer.
 
@@ -51,8 +47,10 @@ func isFileDir(seg string) bool {
 }
 
 const (
-	fileListMax  = 500 // entries per directory per response (no pagination)
-	fileListDeep = 4   // directory depth explored below a layout dir
+	filePageDefault = 50
+	filePageMax     = 200
+	fileListScanMax = 200_000 // inspected entries per layout directory
+	fileListDeep    = 4       // directory depth explored below a layout dir
 )
 
 // fileDownloadURL is the one download shape: a canonical path, URL-encoded
@@ -322,171 +320,6 @@ func (s *Server) commitUpload(w http.ResponseWriter, r *http.Request,
 type multipartPart struct {
 	display string
 	reader  io.ReadCloser
-}
-
-// --- GET /api/v1/files?kind= — one physical walk (§5.3) --------------------
-
-func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
-	user := UserFrom(r.Context())
-	kind := r.URL.Query().Get("kind")
-	if kind != "" && !isFileDir(kind) {
-		writeAPIError(w, r, http.StatusBadRequest, "bad_kind", "kind must be uploads, artifacts or work")
-		return
-	}
-	dirs := fileDirs
-	if kind != "" {
-		dirs = []string{kind}
-	}
-	var items []map[string]any
-	truncated := false
-	for _, d := range dirs {
-		its, trunc := dirEntries(s.cfg.Scratchpad.Root, user.ID, d, s.artifactTTL())
-		truncated = truncated || trunc
-		items = append(items, its...)
-	}
-	// All timestamps are RFC3339-UTC from our own formatter, so
-	// lexicographic order equals chronological order.
-	sort.SliceStable(items, func(i, j int) bool {
-		return items[i]["modified_at"].(string) > items[j]["modified_at"].(string)
-	})
-	used, _ := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items":     items,
-		"truncated": truncated,
-		"quota":     map[string]any{"used_bytes": used, "total_bytes": int64(s.cfg.Scratchpad.UserQuota)},
-	})
-}
-
-// dirEntries walks one layout directory (uploads/artifacts/work) and
-// returns display entries sorted newest-modified first, plus whether the
-// fileListMax cap was hit. Files carry the directory's singular kind
-// ("upload"/"artifact"/"work"); DIRECTORIES are listed too — including
-// empty ones — as kind "dir" with a bounded file count, so script-made
-// folders are visible and deletable instead of becoming invisible litter.
-// Artifact rows carry a COMPUTED expires_at (mtime + artifact_ttl): the
-// sweep is mtime-based now, and the UI's "expires …" line stays honest.
-// Metadata only — §9.7 keeps Resolve safe for display/walking, while
-// download/delete re-open fd-pinned. Hidden files (dot-prefixed leftovers),
-// symlinks and non-regular files stay out of the list.
-func dirEntries(root, userID, dir string, artifactTTL time.Duration) ([]map[string]any, bool) {
-	// The walk root is config root + session id + one of the three fixed
-	// dir names. Gate the middle component on the ULID alphabet anyway
-	// (§9.7): the walk must never be steered by anything that is not a
-	// bare id, whoever called.
-	if !id.Valid(userID) || !isFileDir(dir) {
-		return nil, false
-	}
-	base, err := scratch.Resolve(root, userID, dir)
-	if err != nil {
-		return nil, false
-	}
-	type entry struct {
-		mtime time.Time
-		json  map[string]any
-	}
-	var entries []entry
-	truncated := false
-	// #nosec G104,G703 -- G104: the walk callback swallows per-entry errors
-	// by design. G703: walk root fully gated above — config root + id.Valid
-	// user id + a whitelisted dir name; the callback only reads walk-issued
-	// entries (stat for metadata), and no request-derived path is ever
-	// opened here — download/delete take the fd-pinned sandbox separately.
-	_ = filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // unreadable entries do not fail the listing
-		}
-		sub, rerr := filepath.Rel(base, p)
-		if rerr != nil || sub == "." {
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".") {
-			if d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if strings.Count(sub, string(filepath.Separator)) >= fileListDeep {
-				return fs.SkipDir
-			}
-			info, ierr := d.Info()
-			if ierr != nil {
-				return nil
-			}
-			if len(entries) >= fileListMax {
-				truncated = true
-				return filepath.SkipAll
-			}
-			n, capped := countTreeFiles(p)
-			entries = append(entries, entry{mtime: info.ModTime(), json: map[string]any{
-				"kind":         "dir",
-				"path":         dir + "/" + filepath.ToSlash(sub),
-				"name":         d.Name(),
-				"dir":          true,
-				"files":        n,
-				"files_capped": capped,
-				"modified_at":  info.ModTime().UTC().Format(timeRFC3339),
-			}})
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if len(entries) >= fileListMax {
-			truncated = true
-			return filepath.SkipAll
-		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			return nil
-		}
-		rel := dir + "/" + filepath.ToSlash(sub)
-		item := map[string]any{
-			"kind":         fileKindOf(dir),
-			"path":         rel,
-			"name":         d.Name(),
-			"size":         info.Size(),
-			"modified_at":  info.ModTime().UTC().Format(timeRFC3339),
-			"download_url": fileDownloadURL(rel),
-		}
-		if dir == "artifacts" {
-			item["expires_at"] = info.ModTime().Add(artifactTTL).UTC().Format(timeRFC3339)
-		}
-		entries = append(entries, entry{mtime: info.ModTime(), json: item})
-		return nil
-	})
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].mtime.After(entries[j].mtime) })
-	items := make([]map[string]any, 0, len(entries))
-	for _, e := range entries {
-		items = append(items, e.json)
-	}
-	return items, truncated
-}
-
-// countTreeFiles counts regular files below dir for the folder rows'
-// "everything inside will be deleted (N files)" confirmation copy. It is
-// display metadata, not an enforcement read: walk errors stop the count
-// (the delete itself re-walks under §9.7 and refuses anything it cannot
-// fully enumerate), and the count is capped so a pathological tree cannot
-// make listing expensive.
-func countTreeFiles(dir string) (int, bool) {
-	const cap = 999
-	n, capped := 0, false
-	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		n++
-		if n >= cap {
-			capped = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return n, capped
 }
 
 // --- GET /api/v1/files/download?path= | DELETE /api/v1/files?path= ---------

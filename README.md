@@ -21,7 +21,7 @@ of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
   Text-only endpoints never see picture bytes at all; the manifest-only
   behaviour is untouched.
 * **Tools with an approval layer** — `web_search` (Brave) and SSRF-guarded
-  `web_fetch`, per-conversation **scratchpad files** (`fs_list/fs_read/
+  `web_fetch`, `web_download`, per-conversation **scratchpad files** (`fs_list/fs_read/
   fs_write/fs_delete`, uploads from the browser, artifact download cards, a
   file manager with Uploads / Artifacts / Work tabs),
   and optional sandboxed **`code_run`** (bubblewrap jail — see
@@ -212,7 +212,11 @@ All state lives in two directories named by the config:
 
 Plus `/etc/mullsmith/config.yaml` and `/etc/mullsmith/env`.
 
-**Consistent hot backup** (server can stay up; uses the `sqlite3` CLI so the
+Deployment policy for this development installation: do not create deployment
+backups. Run the relevant checks before installing a binary and verify service
+health afterwards. Keep runtime data outside the source checkout.
+
+**Optional data backup** (independent of deployment; server can stay up; uses the `sqlite3` CLI so the
 WAL is folded in correctly):
 
 ```sh
@@ -332,7 +336,7 @@ root. Copy `configs/config.yaml` and point it at your endpoint. The UI lives
 in `web/` and is embedded into the binary at build time — rebuild and
 hard-refresh after editing assets.
 
-The database schema lives in `internal/store/schema.sql` and is initialized
+The database schema lives in `internal/store/schema/schema.sql` and is initialized
 atomically on startup. There is no upgrade path for older database schemas
 during development: recreate a development database after structural schema
 changes. Startup can reopen databases already using the current schema.
@@ -343,11 +347,11 @@ changes. Startup can reopen databases already using the current schema.
 cmd/mullsmith/        main: flags, config load, startup wiring, graceful shutdown, admin CLI
 internal/config/    YAML schema, env expansion, strict validation, startup warnings
 internal/auth/      argon2id, sessions, CSRF tokens, invite codes, login limiter
-internal/store/     SQLite (modernc.org) + schema.sql; users/conversations/messages/tool_calls (no files table — the disk is the file state)
+internal/store/     SQLite (modernc.org) + schema/schema.sql; users/conversations/messages/tool_calls (no files table — the disk is the file state)
 internal/server/    routing, middleware, SSE chat, files API, maintenance sweeps
 internal/llm/       OpenAI-compatible streaming client (tools + reasoning channels)
 internal/agent/     context budgeting + turn grouping fed to the model
-internal/tools/     registry + web_search/web_fetch/fs_*/files_share/code_run + SSRF egress guard
+internal/tools/     registry + web_search/web_fetch/web_download/fs_*/files_share/code_run + SSRF egress guard
 internal/scratch/   path sandbox (§9.7): openat chain, O_NOFOLLOW, containment fuzzer
 internal/runner/    code execution: bubblewrap jail + rlimit launcher (§9.9)
 web/                embedded SPA: app.js, SSE client, DOM-only markdown renderer, CSS

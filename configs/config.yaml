@@ -129,11 +129,16 @@ tools:
     enabled: true                 # SSRF-guarded egress (§9.6); public web only
     max_bytes: 512KiB
     timeout: 15s
+  web_download:
+    enabled: true                 # same SSRF guard as web_fetch; no code network required
+    max_bytes: 25MiB              # larger responses fail without saving a partial file
+    timeout: 60s
   agent:
-    max_tool_rounds: 8
+    max_tool_rounds: 20             # per reply; over-limit calls return an error to the model
     approval:
       web_search: auto
       web_fetch: auto
+      web_download: auto
       fs_list: auto
       fs_read: auto
       fs_write: auto

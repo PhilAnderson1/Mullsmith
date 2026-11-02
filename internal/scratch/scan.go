@@ -15,10 +15,13 @@
 package scratch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 
 	"golang.org/x/sys/unix"
 )
@@ -100,6 +103,9 @@ func scanUserTree(root, userID, rel string, budget int, visit func(scanEntry) er
 				}
 				sub := joinRel(dirRel, e.Name())
 				if err := visit(scanEntry{rel: sub, st: st}); err != nil {
+					if errors.Is(err, fs.SkipDir) && st.Mode&unix.S_IFMT == unix.S_IFDIR {
+						continue
+					}
 					return err
 				}
 				if st.Mode&unix.S_IFMT != unix.S_IFDIR {
@@ -133,4 +139,24 @@ func scanUserTree(root, userID, rel string, budget int, visit func(scanEntry) er
 		}
 	}
 	return walk(cur, rel, 0)
+}
+
+// Walk streams metadata through the same fd-pinned, batched enumeration as
+// quota scans. The root itself is not visited. Missing roots are empty;
+// incomplete scans return an error. A visitor may return fs.SkipDir for a
+// directory, or fs.SkipAll to stop early. Memory is bounded by batch and depth.
+func Walk(ctx context.Context, root, userID, rel string, budget int, visit func(string, fs.FileInfo) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := scanUserTree(root, userID, rel, budget, func(e scanEntry) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return visit(e.rel, &statInfo{st: e.st, name: path.Base(e.rel)})
+	})
+	if errors.Is(err, fs.SkipAll) {
+		return nil
+	}
+	return err
 }

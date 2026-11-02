@@ -40,7 +40,7 @@ export function createThreadRenderer({
     }
 
     // Tool cards from the audit projection (§10.2): collapsed by default,
-    // placed above the answer like their live counterparts. A calls-only
+    // placed after the round's prose like their live counterparts. A calls-only
     // assistant row has no prose: the empty body folds away.
     if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
       const host = toolCardsHost(el);

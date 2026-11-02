@@ -654,13 +654,12 @@ function closeConvRowMenu() {
 }
 
 // applyTitle reflects a server-generated title (SSE "title" event) into the
-// list row, the cached conversation object and the topbar, without a reload.
+// list row and the cached conversation object, without a reload.
 function applyTitle(id, title) {
   const c = state.convs.find((x) => x.id === id);
   if (c) c.title = title;
   const row = document.querySelector(`#conv-list .conv-item[data-id="${CSS.escape(id)}"]`);
   if (row) row.querySelector(".conv-title").textContent = title;
-  if (id === navigation.currentId) $("#topbar-title").textContent = title;
 }
 
 // promoteConversation is a LOCAL mirror of server-side ordering: posting a
@@ -1108,28 +1107,46 @@ async function onPasswordSave(ev) {
 // flight) used to merge into one list — the same file appearing twice.
 // Only the newest load may touch the DOM.
 let filesLoadSeq = 0;
+let filesCursor = "";
+let filesLoading = false;
+let filesSeen = new Set();
 
-// One endpoint for everything: the server physically walks uploads/,
-// artifacts/ and work/, so there is no cursor and no second listing —
-// each tab is one request (kind filter "" = all).
+// Cursor pages share the current tab's sequence. A reset supersedes every
+// older page; failed pages retain their cursor so Load more can retry.
 async function loadFiles(reset) {
-  const gen = ++filesLoadSeq;
-  if (reset) $("#files-list").replaceChildren();
-  const data = await api.listFiles(state.filesKind);
-  if (gen !== filesLoadSeq) return; // superseded by a newer load — drop it
-  const list = $("#files-list");
-  for (const f of data.items || []) list.appendChild(fileRow(f));
-  if (data.truncated) {
-    const li = document.createElement("li");
-    li.className = "f-sub";
-    li.textContent = "Only the most recent files are shown.";
-    list.appendChild(li);
+  if (!reset && (filesLoading || !filesCursor)) return;
+  const gen = reset ? ++filesLoadSeq : filesLoadSeq;
+  const more = $("#btn-files-more");
+  if (reset) {
+    $("#files-list").replaceChildren();
+    filesCursor = "";
+    filesSeen = new Set();
+    show(more, false);
   }
-  const q = data.quota || {};
-  const used = q.used_bytes || 0;
-  const total = q.total_bytes || 0;
-  $("#quota-fill").style.width = (total > 0 ? Math.min(100, (used / total) * 100) : 0).toFixed(1) + "%";
-  $("#quota-text").textContent = `${humanSize(used)} of ${humanSize(total)} used`;
+  filesLoading = true;
+  more.disabled = true;
+  try {
+    const data = await api.listFiles(state.filesKind, filesCursor);
+    if (gen !== filesLoadSeq) return;
+    const list = $("#files-list");
+    for (const f of data.items || []) {
+      if (filesSeen.has(f.path)) continue;
+      filesSeen.add(f.path);
+      list.appendChild(fileRow(f));
+    }
+    filesCursor = data.next_cursor || "";
+    show(more, Boolean(filesCursor));
+    const q = data.quota || {};
+    const used = q.used_bytes || 0;
+    const total = q.total_bytes || 0;
+    $("#quota-fill").style.width = (total > 0 ? Math.min(100, (used / total) * 100) : 0).toFixed(1) + "%";
+    $("#quota-text").textContent = `${humanSize(used)} of ${humanSize(total)} used`;
+  } finally {
+    if (gen === filesLoadSeq) {
+      filesLoading = false;
+      more.disabled = false;
+    }
+  }
 }
 
 function fileRow(f) {
@@ -1219,7 +1236,6 @@ function fileRow(f) {
 
 function renderConversation() {
   const c = navigation.currentId ? navigation.currentConv : null;
-  $("#topbar-title").textContent = c ? c.title : "Mullsmith";
   const sel = $("#model-picker");
   sel.disabled = !navigation.currentId;
   if (c) {
@@ -1465,7 +1481,7 @@ function onHashChange() {
   if (state.settingsOpen) closeSettingsView();
   const m = location.hash.match(/^#\/c\/([A-Za-z0-9]{1,40})$/);
   if (m) {
-    selectConversation(m[1]);
+    return selectConversation(m[1]);
   } else if ((navigation.currentId || navigation.navPendingId) && location.hash === "") {
     // Leaving for the blank route retires EVERYTHING aimed at a thread:
     // a navigation whose metadata or page is still in flight would
@@ -1571,6 +1587,12 @@ async function boot() {
   // The add-menu: the "+" toggles it; any click outside or Escape dismisses.
   // The check is containment, so clicking the open select's own rows — or
   // the button again — never fights the toggle.
+  $("#btn-add").addEventListener("pointerdown", (ev) => {
+    // Keep an already-open soft keyboard up by preventing the button from
+    // taking focus. Its click still toggles the menu; keyboard navigation
+    // and taps when the composer is unfocused retain their normal behaviour.
+    if (ev.button === 0 && document.activeElement === $("#composer-input")) ev.preventDefault();
+  });
   $("#btn-add").addEventListener("click", () => {
     setAddMenu($("#add-menu").hidden);
   });
@@ -1587,6 +1609,9 @@ async function boot() {
   $("#attach-input").addEventListener("change", onAttachPick);
   $("#btn-files").addEventListener("click", () => {
     location.hash = "#/files";
+  });
+  $("#btn-files-more").addEventListener("click", () => {
+    loadFiles(false).catch((e) => handleErr(e, "more files"));
   });
   $("#btn-files-close").addEventListener("click", () => {
     location.hash = navigation.currentId ? `#/c/${navigation.currentId}` : "";

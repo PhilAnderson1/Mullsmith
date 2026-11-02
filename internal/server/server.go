@@ -244,9 +244,10 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			"max_message_chars": s.cfg.Limits.MaxMessageChars,
 		},
 		"tools": map[string]bool{
-			"web_search": s.cfg.Tools.WebSearch.Enabled,
-			"web_fetch":  s.cfg.Tools.WebFetch.Enabled,
-			"code_run":   s.cfg.Scratchpad.CodeExec.Enabled,
+			"web_search":   s.cfg.Tools.WebSearch.Enabled,
+			"web_fetch":    s.cfg.Tools.WebFetch.Enabled,
+			"web_download": s.cfg.Tools.WebDownload.Enabled,
+			"code_run":     s.cfg.Scratchpad.CodeExec.Enabled,
 		},
 		"files": map[string]any{
 			"max_file_size":      int64(s.cfg.Scratchpad.MaxFileSize),

@@ -1,18 +1,8 @@
 package server
 
-// C7 — identified rounds and a shared live/history projection, server half.
-//
-// The defect this pins was observable without any browser: the loop inserts
-// one assistant row per model round but announced only the first, so the
-// client accumulated a whole multi-round reply into one bubble and stamped it
-// with the FINAL row's id. Reload then showed a different structure —
-// different bubble boundaries, cards rebuilt by re-parsing middle-elided
-// model-facing text, and terminal reasons that existed only in the live
-// stream.
-//
-// Every test here compares what the STREAM says against what the HISTORY API
-// says about the same rows: the client renders one projection of those rows
-// for both views, so agreement between these two is the contract.
+// Round projection tests compare streamed message identities, tool cards and
+// terminal outcomes with the history API for the same exchange. Both views
+// must describe the same persisted rows in the same order.
 
 import (
 	"encoding/json"
@@ -22,8 +12,8 @@ import (
 	"testing"
 )
 
-// c7Page mirrors the history projection these tests compare events against.
-type c7Page struct {
+// messageHistoryPage mirrors the history projection these tests compare events against.
+type messageHistoryPage struct {
 	Items []struct {
 		ID           string `json:"id"`
 		Role         string `json:"role"`
@@ -86,7 +76,7 @@ func lastRoundID(t *testing.T, done map[string]any) string {
 // approval and returns the drained stream plus the rows it left behind.
 func runExchange(t *testing.T, tool *fakeTool, reply [][]string,
 	title, text string,
-) (*eventStream, c7Page, *authTest, convResp) {
+) (*eventStream, messageHistoryPage, *authTest, convResp) {
 	t.Helper()
 	reg := registryFor(map[string]string{"web_search": "auto"}, tool)
 	cfg := toolChatCfg(t, 4, map[string]string{"web_search": "auto"})
@@ -95,12 +85,12 @@ func runExchange(t *testing.T, tool *fakeTool, reply [][]string,
 	resp := sendChat(t, a, c.ID, text)
 	defer resp.Body.Close()
 	es := drainSSE(t, newSSEReader(t, resp))
-	var page c7Page
+	var page messageHistoryPage
 	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
 	return &es, page, a, c
 }
 
-func twoRoundExchange(t *testing.T, tool *fakeTool) (*eventStream, c7Page, *authTest, convResp) {
+func twoRoundExchange(t *testing.T, tool *fakeTool) (*eventStream, messageHistoryPage, *authTest, convResp) {
 	t.Helper()
 	return runExchange(t, tool, [][]string{
 		{toolCallChunk(0, "call_1", "web_search", `{"query":"kyoto"}`), finishChunk("tool_calls")},
@@ -224,7 +214,7 @@ func TestToolCardPayloadSurvivesReload(t *testing.T) {
 		t.Fatal("no tool_end payload arrived live")
 	}
 
-	var page c7Page
+	var page messageHistoryPage
 	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
 	var stored map[string]any
 	for _, it := range page.Items {
@@ -305,7 +295,7 @@ func TestDeniedCallCardIsDurable(t *testing.T) {
 	if liveSummary == "" {
 		t.Fatal("live denial carried no card summary")
 	}
-	var page c7Page
+	var page messageHistoryPage
 	getJSON(t, ac.a, "/api/v1/conversations/"+ac.conv.ID+"/messages", &page)
 	var stored map[string]any
 	found := false
@@ -372,7 +362,7 @@ func TestStrandedTerminalReasonSurvivesReload(t *testing.T) {
 	if note == "" {
 		t.Fatalf("the stranded round carries no note: %v", rounds[0])
 	}
-	var page c7Page
+	var page messageHistoryPage
 	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
 	var lastNote string
 	for _, it := range page.Items {
@@ -421,7 +411,7 @@ func TestRegenerateRetiresWholeTurn(t *testing.T) {
 
 	// One turn, one answer: the retired round rows AND the tool answer that
 	// fed them are gone.
-	var page c7Page
+	var page messageHistoryPage
 	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
 	var assistant, toolRows int
 	var content string

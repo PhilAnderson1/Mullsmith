@@ -247,18 +247,10 @@ func (d *DB) BeginSend(ctx context.Context, userID, convID, content string,
 
 // turnRowsWhere is the single definition of "the rows belonging to one
 // generation's turn" (C7): its assistant rounds, the role='tool' answers of
-// its calls (linked by the endpoint call id, which is what a tool row
-// carries) and the synthetic view_image turns it wrote on the model's behalf
-// (§7.2). Both the retire DELETE and the admission SELECT that predicts it
-// interpolate this, so a retry can never be prompted from rows the swap is
-// about to remove. Bind order: conv, gen, gen, conv, gen.
+// its tool results and synthetic view_image turns. Generation ownership is
+// explicit on every row, never inferred from endpoint call IDs.
 const turnRowsWhere = `conversation_id = ? AND (
-       (generation_id = ? AND role = 'assistant')
-    OR (synthetic = 1 AND generation_id = ?)
-    OR (role = 'tool' AND tool_call_id IN (
-          SELECT llm_call_id FROM tool_calls WHERE message_id IN (
-            SELECT id FROM messages
-            WHERE conversation_id = ? AND generation_id = ? AND role = 'assistant')))
+	 generation_id = ? AND (role IN ('assistant', 'tool') OR synthetic = 1)
 	)`
 
 // TurnRetireIDs returns the ids a regeneration of msgID would retire — the
@@ -277,7 +269,7 @@ func (d *DB) TurnRetireIDs(ctx context.Context, convID, msgID string) ([]string,
 		return nil, err
 	}
 	rows, err := d.sqlDB.QueryContext(ctx,
-		`SELECT id FROM messages WHERE `+turnRowsWhere, convID, gen, gen, convID, gen)
+		`SELECT id FROM messages WHERE `+turnRowsWhere, convID, gen)
 	if err != nil {
 		return nil, err
 	}
@@ -347,13 +339,8 @@ func (d *DB) BeginTurnRegeneration(ctx context.Context, userID, convID, oldMsgID
 		return nil, ErrConversationNotFound // indistinguishable (§9.2)
 	}
 
-	// Newestness, measured against OTHER turns (C7). created_at has second
-	// granularity and ids are not chronological, so within one multi-round
-	// turn the ORDER BY tie-break says nothing about which row came last —
-	// comparing against the raw newest row would refuse a legitimate
-	// regenerate of its own final answer. What must not exist is a newer row
-	// belonging to a DIFFERENT turn: that is the interleaved send this guard
-	// was always about.
+	// Only newer rows outside this generation block regeneration. Its own
+	// completed tool results can follow the last assistant row after a stop.
 	var newer int
 	err = tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM messages
@@ -369,7 +356,7 @@ func (d *DB) BeginTurnRegeneration(ctx context.Context, userID, convID, oldMsgID
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM messages WHERE `+turnRowsWhere,
-		convID, oldGen, oldGen, convID, oldGen); err != nil {
+		convID, oldGen); err != nil {
 		return nil, err
 	}
 	if genID == "" {

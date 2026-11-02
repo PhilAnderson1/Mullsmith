@@ -206,11 +206,16 @@ tools:
     enabled: true                 # fetch a URL and return extracted text (SSRF-guarded)
     max_bytes: 512KiB
     timeout: 15s
+  web_download:
+    enabled: true                 # save a public URL to the scratchpad (same SSRF guard)
+    max_bytes: 25MiB
+    timeout: 60s
   agent:
-    max_tool_rounds: 8            # cap on tool-call loop per user turn
+    max_tool_rounds: 20           # cap on tool-call loop per user turn
     approval:
       web_search: auto            # auto | confirm
       web_fetch: auto
+      web_download: auto
       fs_read: auto
       fs_write: auto
       files_share: auto           # model presents a scratchpad file for download
@@ -462,7 +467,7 @@ caller's own tree (§9.7), so cross-user probing is structurally impossible
 | Method | Path | Description |
 |---|---|---|
 | POST | `/api/v1/files` | multipart upload into `uploads/`. Enforces `max_file_size`, `user_quota`. The **whole request** carries one byte budget — `max_file_size` + 64 KiB framing allowance — so oversized ignored fields and file-less drains are refused `413 upload_too_large` mid-stream (§9.11); part count capped at 64. The **real filename lives on disk** (sanitized to one safe segment); a name collision bumps to `name (1).ext` and never overwrites. Returns `{name, path, size, created_at, media_type, download_url}`. |
-| GET | `/api/v1/files?kind=` | One physical walk of `uploads/`, `artifacts/` and `work/` (or one directory via the plural filter `kind=uploads|artifacts|work`): regular non-hidden files plus DIRECTORIES (incl. empty ones, `kind:"dir"` with a capped recursive file count), newest-modified first, capped at 500 per directory (`truncated` flag). Item kinds are `upload|artifact|work|dir`, derived from the directory the bytes sit in — nothing to dedupe, nothing to reconcile. No cursor: the disk answers in one page. Carries the quota object. |
+| GET | `/api/v1/files?kind=&cursor=&limit=` | Cursor pages over `uploads/`, `artifacts/` and `work/` (or one directory via `kind=uploads|artifacts|work`): regular non-hidden files plus directories (including empty ones, `kind:"dir"` with a capped recursive file count). Order is modification time descending, then relative path ascending, retaining nanosecond precision in the cursor. Defaults to 50 entries, maximum 200; returns `next_cursor` and quota. Cursors are bound to the selected filter. Each request streams a descriptor-pinned scan, inspecting at most 200,000 entries per layout directory at the existing listing depth of four directory levels; only one page plus a sentinel is retained in memory. Incomplete scans fail explicitly, rather than claiming a partial list contains the newest files. The client offers Load more files, retries failed pages, deduplicates paths, and resets pagination on tab changes or file-operation refreshes. Files modified or added ahead of the current cursor appear on refresh; deleted cursor entries do not invalidate pagination. |
 | GET | `/api/v1/files/download?path=` | Streams one file from any of the three dirs; path sandboxed (§9.7), regular files only (a FIFO would block the open), always `Content-Disposition: attachment` — no inline mode (§9.4). |
 | DELETE | `/api/v1/files?path=` | Delete one file — or a whole directory tree (leaves first, every element through the fd-pinned sandbox; a tree with any unreadable part is refused, not half-deleted). The three layout dirs themselves are undeletable. Bytes gone is all it means: nothing else to delete. |
 | DELETE | `/api/v1/files?older_than=&kind=` | Bulk housekeeping (the Files page's "Delete older than…" — `older_than` reuses the conversation-prune tokens `1d`/`1w`/`1mo`/`1y`/`all`; `kind` optionally one layout dir, empty = all three, so the purge is confined to the active view; `path` here → 400, they are alternatives). Runs the fd-pinned sweep (§9.7) per dir with an explicit budget (50k unlinks / 200k inspections — a capped answer invites a re-run); aged regular files go at any depth, empty dirs past the cutoff are rmdir'd (the dir cutoff is floored to one nanosecond so `all` clears empty dirs too — a dir emptied by the purge itself has its mtime bumped and ages for a later pass), symlinks and specials go as themselves. Missing dirs are simply empty. Answers `{files_deleted, dirs_deleted, capped}`. |
@@ -485,7 +490,7 @@ swapped, entry removed) resolves to `default_model` everywhere the active model 
 API projection, picker, wire request, thinking, window — while the stored name survives a
 config that later restores it),
 char limit, tools
-map — `web_search`/`web_fetch`/`code_run` — and file caps: max size, max attachments,
+map — `web_search`/`web_fetch`/`web_download`/`code_run` — and file caps: max size, max attachments,
 `blocked_extensions` — used by the login/register screens, composer and upload UI),
 everything else behind auth.
 
@@ -521,7 +526,10 @@ everything else behind auth.
      pause and emit `awaiting_approval`; block until `/approval` or timeout (10 min → denied);
    - execute with per-tool timeout; capture result, truncate to a per-tool budget
      (e.g. 8 KiB, middle-elided), persist `tool_calls` row, emit `tool_call` end event;
-   - append tool result to messages, re-invoke the model; loop up to `max_tool_rounds`.
+   - append tool result to messages and re-invoke the model;
+   - execute tools for at most `max_tool_rounds` rounds per reply (default 20; a round may contain multiple calls);
+   - over-limit calls are not executed or sent for approval. Persist and return `{"error":"tool call limit reached"}` as their normal tool results, keeping tool definitions available;
+   - let the model respond to those errors without prescribing a recovery action. If it requests tools again, persist and refuse those calls, then stop with a durable limit-reached note.
 6. Persist final assistant message; bump `conversations.updated_at`; emit `done`
    (with token usage: the round's `total_tokens`, `completion_tokens` — both estimated
    when the endpoint stays silent — and the model-round `duration_ms`, tool runs
@@ -686,6 +694,7 @@ output is data, never instructions; approval gates bound the blast radius).
 |---|---|---|
 | `web_search` | `query` | Brave Search API → N results `{title, url, snippet}` as JSON. |
 | `web_fetch` | `url` | GET, http/https only, ≤ 3 redirects, ≤ `max_bytes`; strip HTML→text; SSRF blocklist (§9.6). |
+| `web_download` | `url, path` | GET a public HTTP(S) URL through the same guarded client as `web_fetch`, saving original bytes to a new file under `work/` or `artifacts/` (parent must exist). Requires HTTP 200; size, read, cancellation or quota failures discard the temporary file. No overwrites or partial files; returns path, bytes, content type and final URL. Independently configurable via `tools.web_download.enabled/max_bytes/timeout`; defaults: disabled, 25 MiB, 60 s, auto approval. Does not require code-execution network access. Use `files_share` to deliver the file to the user. |
 | `fs_list` | `path?` | List scratchpad dir (relative paths only; default root). |
 | `fs_read` | `path` | Read text file (≤ 256 KiB) from user's scratchpad. |
 | `fs_write` | `path, content` | Write text file inside scratchpad; creates parent dirs; quota-checked. |
@@ -942,8 +951,18 @@ host, so **every** egress path (search provider aside) shares one guarded HTTP c
   RFC1918, CGNAT `100.64.0.0/10`, link-local incl. cloud metadata `169.254.169.254`,
   IPv6 `::1`/ULA; re-validate on **every redirect hop** (≤ 3), and connect with the
   already-validated IP pinned in a custom dialer (closes DNS-rebinding TOCTOU).
+  Also refuse IPv4 "this network" and documentation space, scoped IPv6,
+  IPv6 outside `2000::/3`, and the special-purpose ranges `2001::/23`,
+  `2001:db8::/32`, `2002::/16` and `3fff::/20`. This deliberately excludes
+  translation/tunnelling ranges and rare public protocol exceptions. IPv4-mapped
+  IPv6 is checked as IPv4. Every new connection also checks the host's current
+  assigned interface addresses, refusing even public addresses belonging to this
+  server; inability to inspect interfaces fails closed. These address checks do
+  not replace firewall rules for site-specific routing, NAT or translation.
 - Schemes http/https only; default ports 80/443 unless config opens others; response capped
   at `tools.web_fetch.max_bytes`; redirects never followed from public → private.
+  `web_download` uses this same guarded client and redirect policy, with its own
+  `tools.web_download.max_bytes` bound; oversized downloads fail rather than truncate.
 - **No client cookies, no stored sessions, and no ambient auth** in the fetch client — it
   cannot carry mullsmith or provider credentials to an attacker URL; GET only.
 - Search-provider and LLM traffic goes to exactly the configured endpoints — the LLM API

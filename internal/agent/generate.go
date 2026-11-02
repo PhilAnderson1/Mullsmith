@@ -85,23 +85,13 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		for _, tc := range d.ToolCalls {
 			a := acc[tc.Index]
 			if a == nil {
-				a = &callAccumulator{}
+				a = &callAccumulator{id: id.New()}
 				acc[tc.Index] = a
 				order = append(order, tc.Index)
 			}
-			// Canonical identity (finding 6): an endpoint that omits the call
-			// id gets ONE minted here, so the live card, the completed call,
-			// the audit row and the replayed protocol all carry the same id.
-			// Minting downstream instead gave the delta stream and the final
-			// assembly two ids — the first card never received its final
-			// tool event and a fallback card appeared under the second one.
-			// Absorb runs FIRST so the endpoint's own id wins when it
-			// arrives before anything is published; once published, absorb
-			// freezes and later ids cannot overwrite it (review2 finding 5).
+			// Own the identity: endpoint IDs can repeat across calls or rounds.
+			// This same ID names live cards, persisted calls and protocol replay.
 			a.absorb(tc)
-			if a.id == "" {
-				a.id = id.New()
-			}
 			if toolDelta != nil && a.name != "" {
 				if !a.announced {
 					a.announced = true
@@ -184,15 +174,6 @@ type callAccumulator struct {
 }
 
 func (a *callAccumulator) absorb(d llm.ToolCallDelta) {
-	// The ID freezes once published (review2 finding 5): Round mints a
-	// canonical id at the first delta and every later delta, the completed
-	// call, the audit row and the replayed protocol must agree on it. A
-	// late fragment carrying the endpoint's own id therefore does NOT
-	// replace it — live cards keyed by the published identity would never
-	// receive their argument and end events.
-	if a.id == "" && d.ID != "" {
-		a.id = d.ID
-	}
 	if d.Name != "" {
 		a.name = d.Name
 	}

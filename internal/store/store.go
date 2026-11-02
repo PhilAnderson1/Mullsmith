@@ -12,7 +12,7 @@ import (
 	_ "modernc.org/sqlite" // pure-Go driver — CGO_ENABLED=0 builds stay static
 )
 
-//go:embed schema.sql
+//go:embed schema/schema.sql
 var schemaSQL string
 
 // DB wraps the sql database handle.

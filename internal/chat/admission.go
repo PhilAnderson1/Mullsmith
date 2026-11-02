@@ -113,9 +113,8 @@ func (s *Service) AdmitSend(ctx context.Context, conv *store.Conversation,
 
 // continuationFull re-measures a growing tool continuation against the same
 // overflow line admission applied (finding 7): by round N the transcript
-// carries every result so far, and no further check had ever run. roundTools
-// is what THIS round would advertise — nil once maxRounds forces the final
-// answer, whose schemas then leave the request.
+// carries every result so far. Tool definitions remain advertised when the
+// execution limit is reached; refusal feedback lets the model choose its reply.
 //
 // The line already subtracts the FULL output reserve, so a continuation
 // under it always leaves the request's max_tokens affordable — one figure,

@@ -21,7 +21,7 @@ func stalledExit(t *testing.T) <-chan struct{} {
 	return ch
 }
 
-// C8 integration: an endpoint that sends headers and one token, then goes
+// An endpoint that sends headers and one token, then goes
 // silent, is cut by the stall budget and travels the EXISTING failure path
 // end to end — partial output persisted, sanitized upstream_error event,
 // done/status error, and the conversation slot free for the next send.

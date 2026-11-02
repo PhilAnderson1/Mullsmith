@@ -53,6 +53,35 @@ func (s *Service) CommitUpload(root, userID, temp, display string, n int64) (str
 	}
 	return placeNamed(root, userID, "uploads", display, temp)
 }
+
+// CommitDownload atomically places a completed download in an existing work/
+// or artifacts/ directory. It never replaces existing files. The caller owns
+// the temporary file and removes it on every failure.
+func (s *Service) CommitDownload(root, userID, temp, rel string, n int64) error {
+	if err := WriteTarget(rel); err != nil {
+		return safeError("web_download", err)
+	}
+	if !scratch.DiskFloorOK(root) {
+		return ErrDiskLow
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	used, err := scratch.DirSize(root, userID)
+	if err != nil {
+		return ErrUnverified
+	}
+	if n < 0 || (s.quota > 0 && (used > s.quota || n > s.quota-used)) {
+		return ErrQuota
+	}
+	if err := scratch.PlaceNoReplace(root, userID, rel, temp); err != nil {
+		if errors.Is(err, scratch.ErrExists) {
+			return errors.New("web_download: destination already exists; choose another path")
+		}
+		return safeError("web_download", err)
+	}
+	return nil
+}
+
 func placeNamed(root, userID, dir, name, temp string) (string, error) {
 	for i := 0; i < 200; i++ {
 		rel := path.Join(dir, scratch.BumpName(name, i))

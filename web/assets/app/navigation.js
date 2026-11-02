@@ -129,6 +129,8 @@ export function createNavigationController({
   function earlierButton(cursor) {
     const btn = view.earlierButtonNode();
     btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
       const convId = state.currentId; // the page belongs to THIS thread
       // The view EPOCH, not just the ID (C5): leaving for B and returning to
       // A restores ID equality, but this page was requested against the
@@ -142,8 +144,10 @@ export function createNavigationController({
         view.prependPage(btn,nextBtn,data.items);
       } catch (err) {
         handleErr(err, "load earlier messages");
+      } finally {
+        btn.disabled = false;
       }
-    }, { once: true });
+    });
     return btn;
   }
 

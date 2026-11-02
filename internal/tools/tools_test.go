@@ -251,6 +251,32 @@ func TestWebFetchBinaryRefused(t *testing.T) {
 	}
 }
 
+func TestWebFetchTruncatesAtUTF8Boundary(t *testing.T) {
+	for _, suffix := range []string{"é", "€", "😀"} {
+		t.Run(suffix, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.Write([]byte(strings.Repeat("a", 1023) + suffix))
+			}))
+			defer srv.Close()
+			res, err := NewWebFetch(srv.Client(), 1024).Execute(context.Background(), Invocation{Arguments: `{"url":"` + srv.URL + `"}`})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Text      string `json:"text"`
+				Truncated bool   `json:"truncated"`
+			}
+			if err := json.Unmarshal([]byte(res.Content), &result); err != nil {
+				t.Fatal(err)
+			}
+			if !result.Truncated || result.Text != strings.Repeat("a", 1023) {
+				t.Fatalf("bad truncation: %+v", result)
+			}
+		})
+	}
+}
+
 // --- budget helpers --------------------------------------------------------------
 
 func TestTruncateMiddle(t *testing.T) {

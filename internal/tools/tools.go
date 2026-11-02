@@ -16,7 +16,7 @@ import (
 // Invocation is one execution of a tool on behalf of a user.
 type Invocation struct {
 	UserID     string
-	Scratchpad string // absolute dir for fs_* tools (M5); unused by network tools
+	Scratchpad string // absolute base dir for tools that access the user's files
 	Arguments  string // raw JSON proposed by the model
 }
 

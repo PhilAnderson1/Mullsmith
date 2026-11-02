@@ -67,6 +67,7 @@ func (op *Operation) Run(emit Emit) {
 	// round's status string happens to be empty. A disconnect AFTER a
 	// persisted final answer sets nothing and relabels nothing.
 	var cancelledOut bool
+	var limitStopped bool
 	// rounds records each round's outcome IN ROW ORDER (C7). Every entry
 	// exists because its row was really finalised (C6's rule, unchanged): a
 	// write the database refused is not a round the client is told about.
@@ -106,11 +107,7 @@ func (op *Operation) Run(emit Emit) {
 	}
 	round := 0
 	for {
-		roundTools := toolSpecs
-		if round >= maxRounds {
-			roundTools = nil // force a final, tool-less answer
-		}
-		if round > 0 && s.continuationFull(conv, msgs, roundTools) {
+		if round > 0 && s.continuationFull(conv, msgs, toolSpecs) {
 			// Every tool result so far rides msgs; a continuation the
 			// admission gate never saw can now cross the line itself.
 			// Refuse the NEXT round before paying for it: the transcript
@@ -123,7 +120,7 @@ func (op *Operation) Run(emit Emit) {
 			break
 		}
 		roundStart := time.Now() // model time only: tool runs land on tool cards
-		res = s.runModelRound(genCtx, conn, s.Model(conv.Model), msgs, roundTools,
+		res = s.runModelRound(genCtx, conn, s.Model(conv.Model), msgs, toolSpecs,
 			thinkFrag, am.ID)
 		roundMS := time.Since(roundStart).Milliseconds()
 
@@ -133,7 +130,7 @@ func (op *Operation) Run(emit Emit) {
 			}
 			break
 		}
-		if len(res.ToolCalls) == 0 || round >= maxRounds {
+		if len(res.ToolCalls) == 0 {
 			if ferr := finRound(am.ID, res.Content, "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
 				storeErr = ferr
 			}
@@ -168,7 +165,13 @@ func (op *Operation) Run(emit Emit) {
 				cancelledOut = true
 				break
 			}
-			result, attach, terr := s.runToolCall(genCtx, g, conn, userID, conv.ID, am.ID, call, visionOn)
+			var result, attach string
+			var terr error
+			if round >= maxRounds {
+				result, terr = s.rejectToolCall(genCtx, conn, userID, conv.ID, am.ID, g.ID, call, "tool call limit reached")
+			} else {
+				result, attach, terr = s.runToolCall(genCtx, g, conn, userID, conv.ID, am.ID, call, visionOn)
+			}
 			perr = terr
 			msgs = append(msgs, llm.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 			if attach != "" {
@@ -200,6 +203,14 @@ func (op *Operation) Run(emit Emit) {
 			}
 		}
 		if cancelledOut || storeErr != nil || perr != nil {
+			break
+		}
+		// The first refused round feeds ordinary tool errors back to the
+		// model, with the tool definitions intact. It chooses its own next
+		// response. A repeated request is recorded and refused too, then
+		// ends this generation rather than starting an unbounded error loop.
+		if round > maxRounds {
+			limitStopped = true
 			break
 		}
 
@@ -261,6 +272,9 @@ func (op *Operation) Run(emit Emit) {
 			"conversation", conv.ID, "rid", cmd.RequestID)
 		_ = conn.Send(Failed{Code: "storage_error", Message: "the reply could not be fully saved; reload this conversation"})
 	}
+	if limitStopped {
+		_ = conn.Send(Failed{Code: "tool_call_limit", Message: "tool call limit reached"})
+	}
 	// One terminal-outcome calculation with explicit precedence (C6, and
 	// review3 issue 3): a context refusal or a storage failure describe a
 	// state the client must act on or reload; a cancellation that STOPPED
@@ -278,6 +292,8 @@ func (op *Operation) Run(emit Emit) {
 		doneStatus = "error" // never announce a success the database refused
 	case cancelledOut:
 		doneStatus = "aborted"
+	case limitStopped:
+		doneStatus = "error"
 	case genCtx.Err() != nil && doneStatus == "":
 		doneStatus = "aborted"
 	}
@@ -292,6 +308,8 @@ func (op *Operation) Run(emit Emit) {
 		noteStranded(noteSaveIncomplete)
 	} else if doneStatus == "aborted" {
 		noteStranded(noteStoppedShort)
+	} else if limitStopped {
+		noteStranded("Tool call limit reached.")
 	}
 	_ = conn.Send(Finished{GenerationID: g.ID, Status: doneStatus, Rounds: rounds, Usage: res.Usage})
 }

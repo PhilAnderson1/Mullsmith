@@ -70,13 +70,14 @@ export function toolCardNode(callId, tool) {
 }
 
 // toolCardsHost is where cards live on a bubble: OUTSIDE .msg-body, which
-// finishGeneration clears when the markdown answer lands.
+// finishGeneration clears when the markdown answer lands. Prose introduces
+// this round's calls, so keep it above their cards in both live and history views.
 export function toolCardsHost(el) {
   let host = el.querySelector(".tool-cards");
   if (!host) {
     host = document.createElement("div");
     host.className = "tool-cards";
-    el.querySelector(".msg-body").before(host);
+    el.querySelector(".msg-body").after(host);
   }
   return host;
 }

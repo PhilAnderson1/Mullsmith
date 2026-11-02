@@ -33,8 +33,15 @@ func (s *Service) runModelRound(ctx context.Context, conn sink, model string,
 
 // execTimeout bounds one tool execution. code_run gets the configured run
 // budget plus a margin so the runner's own process-group kill (§9.9) fires
-// first; this is the outer backstop.
+// first; this is the outer backstop. Web tools similarly get their configured
+// client timeout plus a five-second margin, rather than the generic 30 seconds.
 func (s *Service) execTimeout(tool string) time.Duration {
+	switch tool {
+	case "web_fetch":
+		return s.cfg.Tools.WebFetch.Timeout.D() + 5*time.Second
+	case "web_download":
+		return s.cfg.Tools.WebDownload.Timeout.D() + 5*time.Second
+	}
 	if tool == "code_run" && s.cfg.Scratchpad.CodeExec.Enabled {
 		if d := s.cfg.Scratchpad.CodeExec.Timeout.D(); d > 0 {
 			return d + 15*time.Second
@@ -73,15 +80,15 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 
 	tool, known := s.Tools.Get(name)
 	if !known {
-		emitEnd("error", card("unknown tool", nil))
-		return `{"error":"unknown tool ` + jsonQuote(name) + `"}`, "", nil
+		content, err := s.rejectToolCall(ctx, conn, userID, convID, assistantMsgID, g.ID, call, "unknown tool: "+name)
+		return content, "", err
 	}
 	// Belt to the spec filter: a model whose entry left vision off was
 	// never offered view_image, so a call for it can only be a
 	// hallucination — answered as such, never executed (§7.2).
 	if name == "view_image" && !visionOn {
-		emitEnd("error", card("model cannot see images", nil))
-		return `{"error":"this model cannot see images"}`, "", nil
+		content, err := s.rejectToolCall(ctx, conn, userID, convID, assistantMsgID, g.ID, call, "this model cannot see images")
+		return content, "", err
 	}
 
 	status := "running"
@@ -163,7 +170,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		content := `{"error":` + jsonQuote(msg) + `}`
 		c := card(msg, nil)
 		if ferr := s.finalizeToolCall(tc.ID, "error", content, c.JSON(),
-			dur, userID, convID, callID); ferr != nil {
+			dur, userID, convID, callID, g.ID); ferr != nil {
 			persistErr = ferr
 		}
 		emitEnd("error", c)
@@ -173,11 +180,33 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 	content := tools.TruncateMiddle(tres.Content, ToolResultBudgetRunes)
 	c := card(tres.Summary, tres.Data)
 	if ferr := s.finalizeToolCall(tc.ID, "ok", content, c.JSON(),
-		dur, userID, convID, callID); ferr != nil {
+		dur, userID, convID, callID, g.ID); ferr != nil {
 		persistErr = ferr
 	}
 	emitEnd("ok", c)
 	return content, tres.AttachPath, persistErr
+}
+
+// rejectToolCall records a refused proposal and its model-facing answer
+// without looking up, approving or executing the tool. These error results
+// must replay from history just like the successful calls before the cap.
+func (s *Service) rejectToolCall(ctx context.Context, conn sink,
+	userID, convID, messageID, genID string, call llm.ChatToolCall, reason string,
+) (string, error) {
+	content := `{"error":` + jsonQuote(reason) + `}`
+	card := tools.ClampCard(reason, nil)
+	tc := &store.ToolCall{
+		MessageID: messageID, LLMCallID: call.ID, Tool: call.Function.Name,
+		Arguments: call.Function.Arguments, Status: "error",
+	}
+	err := s.store.AddToolCall(ctx, tc)
+	if err != nil {
+		s.logger.Error("refused tool audit insert failed", "error", err, "call", call.ID)
+	} else {
+		err = s.finalizeToolCall(tc.ID, "error", content, card.JSON(), 0, userID, convID, call.ID, genID)
+	}
+	_ = conn.Send(ToolFinished{CallID: call.ID, MessageID: messageID, Tool: call.Function.Name, Status: "error", Card: card})
+	return content, err
 }
 
 // finalizeToolCall performs the two REQUIRED writes that close one tool
@@ -185,7 +214,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 // errors surface — a call whose answer never landed must not be replayed
 // from memory as though it had (review2 finding 2).
 func (s *Service) finalizeToolCall(tcID, status, content, display string, dur int64,
-	userID, convID, callID string,
+	userID, convID, callID, genID string,
 ) error {
 	ctx, cancel := detachedCtx()
 	defer cancel()
@@ -199,10 +228,10 @@ func (s *Service) finalizeToolCall(tcID, status, content, display string, dur in
 		}
 		// The result row still goes in: an answer the model acted on
 		// should at least be replayable even if its audit tail is thin.
-		_ = s.appendToolResult(ctx, userID, convID, callID, content)
+		_ = s.appendToolResult(ctx, userID, convID, callID, genID, content)
 		return err
 	}
-	return s.appendToolResult(ctx, userID, convID, callID, content)
+	return s.appendToolResult(ctx, userID, convID, callID, genID, content)
 }
 
 // detachedCtx gives a final persistence write 5 s of independence from the
@@ -252,10 +281,11 @@ func (s *Service) awaitApproval(ctx context.Context, g *Generation, conn sink,
 // appendToolResult persists the role='tool' answer row (§4). The error
 // surfaces: replaying a result that never landed is exactly the live-vs-
 // history divergence review2 finding 2 names.
-func (s *Service) appendToolResult(ctx context.Context, userID, convID, callID, content string) error {
+func (s *Service) appendToolResult(ctx context.Context, userID, convID, callID, genID, content string) error {
 	m := &store.Message{
 		ConversationID: convID,
 		Role:           "tool",
+		GenerationID:   genID,
 		Content:        content,
 		Status:         "complete",
 		ToolCallID:     callID,

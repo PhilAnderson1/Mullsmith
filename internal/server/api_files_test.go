@@ -453,6 +453,12 @@ func TestListKindsFiltersAndFolders(t *testing.T) {
 	}
 	up := a.upload("sales.csv", []byte("a,b\n"))
 	up.Body.Close()
+	// Set ordering explicitly; filesystem mtime resolution need not distinguish
+	// writes performed in the same tick.
+	fresh := time.Now().Add(time.Second)
+	if err := os.Chtimes(filepath.Join(userRoot, "uploads", "sales.csv"), fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
 
 	all := listItems(t, a, "")
 	// 1 upload + 1 artifact + 3 work files + 2 work dirs = 7
