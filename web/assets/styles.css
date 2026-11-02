@@ -217,6 +217,7 @@ label { display: block; margin: 0.8rem 0 0.25rem; font-weight: 600; }
 .topbar .icon-btn svg { width: 20px; height: 20px; }
 #btn-menu svg { width: 26px; height: 26px; }
 .topbar .icon-btn:hover, .topbar .icon-btn:focus-visible { color: var(--fg); }
+.topbar-title { display: none; }
 .model-picker {
   flex: 0 0 auto;
   margin-inline-start: auto;
@@ -701,7 +702,27 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
     max-width: 1800px;
     margin-inline: auto;
   }
-  .topbar { justify-content: flex-end; border-bottom: none; }
+  .topbar {
+    justify-content: flex-end;
+    border-bottom: none;
+    /* Align the title with the centred message column. Keep this calculation
+       on the base-sized bar: resolving the ch-based thread width on the
+       larger title itself would shift the title to the left. */
+    padding-inline-start: max(1.75rem, calc((100% - var(--thread-max)) / 2 - 0.5rem));
+  }
+  .topbar-title {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin: 0;
+    color: var(--fg);
+    font-size: 1.1em;
+    font-weight: 600;
+    line-height: 1.25;
+  }
   #btn-menu { display: none; }
   #sidebar {
     grid-area: sidebar;
@@ -719,10 +740,10 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   body.drawer-open #backdrop { display: none; }
 }
 
-/* ---------- ultrawide ≥1600: roomier margins, capped text ---------- */
+/* ---------- wide desktop ≥1400: roomier conversation and sidebar ---------- */
 
-@media (min-width: 1600px) {
-  :root { --thread-max: 78ch; }
+@media (min-width: 1400px) {
+  :root { --thread-max: 88ch; }
   #sidebar { padding-inline: 1rem; }
 }
 

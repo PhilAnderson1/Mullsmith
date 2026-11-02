@@ -129,6 +129,7 @@ const navigation = createNavigationController({
   view: renderer, getGeneration: () => generation.current,
   abandon: () => generation.abandonInflight(), renderConversation,
   syncComposerButtons, markActive, focusComposer, showAuth, toast, handleErr,
+  recoverMissingConversation: firstConversationAfterRefresh,
 });
 generation = createGenerationController({
   navigation, view: renderer, getMeta: () => state.meta, syncComposerButtons,
@@ -549,7 +550,10 @@ function convRow(c) {
       const updated = await api.patchConversation(c.id, { title });
       c.title = updated.title;
       li.querySelector(".conv-title").textContent = updated.title;
-      if (c.id === navigation.currentId) renderConversation();
+      if (c.id === navigation.currentId) {
+        navigation.updateConversation({ ...navigation.currentConv, title: updated.title });
+        renderConversation();
+      }
     } catch (err) {
       handleErr(err, "rename");
     }
@@ -667,6 +671,10 @@ function applyTitle(id, title) {
   if (c) c.title = title;
   const row = document.querySelector(`#conv-list .conv-item[data-id="${CSS.escape(id)}"]`);
   if (row) row.querySelector(".conv-title").textContent = title;
+  if (id === navigation.currentId && navigation.currentConv) {
+    navigation.updateConversation({ ...navigation.currentConv, title });
+    $("#topbar-title").textContent = title;
+  }
 }
 
 // promoteConversation is a LOCAL mirror of server-side ordering: posting a
@@ -695,6 +703,11 @@ async function loadConversations() {
   list.replaceChildren();
   for (const c of state.convs) list.appendChild(convRow(c));
   show($("#btn-more"), Boolean(state.convCursor));
+}
+
+async function firstConversationAfterRefresh() {
+  await loadConversations();
+  return state.convs[0]?.id || "";
 }
 
 // One page-load at a time, and JOINING the current list sequence rather
@@ -1276,6 +1289,9 @@ function fileRow(f) {
 
 function renderConversation() {
   const c = navigation.currentId ? navigation.currentConv : null;
+  const title = $("#topbar-title");
+  title.textContent = c?.title || "";
+  show(title, Boolean(c));
   const sel = $("#model-picker");
   sel.disabled = !navigation.currentId;
   if (c) {

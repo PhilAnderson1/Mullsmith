@@ -2,7 +2,8 @@
 import { api, ApiError } from "/assets/app/api.js";
 import { LatestWins } from "/assets/app/ownership.js";
 export function createNavigationController({
-  view, getGeneration, abandon, renderConversation, syncComposerButtons, markActive, focusComposer, showAuth, toast, handleErr
+  view, getGeneration, abandon, renderConversation, syncComposerButtons, markActive, focusComposer,
+  showAuth, toast, handleErr, recoverMissingConversation
 }) {
   const state = {
     currentId: "", currentConv: null, navPendingId: "", reconcileId: "",
@@ -82,8 +83,24 @@ export function createNavigationController({
       if (err instanceof ApiError && err.status === 404) {
         toast("That conversation no longer exists.");
         state.currentId = "";
+        state.currentConv = null;
+        state.reconcileId = "";
+        state.lastCtxUsed = 0;
+        state.threadRev++;
         location.hash = "";
         renderConversation();
+        if (recoverMissingConversation) {
+          try {
+            const replacement = await recoverMissingConversation();
+            if (!navOwner.isCurrent(tok)) return;
+            if (replacement) {
+              await selectConversation(replacement);
+              if (state.currentId === replacement) location.hash = `#/c/${replacement}`;
+            }
+          } catch (refreshErr) {
+            if (navOwner.isCurrent(tok)) handleErr(refreshErr, "refresh conversations");
+          }
+        }
         return;
       }
       // Nothing committed — the previous thread is still the whole truth,

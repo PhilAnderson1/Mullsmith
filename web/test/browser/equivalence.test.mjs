@@ -636,7 +636,9 @@ test("older-chat pagination follows the list without covering rows or skipping l
         assert.ok(shell.headerHeight < 100, "long history stretched the header row");
         assert.ok(shell.chatHeight > shell.viewportHeight * 0.6, "long history collapsed the chat area");
       }
-      assert.equal(await page.locator("#topbar-title").count(), 0, "conversation title should live only in the sidebar");
+      assert.equal(await page.locator("#topbar-title").count(), 1);
+      assert.equal(await page.locator("#topbar-title").isVisible(), width >= 1024,
+        "conversation title visibility should follow the persistent-sidebar breakpoint");
       assert.equal(before.initiallyBelow, true, "pagination floated over the visible list");
       assert.ok(before.lastBottom <= before.buttonTop, "pagination covered the oldest visible chat");
       assert.ok(before.buttonHeight >= 44, "pagination lost its touch target");
