@@ -3,13 +3,13 @@
 package managed
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"strings"
-	"sync"
 
 	"mullsmith/internal/id"
 	"mullsmith/internal/scratch"
@@ -23,55 +23,67 @@ var (
 )
 
 type Service struct {
-	mu    sync.Mutex
+	gate  chan struct{}
 	quota int64
 }
 
-func New(quota int64) *Service { return &Service{quota: quota} }
+func New(quota int64) *Service { return &Service{quota: quota, gate: make(chan struct{}, 1)} }
 
 type File struct {
 	Path, Name string
 	Bytes      int64
 }
 
-func (s *Service) Check(root, userID string) error { return checkQuota(root, userID, s.quota) }
-func (s *Service) Exceeds(root, userID string) (bool, error) {
+func (s *Service) Check(ctx context.Context, root, userID string) error {
+	return checkQuota(ctx, root, userID, s.quota)
+}
+func (s *Service) Exceeds(ctx context.Context, root, userID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if s.quota <= 0 {
 		return false, nil
 	}
-	return scratch.DirSizeExceeds(root, userID, s.quota)
+	return scratch.DirSizeExceeds(ctx, root, userID, s.quota)
 }
-func (s *Service) CommitUpload(root, userID, temp, display string, n int64) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	used, err := scratch.DirSize(root, userID)
+func (s *Service) CommitUpload(ctx context.Context, root, userID, temp, display string, n int64) (string, error) {
+	if err := s.acquire(ctx); err != nil {
+		return "", err
+	}
+	defer s.release()
+	used, err := scratch.DirSize(ctx, root, userID)
 	if err != nil {
-		return "", ErrUnverified
+		return "", storageError(err)
 	}
 	if s.quota > 0 && used+n > s.quota {
 		return "", ErrQuota
 	}
-	return placeNamed(root, userID, "uploads", display, temp)
+	return placeNamed(ctx, root, userID, "uploads", display, temp)
 }
 
 // CommitDownload atomically places a completed download in an existing work/
 // or artifacts/ directory. It never replaces existing files. The caller owns
 // the temporary file and removes it on every failure.
-func (s *Service) CommitDownload(root, userID, temp, rel string, n int64) error {
+func (s *Service) CommitDownload(ctx context.Context, root, userID, temp, rel string, n int64) error {
 	if err := WriteTarget(rel); err != nil {
 		return safeError("web_download", err)
 	}
 	if !scratch.DiskFloorOK(root) {
 		return ErrDiskLow
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	used, err := scratch.DirSize(root, userID)
+	if err := s.acquire(ctx); err != nil {
+		return err
+	}
+	defer s.release()
+	used, err := scratch.DirSize(ctx, root, userID)
 	if err != nil {
-		return ErrUnverified
+		return storageError(err)
 	}
 	if n < 0 || (s.quota > 0 && (used > s.quota || n > s.quota-used)) {
 		return ErrQuota
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := scratch.PlaceNoReplace(root, userID, rel, temp); err != nil {
 		if errors.Is(err, scratch.ErrExists) {
@@ -82,8 +94,11 @@ func (s *Service) CommitDownload(root, userID, temp, rel string, n int64) error 
 	return nil
 }
 
-func placeNamed(root, userID, dir, name, temp string) (string, error) {
+func placeNamed(ctx context.Context, root, userID, dir, name, temp string) (string, error) {
 	for i := 0; i < 200; i++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		rel := path.Join(dir, scratch.BumpName(name, i))
 		err := scratch.PlaceNoReplace(root, userID, rel, temp)
 		if err == nil {
@@ -95,21 +110,23 @@ func placeNamed(root, userID, dir, name, temp string) (string, error) {
 	}
 	return "", ErrConflict
 }
-func (s *Service) Stage(root, userID string, rels []string) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.Check(root, userID); err != nil {
+func (s *Service) Stage(ctx context.Context, root, userID string, rels []string) ([]string, error) {
+	if err := s.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer s.release()
+	if err := s.Check(ctx, root, userID); err != nil {
 		return nil, err
 	}
 	if err := scratch.EnsureUserDirs(root, userID); err != nil {
 		return nil, safeError("code_run stage", err)
 	}
-	if err := precheckStagedSizes(root, userID, rels, s.quota); err != nil {
+	if err := precheckStagedSizes(ctx, root, userID, rels, s.quota); err != nil {
 		return nil, err
 	}
-	return stageFiles(root, userID, rels)
+	return stageFiles(ctx, root, userID, rels)
 }
-func (s *Service) WriteText(root, userID, rel, content string) (int, error) {
+func (s *Service) WriteText(ctx context.Context, root, userID, rel, content string) (int, error) {
 	if err := WriteTarget(rel); err != nil {
 		return 0, err
 	}
@@ -119,8 +136,10 @@ func (s *Service) WriteText(root, userID, rel, content string) (int, error) {
 	// Fresh-check → write → re-check is ONE quota-critical section, shared
 	// with upload commits and code_run staging: separately-atomic checks let
 	// joint writers each pass while overrunning together (audit2 finding 3).
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.acquire(ctx); err != nil {
+		return 0, err
+	}
+	defer s.release()
 
 	// Inspecting an existing target does DOUBLE duty (finding 3): its size
 	// keeps the quota maths honest while its bytes must survive a failed
@@ -149,7 +168,7 @@ func (s *Service) WriteText(root, userID, rel, content string) (int, error) {
 	// come off the used total BEFORE either verdict — otherwise replacing a
 	// file at quota would always look over-quota (the two copies are
 	// counted jointly only for the moment of the swap).
-	if err := checkQuotaAllowing(root, userID, s.quota, oldSize); err != nil {
+	if err := checkQuotaAllowing(ctx, root, userID, s.quota, oldSize); err != nil {
 		return 0, err
 	}
 
@@ -163,28 +182,36 @@ func (s *Service) WriteText(root, userID, rel, content string) (int, error) {
 	if err != nil {
 		return 0, safeError("fs_write", err)
 	}
-	n, err := f.WriteString(content)
+	defer scratch.Remove(root, userID, tmpRel)
+	n64, err := copyContext(ctx, f, strings.NewReader(content))
+	n := int(n64)
 	if cerr := f.Close(); err == nil {
 		err = cerr // surface a flush failure, not just the WriteString one
 	}
 	if err != nil {
 		_ = scratch.Remove(root, userID, tmpRel)
-		return 0, errors.New("write failed")
+		return 0, safeError("write", err)
 	}
 	// Quota again after close — bytes may have crossed the line (§9.7). The
 	// re-scan counts BOTH copies, so subtract oldSize again; crossing the
 	// line discards only the staged copy. A failed re-scan keeps the
 	// original (no auto-delete on an unknown total) but never reports
 	// success: nothing landed UNVERIFIED (audit2 finding 3, fail closed).
-	if err := checkQuotaAllowing(root, userID, s.quota, oldSize); err != nil {
+	if err := checkQuotaAllowing(ctx, root, userID, s.quota, oldSize); err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 		_ = scratch.Remove(root, userID, tmpRel)
 		if s.quota > 0 {
-			if _, derr := scratch.DirSize(root, userID); derr != nil {
+			if _, derr := scratch.DirSize(ctx, root, userID); derr != nil {
 				return 0, errors.New("wrote " + quoteShort(rel) +
 					", but storage usage could not be verified; check scratchpad permissions")
 			}
 		}
 		return 0, errors.New("write would exceed the storage quota; replacement discarded")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	if err := scratch.RenameOver(root, userID, tmpRel, rel); err != nil {
 		_ = scratch.Remove(root, userID, tmpRel)
@@ -192,7 +219,10 @@ func (s *Service) WriteText(root, userID, rel, content string) (int, error) {
 	}
 	return n, nil
 }
-func (s *Service) Share(root, userID, source string) (File, error) {
+func (s *Service) Share(ctx context.Context, root, userID, source string) (File, error) {
+	if err := ctx.Err(); err != nil {
+		return File{}, err
+	}
 	rel := strings.TrimSpace(source)
 	if rel == "" {
 		return File{}, errors.New("path is required")
@@ -236,9 +266,11 @@ func (s *Service) Share(root, userID, source string) (File, error) {
 	if !scratch.DiskFloorOK(root) {
 		return File{}, ErrDiskLow
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := checkQuota(root, userID, s.quota); err != nil {
+	if err := s.acquire(ctx); err != nil {
+		return File{}, err
+	}
+	defer s.release()
+	if err := checkQuota(ctx, root, userID, s.quota); err != nil {
 		return File{}, err
 	}
 	if err := scratch.MkdirAll(root, userID, "artifacts"); err != nil {
@@ -261,15 +293,15 @@ func (s *Service) Share(root, userID, source string) (File, error) {
 	}
 	tempPath := tmp.Name()
 	defer os.Remove(tempPath) // no-op after a successful placement
-	n, err := io.Copy(tmp, src)
+	n, err := copyContext(ctx, tmp, src)
 	if cerr := tmp.Close(); err == nil {
 		err = cerr // a failed close can silently truncate the copy
 	}
 	if err != nil {
-		return File{}, errors.New("share copy failed")
+		return File{}, safeError("share copy", err)
 	}
 
-	dstRel, err := placeNamed(root, userID, "artifacts", path.Base(rel), tempPath)
+	dstRel, err := placeNamed(ctx, root, userID, "artifacts", path.Base(rel), tempPath)
 	if err != nil {
 		return File{}, err
 	}
@@ -278,8 +310,11 @@ func (s *Service) Share(root, userID, source string) (File, error) {
 	// total must be VERIFIED; a real overrun is collected again, an
 	// unverifiable one is reported instead of a false success (§9.7).
 	if s.quota > 0 {
-		used, derr := scratch.DirSize(root, userID)
+		used, derr := scratch.DirSize(ctx, root, userID)
 		if derr != nil {
+			if ctx.Err() != nil {
+				return File{}, ctx.Err()
+			}
 			return File{}, errors.New("shared " + quoteShort(dstRel) +
 				", but storage usage could not be verified; check scratchpad permissions")
 		}
@@ -290,26 +325,32 @@ func (s *Service) Share(root, userID, source string) (File, error) {
 	}
 	return File{Path: dstRel, Name: path.Base(dstRel), Bytes: n}, nil
 }
-func checkQuota(root, userID string, quota int64) error {
+func checkQuota(ctx context.Context, root, userID string, quota int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if quota <= 0 {
 		return nil
 	}
-	used, err := scratch.DirSize(root, userID)
+	used, err := scratch.DirSize(ctx, root, userID)
 	if err != nil {
-		return ErrUnverified
+		return storageError(err)
 	}
 	if used >= quota {
 		return ErrQuota
 	}
 	return nil
 }
-func checkQuotaAllowing(root, userID string, quota, deduct int64) error {
+func checkQuotaAllowing(ctx context.Context, root, userID string, quota, deduct int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if quota <= 0 {
 		return nil
 	}
-	used, err := scratch.DirSize(root, userID)
+	used, err := scratch.DirSize(ctx, root, userID)
 	if err != nil {
-		return ErrUnverified
+		return storageError(err)
 	}
 	if used-deduct >= quota {
 		return ErrQuota
@@ -342,6 +383,8 @@ func stagingPath(rel string) string {
 }
 func safeError(op string, err error) error {
 	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
 	case errors.Is(err, scratch.ErrPathUnsafe):
 		return fmt.Errorf("%s: that path is outside the scratchpad sandbox", op)
 	case errors.Is(err, scratch.ErrNotFound):
@@ -373,12 +416,18 @@ func quoteShort(s string) string {
 	}
 	return fmt.Sprintf("%q", s)
 }
-func precheckStagedSizes(root, userID string, rels []string, quota int64) error {
+func precheckStagedSizes(ctx context.Context, root, userID string, rels []string, quota int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if quota <= 0 {
 		return nil
 	}
 	var add int64
 	for _, rel := range rels {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		rel = strings.TrimSpace(rel)
 		if rel == "" {
 			continue
@@ -400,9 +449,9 @@ func precheckStagedSizes(root, userID string, rels []string, quota int64) error 
 	if add == 0 {
 		return nil
 	}
-	used, err := scratch.DirSize(root, userID)
+	used, err := scratch.DirSize(ctx, root, userID)
 	if err != nil {
-		return errors.New("code_run: storage usage could not be verified; check scratchpad permissions")
+		return storageError(err)
 	}
 	if used+add > quota {
 		return fmt.Errorf("code_run: staging %s would exceed the storage quota (%s used)",
@@ -410,9 +459,12 @@ func precheckStagedSizes(root, userID string, rels []string, quota int64) error 
 	}
 	return nil
 }
-func stageFiles(root, userID string, rels []string) ([]string, error) {
+func stageFiles(ctx context.Context, root, userID string, rels []string) ([]string, error) {
 	var done []string
 	for _, rel := range rels {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		rel = strings.TrimSpace(rel)
 		if rel == "" {
 			continue
@@ -442,19 +494,60 @@ func stageFiles(root, userID string, rels []string) ([]string, error) {
 			_ = src.Close()
 			return done, safeError("code_run stage", err)
 		}
-		_, copyErr := io.Copy(dst, src)
+		_, copyErr := copyContext(ctx, dst, src)
 		_ = src.Close()
 		if closeErr := dst.Close(); copyErr == nil {
 			copyErr = closeErr
+		}
+		if copyErr == nil {
+			copyErr = ctx.Err()
 		}
 		if copyErr == nil {
 			copyErr = scratch.RenameOver(root, userID, temp, dest)
 		}
 		_ = scratch.Remove(root, userID, temp)
 		if copyErr != nil {
-			return done, fmt.Errorf("code_run: staging %s failed", base)
+			return done, safeError("code_run staging "+quoteShort(base), copyErr)
 		}
 		done = append(done, base)
 	}
 	return done, nil
+}
+
+// acquire rejects cancellation both while waiting and immediately after entry.
+func (s *Service) acquire(ctx context.Context) error {
+	select {
+	case s.gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			s.release()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (s *Service) release() { <-s.gate }
+
+func storageError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return ErrUnverified
+}
+
+// Wrapping the reader prevents file-copy fast paths from bypassing checks.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+func copyContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, contextReader{ctx: ctx, reader: src})
 }

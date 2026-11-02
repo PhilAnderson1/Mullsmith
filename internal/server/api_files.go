@@ -176,7 +176,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	// The authoritative decision is commitUpload, against fresh usage.
 	// An unverifiable scan REFUSES the upload (audit2 finding 3): unknown
 	// usage never authorizes a write; raw scan errors stay in the log.
-	if err := s.files.Check(s.cfg.Scratchpad.Root, user.ID); err != nil {
+	if err := s.files.Check(r.Context(), s.cfg.Scratchpad.Root, user.ID); err != nil {
 		code, message := "quota_exceeded", "storage quota exceeded"
 		if errors.Is(err, managed.ErrUnverified) {
 			code, message = "storage_unverified", "Storage usage could not be verified; check scratchpad permissions"
@@ -299,7 +299,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 func (s *Server) commitUpload(w http.ResponseWriter, r *http.Request,
 	userID, tempName, display string, n int64,
 ) (rel string, ok bool) {
-	rel, err := s.files.CommitUpload(s.cfg.Scratchpad.Root, userID, tempName, display, n)
+	rel, err := s.files.CommitUpload(r.Context(), s.cfg.Scratchpad.Root, userID, tempName, display, n)
 	if err == nil {
 		return rel, true
 	}

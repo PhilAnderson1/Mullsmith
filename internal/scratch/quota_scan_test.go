@@ -2,6 +2,7 @@ package scratch
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,10 +38,10 @@ func TestDirSizeFailsClosedOnUnreadableDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(hidden, 0o700) }) // t.TempDir could not remove it otherwise
 
-	if _, err := DirSize(root, testULID); err == nil {
+	if _, err := DirSize(context.Background(), root, testULID); err == nil {
 		t.Error("DirSize returned nil error over an unreadable directory; want fail closed")
 	}
-	if over, err := DirSizeExceeds(root, testULID, 1<<30); err == nil {
+	if over, err := DirSizeExceeds(context.Background(), root, testULID, 1<<30); err == nil {
 		t.Errorf("DirSizeExceeds returned (%v, nil) over an unreadable directory; want an error, not 'under quota'", over)
 	}
 
@@ -49,17 +50,17 @@ func TestDirSizeFailsClosedOnUnreadableDir(t *testing.T) {
 	if err := os.Chmod(hidden, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	size, err := DirSize(root, testULID)
+	size, err := DirSize(context.Background(), root, testULID)
 	if err != nil {
 		t.Fatalf("after restore: %v", err)
 	}
 	if size < 4096 {
 		t.Errorf("size = %d, want ≥ 4096 (the hidden file must count)", size)
 	}
-	if over, err := DirSizeExceeds(root, testULID, size+1); err != nil || over {
+	if over, err := DirSizeExceeds(context.Background(), root, testULID, size+1); err != nil || over {
 		t.Errorf("restored scan within quota = (%v, %v)", over, err)
 	}
-	if over, err := DirSizeExceeds(root, testULID, size-1); err != nil || !over {
+	if over, err := DirSizeExceeds(context.Background(), root, testULID, size-1); err != nil || !over {
 		t.Errorf("restored scan past quota = (%v, %v), want (true, nil)", over, err)
 	}
 }
@@ -78,23 +79,23 @@ func TestDirSizeToleratesVanishingEntries(t *testing.T) {
 		f.Write(bytes.Repeat([]byte("y"), 100))
 		f.Close()
 	}
-	size, err := DirSize(root, testULID)
+	size, err := DirSize(context.Background(), root, testULID)
 	if err != nil || size < 300 {
 		t.Fatalf("baseline = %d (%v)", size, err)
 	}
 	if err := os.RemoveAll(filepath.Join(root, testULID, "work")); err != nil {
 		t.Fatal(err)
 	}
-	if size, err := DirSize(root, testULID); err != nil {
+	if size, err := DirSize(context.Background(), root, testULID); err != nil {
 		t.Errorf("scan after concurrent-style deletion errored: %v", err)
 	} else if size > 200 { // artifacts/ + uploads/ are empty dirs here
 		t.Errorf("size = %d after work/ removal, want the deleted bytes gone", size)
 	}
 	// A user root that never existed legitimately reports zero usage.
-	if size, err := DirSize(root, "01ARZ3NDEKTSV4RRFFQ69G5FAW"); err != nil || size != 0 {
+	if size, err := DirSize(context.Background(), root, "01ARZ3NDEKTSV4RRFFQ69G5FAW"); err != nil || size != 0 {
 		t.Errorf("missing root = (%d, %v), want (0, nil)", size, err)
 	}
-	if over, err := DirSizeExceeds(root, "01ARZ3NDEKTSV4RRFFQ69G5FAW", 1); err != nil || over {
+	if over, err := DirSizeExceeds(context.Background(), root, "01ARZ3NDEKTSV4RRFFQ69G5FAW", 1); err != nil || over {
 		t.Errorf("missing root exceeds = (%v, %v), want (false, nil)", over, err)
 	}
 }

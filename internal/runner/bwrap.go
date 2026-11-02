@@ -23,14 +23,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -100,7 +98,7 @@ func NewBwrap(opts Options) (*Bwrap, error) {
 		opts.Timeout = 30 * time.Second
 	}
 	if opts.MaxOutput <= 0 {
-		opts.MaxOutput = 32 << 10
+		opts.MaxOutput = 256 << 10
 	}
 	if opts.GlobalCap <= 0 {
 		opts.GlobalCap = 4
@@ -230,7 +228,8 @@ func verifyJailLayout(scratchDir, workRel string) error {
 	return cur.Close()
 }
 
-func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, error) {	release, err := b.gate.acquire(ctx, userID)
+func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, error) {
+	release, err := b.gate.acquire(ctx, userID)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -352,34 +351,17 @@ func (b *Bwrap) Run(ctx context.Context, userID string, req Request) (Outcome, e
 	}
 	cmd.WaitDelay = 5 * time.Second
 
-	outPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return Outcome{}, err
-	}
-	errPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return Outcome{}, err
-	}
-	if err := cmd.Start(); err != nil {
-		return Outcome{}, err
-	}
-
-	var wg sync.WaitGroup
 	var outBuf, errBuf cappedBuffer
 	outBuf.max = maxOut
 	errBuf.max = maxOut
-	for _, t := range []struct {
-		r   io.Reader
-		buf *cappedBuffer
-	}{{outPipe, &outBuf}, {errPipe, &errBuf}} {
-		wg.Add(1)
-		go func(r io.Reader, buf *cappedBuffer) {
-			defer wg.Done()
-			_, _ = io.Copy(buf, r)
-		}(t.r, t.buf)
+	// os/exec owns the copy goroutines and joins them before Wait returns.
+	// WaitDelay also bounds descendants that retain output descriptors.
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		return Outcome{}, err
 	}
 	waitErr := cmd.Wait()
-	wg.Wait()
 	oomKilled := runCg.OOMKilled() // read before the deferred Finish() drops the dir
 
 	out := Outcome{

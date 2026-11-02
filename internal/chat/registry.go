@@ -17,6 +17,7 @@ var ErrGenerating = errors.New("Generation already running for this conversation
 var (
 	ErrUserStreams   = errors.New("per-user concurrent Generation limit reached")
 	ErrGlobalStreams = errors.New("server Generation capacity reached")
+	ErrShuttingDown  = errors.New("server is shutting down")
 )
 
 type Generation struct {
@@ -87,9 +88,10 @@ func (r *Registry) RemoveApproval(genID, approvalID string) {
 }
 
 // Registry tracks live generations. It doubles as the concurrency
-// counter for limits.concurrent_streams_per_user.
+// counter for app_limits.concurrent_streams_per_user.
 type Registry struct {
 	mu     sync.Mutex
+	closed bool
 	byConv map[string]*Generation
 	byID   map[string]*Generation
 }
@@ -101,6 +103,9 @@ func NewRegistry() *Registry {
 func (r *Registry) Start(convID, userID string, maxUser, maxGlobal int, cancel context.CancelFunc) (*Generation, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return nil, ErrShuttingDown
+	}
 	if _, busy := r.byConv[convID]; busy {
 		return nil, ErrGenerating
 	}
@@ -209,12 +214,10 @@ func (r *Registry) CountUser(userID string) int {
 	return n
 }
 
-// AbortAll cancels every in-flight Generation and reports how many were
-// running. Graceful shutdown calls it first: streams finalize exactly like
-// a user-pressed Stop (partial answer persisted, "done" written) so
-// http.Server.Shutdown can actually complete within the grace window.
-func (r *Registry) AbortAll() int {
+// Shutdown atomically closes admission and cancels every reserved generation.
+func (r *Registry) Shutdown() int {
 	r.mu.Lock()
+	r.closed = true
 	gens := make([]*Generation, 0, len(r.byID))
 	for _, g := range r.byID {
 		gens = append(gens, g)

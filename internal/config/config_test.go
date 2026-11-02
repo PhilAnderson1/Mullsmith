@@ -78,8 +78,8 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Auth.Registration != "invite-only" {
 		t.Errorf("registration default = %q, want invite-only", cfg.Auth.Registration)
 	}
-	if cfg.Limits.MaxBodyBytes != 1<<20 {
-		t.Errorf("max_body_bytes default = %d", cfg.Limits.MaxBodyBytes)
+	if cfg.Server.MaxBodyBytes != 1<<20 {
+		t.Errorf("max_body_bytes default = %d", cfg.Server.MaxBodyBytes)
 	}
 	if cfg.Auth.Argon2.Memory != 65536 {
 		t.Errorf("argon2 memory default = %d", cfg.Auth.Argon2.Memory)
@@ -91,7 +91,7 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.MaxToolRounds != 20 {
 		t.Errorf("max_tool_rounds default = %d, want 20", cfg.Tools.Agent.MaxToolRounds)
 	}
-	if cfg.Tools.WebDownload.Enabled || cfg.Tools.WebDownload.MaxBytes != 25<<20 || cfg.Tools.WebDownload.Timeout != Duration(time.Minute) {
+	if cfg.Tools.WebDownload.Enabled || cfg.Tools.WebDownload.MaxBytes != 1<<30 || cfg.Tools.WebDownload.Timeout != Duration(time.Minute) {
 		t.Errorf("web_download defaults = %+v", cfg.Tools.WebDownload)
 	}
 	if cfg.Tools.Agent.Approval["code_run"] != "confirm" {
@@ -126,25 +126,36 @@ func TestCapSyntax(t *testing.T) {
 		read func(*Config) int
 		def  int
 	}{
-		{"limits.concurrent_streams_per_user", "limits:\n  concurrent_streams_per_user: %d\n",
-			func(c *Config) int { return c.Limits.ConcurrentStreamsPerUser }, DefaultConcurrentStreamsUser},
-		{"limits.concurrent_streams_total", "limits:\n  concurrent_streams_total: %d\n",
-			func(c *Config) int { return c.Limits.ConcurrentStreamsTotal }, DefaultConcurrentStreamsTotal},
-		{"limits.requests_per_minute", "limits:\n  requests_per_minute: %d\n",
-			func(c *Config) int { return c.Limits.RequestsPerMinute }, DefaultRequestsPerMinute},
-		{"limits.chat_messages_per_hour", "limits:\n  chat_messages_per_hour: %d\n",
-			func(c *Config) int { return c.Limits.ChatMessagesPerHour }, DefaultChatMessagesPerHour},
-		{"limits.hash_concurrency", "limits:\n  hash_concurrency: %d\n",
-			func(c *Config) int { return c.Limits.HashConcurrency }, DefaultHashConcurrency},
-		{"limits.concurrent_uploads", "limits:\n  concurrent_uploads: %d\n",
-			func(c *Config) int { return c.Limits.ConcurrentUploads }, DefaultConcurrentUploads},
+		{"app_limits.concurrent_streams_per_user", "app_limits:\n  concurrent_streams_per_user: %d\n",
+			func(c *Config) int { return c.AppLimits.ConcurrentStreamsPerUser }, DefaultConcurrentStreamsUser},
+		{"app_limits.concurrent_streams_total", "app_limits:\n  concurrent_streams_total: %d\n",
+			func(c *Config) int { return c.AppLimits.ConcurrentStreamsTotal }, DefaultConcurrentStreamsTotal},
+		{"app_limits.requests_per_minute", "app_limits:\n  requests_per_minute: %d\n",
+			func(c *Config) int { return c.AppLimits.RequestsPerMinute }, DefaultRequestsPerMinute},
+		{"app_limits.chat_messages_per_hour", "app_limits:\n  chat_messages_per_hour: %d\n",
+			func(c *Config) int { return c.AppLimits.ChatMessagesPerHour }, DefaultChatMessagesPerHour},
+		{"app_limits.hash_concurrency", "app_limits:\n  hash_concurrency: %d\n",
+			func(c *Config) int { return c.AppLimits.HashConcurrency }, DefaultHashConcurrency},
+		{"server.max_connections", "server:\n  max_connections: %d\n",
+			func(c *Config) int { return c.Server.MaxConnections }, DefaultMaxConnections},
+		{"server.concurrent_requests", "server:\n  concurrent_requests: %d\n",
+			func(c *Config) int { return c.Server.ConcurrentRequests }, DefaultConcurrentRequests},
+		{"app_limits.concurrent_uploads", "app_limits:\n  concurrent_uploads: %d\n",
+			func(c *Config) int { return c.AppLimits.ConcurrentUploads }, DefaultConcurrentUploads},
 		{"auth.max_signups_per_hour", "auth:\n  max_signups_per_hour: %d\n",
 			func(c *Config) int { return c.Auth.MaxSignupsPerHour }, defaultMaxSignupsPerHour},
 	}
 	for _, k := range knobs {
 		t.Run(k.name, func(t *testing.T) {
 			load := func(v int) (*Config, error) {
-				return Load(writeCfg(t, minimalYAML+fmt.Sprintf(k.yaml, v)))
+				snippet := fmt.Sprintf(k.yaml, v)
+				body := minimalYAML
+				if strings.HasPrefix(snippet, "server:\n") {
+					body = strings.Replace(body, "server:\n", snippet, 1)
+				} else {
+					body += snippet
+				}
+				return Load(writeCfg(t, body))
 			}
 			// absent → code default
 			cfg, err := Load(writeCfg(t, minimalYAML))
@@ -332,7 +343,7 @@ llm:
 }
 
 // The retired rate_limit: block must fail with a message naming the
-// move, never silently win over or override limits:. (The caps' own
+// move, never silently win over or override app_limits:. (The caps' own
 // syntax lives in TestCapSyntax.)
 func TestRetiredRateLimitBlock(t *testing.T) {
 	_, err := Load(writeCfg(t, minimalYAML+`
@@ -343,8 +354,8 @@ rate_limit:
 		t.Fatal("retired rate_limit accepted, want error")
 	}
 	if !strings.Contains(err.Error(), "rate_limit") ||
-		!strings.Contains(err.Error(), "limits:") {
-		t.Errorf("error = %v, want it to point at the limits: block", err)
+		!strings.Contains(err.Error(), "app_limits:") {
+		t.Errorf("error = %v, want it to point at the app_limits: block", err)
 	}
 }
 
@@ -1232,7 +1243,10 @@ func TestPrepareUsesSameDefaultsAndRejectsRuntimeFailure(t *testing.T) {
 	if !reflect.DeepEqual(direct.Scratchpad.CodeExec, loaded.Scratchpad.CodeExec) {
 		t.Fatalf("constructor defaults differ: %+v / %+v", direct.Scratchpad.CodeExec, loaded.Scratchpad.CodeExec)
 	}
-	if direct.Scratchpad.CodeExec.MaxMemory != 256<<20 {
+	if direct.Scratchpad.CodeExec.MaxOutput != 256<<10 {
+		t.Fatalf("output default=%d", direct.Scratchpad.CodeExec.MaxOutput)
+	}
+	if direct.Scratchpad.CodeExec.MaxMemory != 1<<30 {
 		t.Fatalf("memory default=%d", direct.Scratchpad.CodeExec.MaxMemory)
 	}
 	runtime := direct.Thinking
@@ -1248,5 +1262,40 @@ func TestPrepareUsesSameDefaultsAndRejectsRuntimeFailure(t *testing.T) {
 	}
 	if bad.prepared {
 		t.Fatal("failed configuration marked prepared")
+	}
+}
+
+func TestServerAndApplicationLimitSections(t *testing.T) {
+	body := strings.Replace(minimalYAML, "server:\n", `server:
+  max_connections: 17
+  concurrent_requests: 9
+  max_body_bytes: 2MiB
+`, 1) + `app_limits:
+  max_message_chars: 1234
+  concurrent_streams_total: 3
+`
+	cfg, err := Load(writeCfg(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.MaxConnections != 17 || cfg.Server.ConcurrentRequests != 9 || cfg.Server.MaxBodyBytes != 2<<20 || cfg.AppLimits.MaxMessageChars != 1234 || cfg.AppLimits.ConcurrentStreamsTotal != 3 {
+		t.Fatalf("settings did not reach their owning sections: server=%+v app_limits=%+v", cfg.Server, cfg.AppLimits)
+	}
+	for _, tc := range []struct{ name, section, key string }{
+		{"unknown section", "limits", "max_connections"},
+		{"transport under app", "app_limits", "max_connections"},
+		{"body cap under app", "app_limits", "max_body_bytes"},
+		{"app under server", "server", "max_message_chars"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snippet := fmt.Sprintf("%s:\n  %s: 10\n", tc.section, tc.key)
+			body := minimalYAML + snippet
+			if tc.section == "server" {
+				body = strings.Replace(minimalYAML, "server:\n", snippet, 1)
+			}
+			if _, err := Load(writeCfg(t, body)); err == nil {
+				t.Fatal("accepted a setting in the wrong section")
+			}
+		})
 	}
 }

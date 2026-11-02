@@ -28,12 +28,12 @@ func testCfg() *config.Config {
 	cfg.Scratchpad.Root = "."
 	cfg.LLM.Endpoint = "http://127.0.0.1:1/v1"
 	cfg.LLM.Models = []config.LLMModel{{ID: "m1", Default: true}}
-	cfg.Limits.ConcurrentStreamsPerUser = -1
-	cfg.Limits.ConcurrentStreamsTotal = -1
-	cfg.Limits.RequestsPerMinute = -1
-	cfg.Limits.ChatMessagesPerHour = -1
-	cfg.Limits.HashConcurrency = -1
-	cfg.Limits.ConcurrentUploads = -1
+	cfg.AppLimits.ConcurrentStreamsPerUser = -1
+	cfg.AppLimits.ConcurrentStreamsTotal = -1
+	cfg.AppLimits.RequestsPerMinute = -1
+	cfg.AppLimits.ChatMessagesPerHour = -1
+	cfg.AppLimits.HashConcurrency = -1
+	cfg.AppLimits.ConcurrentUploads = -1
 	return cfg
 }
 
@@ -261,7 +261,7 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 func TestClientIPTrustedProxies(t *testing.T) {
-	// Helper to run ClientIP behind the securityHeaders middleware (which
+	// Helper to run ClientIP behind the trustedProxyContext middleware (which
 	// injects trusted nets into the context).
 	resolve := func(nets []netip.Prefix, xff ...string) string {
 		cfg := testCfg()
@@ -270,7 +270,7 @@ func TestClientIPTrustedProxies(t *testing.T) {
 		var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			got = ClientIP(r)
 		})
-		h = securityHeaders(cfg)(h)
+		h = trustedProxyContext(cfg)(h)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.RemoteAddr = "127.0.0.1:5555"
 		for _, v := range xff {

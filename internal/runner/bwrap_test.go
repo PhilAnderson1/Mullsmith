@@ -746,3 +746,19 @@ func TestRunRefusesWorkDirEqualToRoot(t *testing.T) {
 		t.Errorf("Run(WorkDir == scratch root) = %v, want refusal", err)
 	}
 }
+
+// Short-lived children may exit before either output reader is scheduled.
+// Both streams must still be drained completely, without claiming truncation.
+func TestJailDrainsOutputFromShortLivedChildren(t *testing.T) {
+	b := newJail(t)
+	d := scratchDirs(t)
+	for i := 0; i < 20; i++ {
+		out, err := b.Run(t.Context(), "userA", d.req("printf 'complete stdout'; printf 'complete stderr' >&2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.ExitCode != 0 || out.Stdout != "complete stdout" || out.Stderr != "complete stderr" || out.Truncated {
+			t.Fatalf("run %d lost output: %+v", i, out)
+		}
+	}
+}

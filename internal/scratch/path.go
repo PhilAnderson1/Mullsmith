@@ -13,6 +13,7 @@
 package scratch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -546,7 +547,7 @@ func RemoveTree(root, userID, rel string) error {
 	// batched reads mean even an over-budget flood is refused before a
 	// whole directory has been loaded, instead of after.
 	var files, dirs []string
-	err = scanUserTree(root, userID, rel, removeTreeEntryBudget, func(e scanEntry) error {
+	err = scanUserTree(context.Background(), root, userID, rel, removeTreeEntryBudget, func(e scanEntry) error {
 		if e.st.Mode&unix.S_IFMT == unix.S_IFDIR {
 			dirs = append(dirs, e.rel)
 		} else {

@@ -5,6 +5,7 @@
 package scratch
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -34,21 +35,21 @@ func TestScanBatchesStreamCorrectly(t *testing.T) {
 			}
 		}
 	}
-	size, err := DirSize(root, testULID)
+	size, err := DirSize(context.Background(), root, testULID)
 	if err != nil || size != 300 {
 		t.Fatalf("DirSize = %d (%v), want 300 across batched reads", size, err)
 	}
-	if over, err := DirSizeExceeds(root, testULID, 300); err != nil || over {
+	if over, err := DirSizeExceeds(context.Background(), root, testULID, 300); err != nil || over {
 		t.Errorf("at-limit = (%v, %v), want (false, nil)", over, err)
 	}
-	if over, err := DirSizeExceeds(root, testULID, 299); err != nil || !over {
+	if over, err := DirSizeExceeds(context.Background(), root, testULID, 299); err != nil || !over {
 		t.Errorf("past-limit = (%v, %v), want (true, nil)", over, err)
 	}
 	// The budget trips mid-directory too, not just between directories.
 	oldB := scanEntryBudget
 	scanEntryBudget = 12
 	t.Cleanup(func() { scanEntryBudget = oldB })
-	if _, err := DirSize(root, testULID); !errors.Is(err, errScanBudget) {
+	if _, err := DirSize(context.Background(), root, testULID); !errors.Is(err, errScanBudget) {
 		t.Errorf("DirSize under budget 12 = %v, want errScanBudget", err)
 	}
 
@@ -82,11 +83,11 @@ func TestScanDepthLimitFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(deep, "bottom.bin"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DirSize(root, testULID); err == nil {
+	if _, err := DirSize(context.Background(), root, testULID); err == nil {
 		t.Error("over-deep tree scanned clean; want fail-closed unknown")
 	}
 	scanMaxDepth = 8 // a workable cap reads the same tree accurately
-	size, err := DirSize(root, testULID)
+	size, err := DirSize(context.Background(), root, testULID)
 	if err != nil || size != 1 {
 		t.Fatalf("after raising cap: %d (%v), want 1 byte", size, err)
 	}
@@ -113,7 +114,7 @@ func TestScanDoesNotFollowSymlinks(t *testing.T) {
 	os.Symlink(victim, filepath.Join(work, "link-file"))
 	os.Symlink(outDir, filepath.Join(work, "link-dir"))
 
-	size, err := DirSize(root, testULID)
+	size, err := DirSize(context.Background(), root, testULID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,10 +129,10 @@ func TestScanDoesNotFollowSymlinks(t *testing.T) {
 func TestScanRefusesSymlinkedUserRoot(t *testing.T) {
 	root := t.TempDir()
 	os.Symlink(t.TempDir(), filepath.Join(root, testULID))
-	if _, err := DirSize(root, testULID); !errors.Is(err, ErrPathUnsafe) {
+	if _, err := DirSize(context.Background(), root, testULID); !errors.Is(err, ErrPathUnsafe) {
 		t.Errorf("DirSize = %v, want ErrPathUnsafe", err)
 	}
-	if _, err := DirSizeExceeds(root, testULID, 1); !errors.Is(err, ErrPathUnsafe) {
+	if _, err := DirSizeExceeds(context.Background(), root, testULID, 1); !errors.Is(err, ErrPathUnsafe) {
 		t.Errorf("DirSizeExceeds = %v, want ErrPathUnsafe", err)
 	}
 }

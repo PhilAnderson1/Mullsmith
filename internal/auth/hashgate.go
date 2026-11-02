@@ -15,8 +15,8 @@ var ErrHashBusy = errors.New("password hashing capacity reached")
 // never bound the total: a distributed flood of login attempts would start
 // one memory-hungry hash per request. The gate admits at most concurrency
 // hashes at once, parks at most queue more waiters, and answers ErrHashBusy
-// immediately beyond that. A nil gate runs work ungated (limits.
-// hash_concurrency: 0).
+// immediately beyond that. A nil gate runs work ungated (app_limits.
+// hash_concurrency: -1).
 type HashGate struct {
 	sem   chan struct{}
 	quota chan struct{} // running + waiting tickets

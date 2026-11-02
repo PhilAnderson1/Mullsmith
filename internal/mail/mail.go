@@ -87,13 +87,13 @@ func (c *smtpClient) Deliver(ctx context.Context, to, subject, body string) erro
 	// opDeadline can only bound operations that START after the context is
 	// done; a read or write ALREADY parked would otherwise wait out the
 	// per-op 30 s (reproduced against this client and a silent server,
-	// review follow-up to issue 5). The watcher expires the raw socket the
+	// review follow-up to issue 5). The watcher closes the raw socket the
 	// instant ctx is cancelled, interrupting the TLS record layer above it.
 	unarm := interruptOnCancel(ctx, conn)
 	defer unarm()
 	err = c.converse(ctx, to, subject, body)
 	if err != nil && ctx.Err() != nil {
-		// The interrupted socket reports an i/o timeout; shutdown cancelled
+		// The interrupted socket reports a network error; shutdown cancelled
 		// this delivery, and the caller (the outbox retry policy included)
 		// should read the failure as the cancellation it is.
 		return ctx.Err()
@@ -101,15 +101,15 @@ func (c *smtpClient) Deliver(ctx context.Context, to, subject, body string) erro
 	return err
 }
 
-// interruptOnCancel expires conn's deadline as soon as ctx is done, so a
-// parked read or write returns immediately instead of waiting out the
-// deadline opDeadline armed for it. The returned func retires the watcher.
+// interruptOnCancel closes conn as soon as ctx is done. Unlike expiring a
+// deadline, closure cannot be undone by a concurrent operation arming its
+// normal deadline. The returned func retires the watcher.
 func interruptOnCancel(ctx context.Context, conn net.Conn) func() {
 	stop := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = conn.SetDeadline(time.Now())
+			_ = conn.Close()
 		case <-stop:
 		}
 	}()
@@ -237,6 +237,8 @@ func (c *smtpClient) upgradeTLS(ctx context.Context) error {
 	// never sends an IP literal as SNI but does verify it against IP SANs.
 	conf.ServerName = c.cfg.Host
 	conf.MinVersion = tls.VersionTLS12
+	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
 	tconn := tls.Client(c.conn, conf)
 	if err := tconn.HandshakeContext(ctx); err != nil {
 		return fmt.Errorf("smtp TLS: %w", err)

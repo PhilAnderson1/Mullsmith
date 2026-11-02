@@ -45,26 +45,39 @@ func requestID(next http.Handler) http.Handler {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status    int
+	committed bool
+	aborted   bool
 }
 
 func (sw *statusWriter) WriteHeader(code int) {
-	sw.status = code
+	if sw.committed {
+		return
+	}
 	sw.ResponseWriter.WriteHeader(code)
+	if code >= 200 || code == http.StatusSwitchingProtocols {
+		sw.status, sw.committed = code, true
+	}
+}
+
+func (sw *statusWriter) Write(p []byte) (int, error) {
+	if !sw.committed {
+		sw.WriteHeader(http.StatusOK)
+	}
+	return sw.ResponseWriter.Write(p)
 }
 
 // Flush passes through so SSE routes keep working behind this chain.
-func (sw *statusWriter) Flush() {
-	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
+func (sw *statusWriter) Flush() { _ = sw.FlushError() }
 
 // FlushError passes the REAL flush error through. ResponseController.Flush
 // checks this method before the plain http.Flusher case, so without it the
 // Flush above silently swallowed every dead-client error — flush is where
 // socket errors surface, Write only fills the 4 KiB buffer (audit finding 10).
 func (sw *statusWriter) FlushError() error {
+	if !sw.committed {
+		sw.WriteHeader(http.StatusOK)
+	}
 	switch f := sw.ResponseWriter.(type) {
 	case interface{ FlushError() error }:
 		return f.FlushError()
@@ -86,22 +99,25 @@ func logRequests(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		defer func() {
+			lvl := slog.LevelInfo
+			switch {
+			case sw.aborted || sw.status >= 500:
+				lvl = slog.LevelError
+			case sw.status >= 400:
+				lvl = slog.LevelWarn
+			}
+			logger.Log(r.Context(), lvl, "request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", sw.status,
+				"aborted", sw.aborted,
+				"ms", time.Since(start).Milliseconds(),
+				"rid", RequestIDFrom(r.Context()),
+				"ip", ClientIP(r),
+			)
+		}()
 		next.ServeHTTP(sw, r)
-		lvl := slog.LevelInfo
-		switch {
-		case sw.status >= 500:
-			lvl = slog.LevelError
-		case sw.status >= 400:
-			lvl = slog.LevelWarn
-		}
-		logger.Log(r.Context(), lvl, "request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", sw.status,
-			"ms", time.Since(start).Milliseconds(),
-			"rid", RequestIDFrom(r.Context()),
-			"ip", ClientIP(r),
-		)
 	})
 }
 
@@ -157,8 +173,8 @@ func secureRequest(cfg *config.Config, r *http.Request) bool {
 	if peer == nil || !ipTrusted(*peer, cfg.TrustedNets) {
 		return false
 	}
-	proto, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
-	return strings.EqualFold(strings.TrimSpace(proto), "https")
+	values := r.Header.Values("X-Forwarded-Proto")
+	return len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), "https")
 }
 
 func peerAddr(r *http.Request) *netip.Addr {
@@ -190,7 +206,7 @@ func ipTrusted(a netip.Addr, nets []netip.Prefix) bool {
 	return false
 }
 
-// trustedNets rides in the request context, injected by securityHeaders so
+// trustedNets rides in the request context, injected by trustedProxyContext so
 // ClientIP needs no server struct reference.
 type trustedCtxKey struct{}
 
@@ -199,18 +215,46 @@ func trustedFrom(ctx context.Context) []netip.Prefix {
 	return n
 }
 
+// trustedProxyContext makes the same proxy policy visible to logging and handlers.
+func trustedProxyContext(cfg *config.Config) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if len(cfg.TrustedNets) > 0 {
+				r = r.WithContext(context.WithValue(r.Context(), trustedCtxKey{}, cfg.TrustedNets))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // --- panic recovery -----------------------------------------------------------
 
 func recoverPanics(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracked, ok := w.(*statusWriter)
+		if !ok {
+			tracked = &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			w = tracked
+		}
 		defer func() {
 			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					tracked.aborted = true
+					panic(rec)
+				}
 				// Detail server-side only; nothing internal to the client (spec §9.12).
 				logger.Error("panic recovered",
 					"panic", fmt.Sprint(rec),
 					"rid", RequestIDFrom(r.Context()),
 					"stack", string(debug.Stack()),
 				)
+				if tracked.committed {
+					tracked.aborted = true
+					panic(http.ErrAbortHandler)
+				}
+				for _, name := range []string{"Content-Length", "Content-Encoding", "Content-Disposition", "Content-Range"} {
+					w.Header().Del(name)
+				}
 				writeAPIError(w, r, http.StatusInternalServerError, "internal", "internal error")
 			}
 		}()
@@ -244,9 +288,14 @@ func securityHeaders(cfg *config.Config) func(http.Handler) http.Handler {
 			}
 			h.Set("Cache-Control", cacheControl(r.URL.Path))
 
-			// Expose trusted-proxy nets to ClientIP via context.
-			if len(cfg.TrustedNets) > 0 {
-				r = r.WithContext(context.WithValue(r.Context(), trustedCtxKey{}, cfg.TrustedNets))
+			// Trusted proxies must overwrite the protocol header with one value.
+			peer := peerAddr(r)
+			if r.TLS == nil && peer != nil && ipTrusted(*peer, cfg.TrustedNets) {
+				values := r.Header.Values("X-Forwarded-Proto")
+				if len(values) != 1 || (!strings.EqualFold(strings.TrimSpace(values[0]), "http") && !strings.EqualFold(strings.TrimSpace(values[0]), "https")) {
+					writeAPIError(w, r, http.StatusBadRequest, "invalid_forwarded_proto", "expected one http or https forwarded protocol")
+					return
+				}
 			}
 			next.ServeHTTP(w, r)
 		})

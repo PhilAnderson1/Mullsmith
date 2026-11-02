@@ -238,6 +238,26 @@ history.
 
 ## Security
 
+Mullsmith supports direct HTTPS exposure without a required reverse proxy. The
+transport defaults allow 128 open connections (`server.max_connections`) and 32
+active HTTP requests (`server.concurrent_requests`), including long-lived streams.
+Excess connections close before TLS/HTTP parsing; excess requests receive 503 with
+`Retry-After: 1`. Both limits accept a positive value, or `-1` to disable; omission
+uses the default and explicit zero is invalid. Size these budgets for streaming
+clients as well as ordinary requests.
+
+HTTP transport settings, including `max_body_bytes`, live under `server:`.
+Application quotas and workload caps live under `app_limits:`: message and
+attachment sizes, model-generation concurrency, per-user request/message quotas,
+password hashing concurrency, and upload concurrency.
+
+Request headers are limited to 32 KiB. HTTP/2 uses a 30-second write-progress
+budget, a ping after 10 seconds without received frames, and a five-second ping
+response budget. These are internal defaults; normal idle connections and healthy
+streams remain supported. If using a trusted reverse proxy, it must overwrite
+`X-Forwarded-Proto` with one `http` or `https` value. Missing, ambiguous, repeated,
+or unrecognized protocol headers from trusted HTTP proxy peers are rejected.
+
 Design: `spec.md` §9 (auth, CSRF, XSS/Markdown sandbox, SQL, upload/MIME,
 SSRF egress guard, scratchpad path sandbox, code-execution sandboxing, TLS,
 rate limiting, logging, secrets, dependency policy) with a §9.16 OWASP Top-10

@@ -24,7 +24,7 @@ func chatFixture(t *testing.T) (*Service, *store.DB, *store.Conversation) {
 	cfg.Scratchpad.Root = t.TempDir()
 	cfg.LLM.Endpoint = "http://127.0.0.1:1/v1"
 	cfg.LLM.Models = []config.LLMModel{{ID: "test", Default: true}}
-	cfg.Limits.ChatMessagesPerHour = -1
+	cfg.AppLimits.ChatMessagesPerHour = -1
 	if err := cfg.Prepare(); err != nil {
 		t.Fatal(err)
 	}

@@ -65,6 +65,9 @@ func (FsList) Parameters() map[string]any {
 }
 
 func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	root, err := scratchRoot(inv)
 	if err != nil {
 		return Result{}, err
@@ -93,6 +96,9 @@ func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	}
 	outs := make([]entry, 0, len(entries))
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		en := entry{Name: e.Name(), Dir: e.IsDir()}
 		if !en.Dir {
 			if fi, err := e.Info(); err == nil {
@@ -137,6 +143,9 @@ func (FsRead) Parameters() map[string]any {
 }
 
 func (FsRead) Execute(ctx context.Context, inv Invocation) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	root, err := scratchRoot(inv)
 	if err != nil {
 		return Result{}, err
@@ -156,6 +165,9 @@ func (FsRead) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	}
 	defer f.Close()
 	buf, err := io.ReadAll(io.LimitReader(f, fsReadLimit+1))
+	if ctx.Err() != nil {
+		return Result{}, ctx.Err()
+	}
 	if err != nil {
 		return Result{}, errors.New("read failed")
 	}
@@ -216,7 +228,7 @@ func (w FsWrite) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if rel == "" {
 		return Result{}, errors.New("path is required")
 	}
-	n, err := w.Files.WriteText(root, inv.UserID, rel, args.Content)
+	n, err := w.Files.WriteText(ctx, root, inv.UserID, rel, args.Content)
 	if err != nil {
 		return Result{}, err
 	}
@@ -280,6 +292,9 @@ func (FsDelete) Parameters() map[string]any {
 }
 
 func (FsDelete) Execute(ctx context.Context, inv Invocation) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	root, err := scratchRoot(inv)
 	if err != nil {
 		return Result{}, err
@@ -308,6 +323,9 @@ func (FsDelete) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		if err != nil || !fi.Mode().IsRegular() {
 			return Result{}, errors.New("uploads deletions take regular files only")
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
 	}
 	if err := scratch.Remove(root, inv.UserID, rel); err != nil {
 		return Result{}, fsErr("fs_delete", err)
@@ -387,7 +405,7 @@ func (s FilesShare) Execute(ctx context.Context, inv Invocation) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
-	file, err := s.Files.Share(root, inv.UserID, args.Path)
+	file, err := s.Files.Share(ctx, root, inv.UserID, args.Path)
 	if err != nil {
 		return Result{}, err
 	}

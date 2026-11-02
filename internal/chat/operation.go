@@ -35,11 +35,11 @@ func (op *Operation) Run(emit Emit) {
 	// queueing behind the whole reply — where queue time would burn its
 	// budget and any long reply would cancel its own title forever. On
 	// parallel endpoints the ordering costs nothing visible (its own
-	// round-trip lands before the first token). It runs on its own
-	// context so a browser disconnect cannot strand the rename, and the
-	// store write is guarded so a user's manual rename always wins.
+	// round-trip lands before the first token). Its timeout is bounded by
+	// generation cancellation, and the guarded store write lets a manual
+	// rename win.
 	if cmd.AutoTitle != "" && (conv.Title == "" || conv.Title == store.DefaultTitle) {
-		s.nameConversation(conv, cmd.AutoTitle, conn)
+		s.nameConversation(genCtx, conv, cmd.AutoTitle, conn)
 	}
 
 	// --- the agentic loop (spec §6.1 steps 3–5) --------------------------------

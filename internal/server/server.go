@@ -67,20 +67,20 @@ const hashQueue = 32
 
 // buildHashGate consumes the prepared cap: a negative value disables it.
 func buildHashGate(cfg *config.Config) *auth.HashGate {
-	n := cfg.Limits.HashConcurrency
+	n := cfg.AppLimits.HashConcurrency
 	if n < 0 {
 		return nil
 	}
 	return auth.NewHashGate(n, hashQueue)
 }
 
-// buildUploadGate maps limits.concurrent_uploads (house cap syntax like the
+// buildUploadGate maps app_limits.concurrent_uploads (house cap syntax like the
 // other knobs; default 8) onto a channel gate. 8 comfortably exceeds what a
 // browser fires in parallel per host (~6), so honest sessions never see it,
 // while in-flight upload temp bytes stay bounded at 8 × max_file_size no
 // matter what the per-minute request bucket allows.
 func buildUploadGate(cfg *config.Config) chan struct{} {
-	n := cfg.Limits.ConcurrentUploads
+	n := cfg.AppLimits.ConcurrentUploads
 	if n < 0 {
 		return nil
 	}
@@ -88,8 +88,8 @@ func buildUploadGate(cfg *config.Config) chan struct{} {
 }
 
 // New builds the full handler chain. Middleware order (outermost first):
-// requestID → logRequests → recoverPanics → securityHeaders → csrfProtect →
-// bodyLimit → mux. mailer may be nil (email features disabled).
+// requestID → trustedProxyContext → logRequests → recoverPanics →
+// securityHeaders → request admission → csrfProtect → bodyLimit → routing. mailer may be nil (email features disabled).
 func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	code runner.Runner, mailer *mail.Outbox,
 ) (*Server, error) {
@@ -158,17 +158,17 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	mux.Handle("GET /api/v1/files/download", s.authRequired(s.handleFileDownload))
 	mux.Handle("DELETE /api/v1/files", s.authRequired(s.handleFileDelete))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
-	// Bare "/" is the lowest-priority sink: it catches "/" (index), unknown
-	// paths (JSON 404) and wrong verbs on known paths (JSON 405). Go's
-	// ServeMux exposes no NotFound override, so we own this explicitly.
-	mux.HandleFunc("/", s.sinkHandler())
+	mux.HandleFunc("GET /{$}", s.handleIndex)
 
-	var h http.Handler = mux
-	h = bodyLimit(h, int64(cfg.Limits.MaxBodyBytes))
+	var h http.Handler = routingErrors(mux)
+
+	h = bodyLimit(h, int64(cfg.Server.MaxBodyBytes))
 	h = csrfProtect(cfg, logger)(h)
+	h = limitRequests(h, cfg.Server.ConcurrentRequests)
 	h = securityHeaders(cfg)(h)
 	h = recoverPanics(h, logger)
 	h = logRequests(h, logger)
+	h = trustedProxyContext(cfg)(h)
 	h = requestID(h) // outermost: the id must exist in ctx before logging/recovery read it
 
 	s.httpSrv = &http.Server{
@@ -177,12 +177,21 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		ReadTimeout:       cfg.Server.ReadTimeout.D(),
 		WriteTimeout:      cfg.Server.WriteTimeout.HTTPDeadline(), // default 60s; -1 = off (astra2 finding 1); SSE & downloads self-manage
 		IdleTimeout:       2 * time.Minute,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+		MaxHeaderBytes:    maxHeaderBytes,
+		HTTP2: &http.HTTP2Config{
+			MaxConcurrentStreams: config.DefaultConcurrentRequests,
+			SendPingTimeout:      10 * time.Second,
+			PingTimeout:          5 * time.Second,
+			WriteByteTimeout:     30 * time.Second,
+		},
+		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
 	return s, nil
 }
 
-func (s *Server) Serve(ln net.Listener) error { return s.httpSrv.Serve(ln) }
+func (s *Server) Serve(ln net.Listener) error {
+	return s.httpSrv.Serve(limitConnections(ln, s.cfg.Server.MaxConnections))
+}
 
 // Expiry ages have already been defaulted and validated by config.Prepare.
 func (s *Server) artifactTTL() time.Duration { return s.cfg.Scratchpad.ArtifactTTL.D() }
@@ -192,16 +201,16 @@ func (s *Server) workTTL() time.Duration     { return s.cfg.Scratchpad.WorkTTL.D
 func (s *Server) Handler() http.Handler { return s.httpSrv.Handler }
 
 func (s *Server) ServeTLS(ln net.Listener, certFile, keyFile string) error {
-	return s.httpSrv.ServeTLS(ln, certFile, keyFile)
+	return s.httpSrv.ServeTLS(limitConnections(ln, s.cfg.Server.MaxConnections), certFile, keyFile)
 }
 
 func (s *Server) Shutdown(ctx context.Context) error { return s.httpSrv.Shutdown(ctx) }
 
-// AbortGenerations cancels all live generations (SIGTERM path in main):
+// AbortGenerations closes admission and cancels all live generations (SIGTERM path in main):
 // SSE handlers observe ctx.Done, persist partial answers like an abort and
 // return, which lets Shutdown finish inside the grace period instead of
 // timing out on still-open streams.
-func (s *Server) AbortGenerations() int { return s.chat.Generations.AbortAll() }
+func (s *Server) AbortGenerations() int { return s.chat.Generations.Shutdown() }
 
 // WaitIdle blocks until in-flight generations have finished (or ctx is
 // done). Called after Shutdown so streams can persist partial answers
@@ -241,7 +250,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// (The context window no longer rides meta: it is a model
 		// property, so each conversation carries its own — §6.1.)
 		"limits": map[string]any{
-			"max_message_chars": s.cfg.Limits.MaxMessageChars,
+			"max_message_chars": s.cfg.AppLimits.MaxMessageChars,
 		},
 		"tools": map[string]bool{
 			"web_search":   s.cfg.Tools.WebSearch.Enabled,
@@ -251,7 +260,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		},
 		"files": map[string]any{
 			"max_file_size":      int64(s.cfg.Scratchpad.MaxFileSize),
-			"max_attachments":    s.cfg.Limits.MaxAttachments,
+			"max_attachments":    s.cfg.AppLimits.MaxAttachments,
 			"blocked_extensions": s.cfg.Scratchpad.BlockExtensions,
 		},
 	})
@@ -363,46 +372,59 @@ func versionedIndex(ver string) []byte {
 	return []byte(h)
 }
 
-// sinkHandler dispatches everything the specific patterns did not match.
-func (s *Server) sinkHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			if s.indexHTML != nil {
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write(s.indexHTML)
-				return
-			}
-			http.ServeFileFS(w, r, web.FS, "index.html")
-			return
-		}
-		if isKnownPath(r.URL.Path) {
-			s.handleMethodNotAllowed(w, r)
-			return
-		}
-		s.handleNotFound(w, r)
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if s.indexHTML != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(s.indexHTML)
+		return
 	}
+	http.ServeFileFS(w, r, web.FS, "index.html")
 }
 
-// isKnownPath reports whether the path belongs to a registered route (under a
-// different verb than the caller used). Kept in sync with the mux table above.
-func isKnownPath(p string) bool {
-	switch {
-	case p == "/", p == "/healthz", p == "/api/v1/meta", p == "/assets", p == "/api/v1/files":
-		return true
-	case strings.HasPrefix(p, "/assets/"):
-		return true
-	case strings.HasPrefix(p, "/api/v1/files/"):
-		return true
+// routingErrors keeps Go's method matching and Allow generation, replacing
+// only its default 404/405 text bodies with the API error format.
+func routingErrors(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI == "*" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		h, pattern := mux.Handler(r)
+		if pattern == "" {
+			h.ServeHTTP(&routeErrorWriter{ResponseWriter: w, request: r}, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+type routeErrorWriter struct {
+	http.ResponseWriter
+	request  *http.Request
+	replaced bool
+}
+
+func (w *routeErrorWriter) WriteHeader(status int) {
+	if status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+		w.ResponseWriter.WriteHeader(status)
+		return
 	}
-	return false
+	w.replaced = true
+	code, message := "not_found", "resource not found"
+	if status == http.StatusMethodNotAllowed {
+		code, message = "method_not_allowed", "method not allowed"
+	}
+	writeAPIError(w.ResponseWriter, w.request, status, code, message)
+}
+func (w *routeErrorWriter) Write(p []byte) (int, error) {
+	if w.replaced {
+		return len(p), nil
+	}
+	return w.ResponseWriter.Write(p)
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	writeAPIError(w, r, http.StatusNotFound, "not_found", "resource not found")
-}
-
-func (s *Server) handleMethodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	writeAPIError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 }
 
 // --- response helpers --------------------------------------------------------

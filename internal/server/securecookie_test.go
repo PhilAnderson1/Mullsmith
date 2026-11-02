@@ -44,7 +44,7 @@ func TestSecureRequest(t *testing.T) {
 		{"proxy https, untrusted peer", plain, mk("1.2.3.4:55", "https"), false},
 		{"trusted peer, no header", trusted, mk("10.0.0.5:1234", ""), false},
 		{"trusted peer, http protocol", trusted, mk("10.0.0.5:1234", "http"), false},
-		{"forwarded chain, first hop https", trusted, mk("10.0.0.5:1234", "https, http"), true},
+		{"ambiguous forwarded chain", trusted, mk("10.0.0.5:1234", "https, http"), false},
 	}
 	for _, c := range cases {
 		if got := secureRequest(c.cfg, c.req); got != c.want {

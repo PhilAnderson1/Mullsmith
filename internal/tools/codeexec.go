@@ -112,8 +112,11 @@ func (c CodeRun) watchStorage(ctx context.Context, cancel context.CancelFunc, ro
 					}
 					return
 				}
-				over, err := c.Files.Exceeds(root, userID)
+				over, err := c.Files.Exceeds(ctx, root, userID)
 				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
 					// An incomplete scan never reads as "within quota":
 					// the script may be hiding its output behind a
 					// chmod-000 directory (audit2 finding 3). Kill the
@@ -230,7 +233,7 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	if len(args.Files) > maxStagedFiles {
 		return Result{}, fmt.Errorf("code_run: at most %d files may be staged", maxStagedFiles)
 	}
-	staged, err := c.Files.Stage(root, inv.UserID, args.Files)
+	staged, err := c.Files.Stage(ctx, root, inv.UserID, args.Files)
 	if err != nil {
 		return Result{}, err
 	}
@@ -265,7 +268,10 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	// until they clean up (audit2 finding 3). An unverifiable scan is an
 	// ERROR, never a silent pass: a script that chmods its output
 	// unreadable has hidden bytes from exactly this check.
-	over, derr := c.Files.Exceeds(root, inv.UserID)
+	over, derr := c.Files.Exceeds(ctx, root, inv.UserID)
+	if ctx.Err() != nil {
+		return Result{}, ctx.Err()
+	}
 	if derr != nil {
 		return Result{}, errors.New("code_run: run finished but storage usage could not be verified; check scratchpad permissions")
 	}

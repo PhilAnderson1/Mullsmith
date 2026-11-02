@@ -1,6 +1,7 @@
 package managed
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,7 +26,7 @@ func TestStagePreservesSourceAliasesAndReplacesAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(1 << 20)
-	if _, err := service.Stage(root, user, []string{"uploads/input.csv", "work/input.csv"}); err != nil {
+	if _, err := service.Stage(context.Background(), root, user, []string{"uploads/input.csv", "work/input.csv"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []string{source, dest} {
@@ -40,7 +41,7 @@ func TestStagePreservesSourceAliasesAndReplacesAtomically(t *testing.T) {
 	if err := os.WriteFile(other, []byte("new,data\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Stage(root, user, []string{"artifacts/input.csv"}); err != nil {
+	if _, err := service.Stage(context.Background(), root, user, []string{"artifacts/input.csv"}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(dest)

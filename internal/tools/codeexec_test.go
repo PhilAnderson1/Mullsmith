@@ -329,7 +329,7 @@ func TestSharedQuotaLockHoldsUnderConcurrentWrites(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	used, err := scratch.DirSize(root, toolUser)
+	used, err := scratch.DirSize(context.Background(), root, toolUser)
 	if err != nil {
 		t.Fatal(err)
 	}

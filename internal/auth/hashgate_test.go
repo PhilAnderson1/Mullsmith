@@ -125,7 +125,7 @@ func TestHashGateCancelReleasesSpot(t *testing.T) {
 }
 
 func TestHashGateNilRunsUngated(t *testing.T) {
-	var g *HashGate // limits.hash_concurrency: 0
+	var g *HashGate // app_limits.hash_concurrency: -1
 	ran := false
 	if err := g.Run(context.Background(), func() error { ran = true; return nil }); err != nil || !ran {
 		t.Errorf("nil gate: err=%v ran=%v, want nil/true", err, ran)

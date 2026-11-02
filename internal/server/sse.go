@@ -26,7 +26,10 @@ func newSSE(w http.ResponseWriter) (*sseConn, error) {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no") // disable proxy buffering (spec §9.10)
 	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Time{}) // generations outlive the write timeout
+	if err := rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return nil, err
+	}
+	defer func() { _ = rc.SetWriteDeadline(time.Time{}) }() // frames manage subsequent write deadlines
 	w.WriteHeader(http.StatusOK)
 	c := &sseConn{w: w, rc: rc}
 	if err := rc.Flush(); err != nil {

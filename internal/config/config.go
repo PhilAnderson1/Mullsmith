@@ -112,7 +112,7 @@ func ParseSize(raw string) (Size, error) {
 
 type Config struct {
 	Server     Server     `yaml:"server"`
-	Limits     Limits     `yaml:"limits"`
+	AppLimits  AppLimits  `yaml:"app_limits"`
 	Database   Database   `yaml:"database"`
 	Scratchpad Scratchpad `yaml:"scratchpad"`
 	LLM        LLM        `yaml:"llm"`
@@ -139,13 +139,13 @@ type Config struct {
 }
 
 type Server struct {
-	Listen string `yaml:"listen"`
-	TLS    TLS    `yaml:"tls"`
-	// Durations take no off-sentinel (§2.2): absent → code default,
-	// negative → startup error — EXCEPT the two knobs below, the only
-	// off-switches outside limits. They follow the house syntax so the
-	// file has exactly one spelling of "off": the bare flag -1, on
-	// durations no less than on counts.
+	Listen       string `yaml:"listen"`
+	TLS          TLS    `yaml:"tls"`
+	MaxBodyBytes Size   `yaml:"max_body_bytes"`
+	// Admission caps take positive values, or -1 to disable; omission uses defaults.
+	MaxConnections     int `yaml:"max_connections"`
+	ConcurrentRequests int `yaml:"concurrent_requests"`
+	// Read and shutdown durations are positive; write_timeout also accepts -1.
 	ReadTimeout    Duration `yaml:"read_timeout"`
 	WriteTimeout   Duration `yaml:"write_timeout"` // default 60s; -1 = no write cap (streams self-manage)
 	ShutdownGrace  Duration `yaml:"shutdown_grace"`
@@ -159,10 +159,9 @@ type TLS struct {
 	KeyFile  string `yaml:"key_file"`
 }
 
-type Limits struct {
-	MaxBodyBytes    Size `yaml:"max_body_bytes"`
-	MaxMessageChars int  `yaml:"max_message_chars"`
-	MaxAttachments  int  `yaml:"max_attachments"`
+type AppLimits struct {
+	MaxMessageChars int `yaml:"max_message_chars"`
+	MaxAttachments  int `yaml:"max_attachments"`
 	// The caps below share the house syntax for optional limits (§9.11):
 	// positive → that value; -1 → disables the control; absent → the code
 	// default; 0 and any other negative → startup error. Plain ints — the
@@ -472,7 +471,7 @@ type RateLimit struct {
 	ChatMessagesPerHour *int `yaml:"chat_messages_per_hour"`
 }
 
-// Shipped defaults for the optional caps (limits.* and
+// Shipped defaults for the optional caps (server.*, app_limits.*, and
 // auth.max_signups_per_hour). The sample config spells these same values
 // out; -1 on any of them turns that single control off, absent takes the
 // default, 0 and other negatives are a startup error (§9.11).
@@ -483,6 +482,8 @@ const (
 	DefaultConcurrentStreamsTotal = 8
 	DefaultHashConcurrency        = 1
 	DefaultConcurrentUploads      = 8
+	DefaultMaxConnections         = 128
+	DefaultConcurrentRequests     = 32
 )
 
 // capKnobs lists every optional cap for validation: full key path plus a
@@ -493,12 +494,14 @@ var capKnobs = []struct {
 	name string
 	read func(*Config) int
 }{
-	{"limits.concurrent_streams_per_user", func(c *Config) int { return c.Limits.ConcurrentStreamsPerUser }},
-	{"limits.concurrent_streams_total", func(c *Config) int { return c.Limits.ConcurrentStreamsTotal }},
-	{"limits.requests_per_minute", func(c *Config) int { return c.Limits.RequestsPerMinute }},
-	{"limits.chat_messages_per_hour", func(c *Config) int { return c.Limits.ChatMessagesPerHour }},
-	{"limits.hash_concurrency", func(c *Config) int { return c.Limits.HashConcurrency }},
-	{"limits.concurrent_uploads", func(c *Config) int { return c.Limits.ConcurrentUploads }},
+	{"app_limits.concurrent_streams_per_user", func(c *Config) int { return c.AppLimits.ConcurrentStreamsPerUser }},
+	{"app_limits.concurrent_streams_total", func(c *Config) int { return c.AppLimits.ConcurrentStreamsTotal }},
+	{"app_limits.requests_per_minute", func(c *Config) int { return c.AppLimits.RequestsPerMinute }},
+	{"app_limits.chat_messages_per_hour", func(c *Config) int { return c.AppLimits.ChatMessagesPerHour }},
+	{"app_limits.hash_concurrency", func(c *Config) int { return c.AppLimits.HashConcurrency }},
+	{"app_limits.concurrent_uploads", func(c *Config) int { return c.AppLimits.ConcurrentUploads }},
+	{"server.max_connections", func(c *Config) int { return c.Server.MaxConnections }},
+	{"server.concurrent_requests", func(c *Config) int { return c.Server.ConcurrentRequests }},
 	{"auth.max_signups_per_hour", func(c *Config) int { return c.Auth.MaxSignupsPerHour }},
 }
 
@@ -704,10 +707,10 @@ func (ce CodeExecution) WithDefaults() CodeExecution {
 		ce.Timeout = Duration(30 * time.Second)
 	}
 	if ce.MaxOutput == 0 {
-		ce.MaxOutput = 32 << 10
+		ce.MaxOutput = 256 << 10
 	}
 	if ce.MaxMemory == 0 {
-		ce.MaxMemory = 256 << 20
+		ce.MaxMemory = 1 << 30
 	}
 	return ce
 }
@@ -877,36 +880,42 @@ func (c *Config) setDefaults() {
 	if c.Server.ShutdownGrace == 0 {
 		c.Server.ShutdownGrace = Duration(15 * time.Second)
 	}
-	if c.Limits.MaxBodyBytes == 0 {
-		c.Limits.MaxBodyBytes = 1 << 20
+	if c.Server.MaxConnections == 0 {
+		c.Server.MaxConnections = DefaultMaxConnections
 	}
-	if c.Limits.MaxMessageChars == 0 {
-		c.Limits.MaxMessageChars = 32000
+	if c.Server.ConcurrentRequests == 0 {
+		c.Server.ConcurrentRequests = DefaultConcurrentRequests
 	}
-	if c.Limits.MaxAttachments == 0 {
-		c.Limits.MaxAttachments = 8
+	if c.Server.MaxBodyBytes == 0 {
+		c.Server.MaxBodyBytes = 1 << 20
+	}
+	if c.AppLimits.MaxMessageChars == 0 {
+		c.AppLimits.MaxMessageChars = 32000
+	}
+	if c.AppLimits.MaxAttachments == 0 {
+		c.AppLimits.MaxAttachments = 8
 	}
 	// Optional caps (house syntax): absent (0) takes the code default; -1
 	// is the off sentinel and passes through; validation rejects 0 spelled
 	// out plus every other negative. Shipped configs spell the defaults out
 	// so the effective policy is visible at a glance.
-	if c.Limits.ConcurrentStreamsPerUser == 0 {
-		c.Limits.ConcurrentStreamsPerUser = DefaultConcurrentStreamsUser
+	if c.AppLimits.ConcurrentStreamsPerUser == 0 {
+		c.AppLimits.ConcurrentStreamsPerUser = DefaultConcurrentStreamsUser
 	}
-	if c.Limits.ConcurrentStreamsTotal == 0 {
-		c.Limits.ConcurrentStreamsTotal = DefaultConcurrentStreamsTotal
+	if c.AppLimits.ConcurrentStreamsTotal == 0 {
+		c.AppLimits.ConcurrentStreamsTotal = DefaultConcurrentStreamsTotal
 	}
-	if c.Limits.RequestsPerMinute == 0 {
-		c.Limits.RequestsPerMinute = DefaultRequestsPerMinute
+	if c.AppLimits.RequestsPerMinute == 0 {
+		c.AppLimits.RequestsPerMinute = DefaultRequestsPerMinute
 	}
-	if c.Limits.ChatMessagesPerHour == 0 {
-		c.Limits.ChatMessagesPerHour = DefaultChatMessagesPerHour
+	if c.AppLimits.ChatMessagesPerHour == 0 {
+		c.AppLimits.ChatMessagesPerHour = DefaultChatMessagesPerHour
 	}
-	if c.Limits.HashConcurrency == 0 {
-		c.Limits.HashConcurrency = DefaultHashConcurrency
+	if c.AppLimits.HashConcurrency == 0 {
+		c.AppLimits.HashConcurrency = DefaultHashConcurrency
 	}
-	if c.Limits.ConcurrentUploads == 0 {
-		c.Limits.ConcurrentUploads = DefaultConcurrentUploads
+	if c.AppLimits.ConcurrentUploads == 0 {
+		c.AppLimits.ConcurrentUploads = DefaultConcurrentUploads
 	}
 	if c.Auth.MaxSignupsPerHour == 0 {
 		c.Auth.MaxSignupsPerHour = defaultMaxSignupsPerHour
@@ -995,7 +1004,7 @@ func (c *Config) setDefaults() {
 		c.Tools.WebFetch.Timeout = Duration(15 * time.Second)
 	}
 	if c.Tools.WebDownload.MaxBytes == 0 {
-		c.Tools.WebDownload.MaxBytes = 25 << 20
+		c.Tools.WebDownload.MaxBytes = 1 << 30
 	}
 	if c.Tools.WebDownload.Timeout == 0 {
 		c.Tools.WebDownload.Timeout = Duration(60 * time.Second)
@@ -1142,8 +1151,11 @@ func (c *Config) Validate() error {
 		c.TrustedNets = append(c.TrustedNets, prefix)
 	}
 
-	if c.Limits.MaxBodyBytes <= 0 || c.Limits.MaxMessageChars <= 0 || c.Limits.MaxAttachments <= 0 {
-		f.bad("limits: max_body_bytes, max_message_chars and max_attachments must be > 0")
+	if c.Server.MaxBodyBytes <= 0 {
+		f.bad("server.max_body_bytes: must be > 0")
+	}
+	if c.AppLimits.MaxMessageChars <= 0 || c.AppLimits.MaxAttachments <= 0 {
+		f.bad("app_limits: max_message_chars and max_attachments must be > 0")
 	}
 	// Cap syntax (§9.11): positive limits the control, -1 disables it,
 	// absent took the default in setDefaults — 0 spelled out (which would
@@ -1160,10 +1172,10 @@ func (c *Config) Validate() error {
 			f.bad("%s: must be a positive limit, or -1 to disable the control", k.name)
 		}
 	}
-	// rate_limit: retired — the two knobs moved into limits:. Name the
+	// rate_limit: retired — the two knobs moved into app_limits:. Name the
 	// move instead of silently ignoring values an old config still carries.
 	if c.RateLimit.RequestsPerMinute != nil || c.RateLimit.ChatMessagesPerHour != nil {
-		f.bad("rate_limit: retired — move requests_per_minute and chat_messages_per_hour into the limits: block")
+		f.bad("rate_limit: retired — move requests_per_minute and chat_messages_per_hour into the app_limits: block")
 	}
 	// llm.request_timeout: retired — nothing ever read it (streaming
 	// deliberately has no global client timeout; the titling quest bounds

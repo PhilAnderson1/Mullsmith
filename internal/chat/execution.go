@@ -357,10 +357,10 @@ func (s *Service) attachImageView(userID, convID, rel, genID string) (llm.ChatMe
 // the conversation is still unnamed, and announces it over the live stream
 // when possible. Purely best-effort: every failure only means the chat
 // keeps its placeholder title and gets retried on the next message.
-func (s *Service) nameConversation(conv *store.Conversation, firstUser string, conn sink) {
+func (s *Service) nameConversation(parent context.Context, conv *store.Conversation, firstUser string, conn sink) {
 	// 30 s: an endpoint that thinks despite the disable needs room to
 	// reason out loud before the title (see Title's budget note).
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	// The title quest runs as quietly as the catalogues allow: this
 	// model's off option, else its lightest rung (§12). The

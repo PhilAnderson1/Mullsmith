@@ -3,6 +3,7 @@
 package scratch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -43,9 +44,9 @@ var scanEntryBudget = 50_000
 // the scan streams through pinned descriptors in batches, so even the
 // worst single directory cannot force a large allocation first (astra2
 // finding 2).
-func DirSizeExceeds(root, userID string, limit int64) (bool, error) {
+func DirSizeExceeds(ctx context.Context, root, userID string, limit int64) (bool, error) {
 	var total int64
-	err := scanUserTree(root, userID, ".", scanEntryBudget, func(e scanEntry) error {
+	err := scanUserTree(ctx, root, userID, ".", scanEntryBudget, func(e scanEntry) error {
 		if e.st.Mode&unix.S_IFMT == unix.S_IFREG {
 			total += e.st.Size
 			if total > limit {
@@ -213,9 +214,9 @@ func RemoveUserDirs(root, userID string) error {
 // zero. Like DirSizeExceeds, exceeding scanEntryBudget entries (or the
 // depth cap) fails the scan as unknown, and the scan itself streams in
 // batches through pinned descriptors (astra2 finding 2).
-func DirSize(root, userID string) (int64, error) {
+func DirSize(ctx context.Context, root, userID string) (int64, error) {
 	var total int64
-	err := scanUserTree(root, userID, ".", scanEntryBudget, func(e scanEntry) error {
+	err := scanUserTree(ctx, root, userID, ".", scanEntryBudget, func(e scanEntry) error {
 		if e.st.Mode&unix.S_IFMT == unix.S_IFREG {
 			total += e.st.Size
 		}

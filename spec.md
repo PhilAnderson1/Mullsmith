@@ -85,12 +85,13 @@ variable expansion `${MULLSMITH_SECRET}` so secrets need not live in the file.
 
 "Off" has exactly one spelling in this file: the bare flag **-1** — never
 `-1s` or any other spelling, on durations no less than on counts.
-Optional cap knobs (`limits.*` except the sizing trio, and
+Optional cap knobs (`server.max_connections`, `server.concurrent_requests`,
+`app_limits.*` except message-size/attachment counts, and
 `auth.max_signups_per_hour`) share the syntax: **positive** → that value,
 **-1** → disables the control, **absent** → the code default, **0 or any
 other negative** → startup error naming the syntax. (0 is deliberately not
 "off": knobs phrased as maxima would read 0 as "allow nothing" — the
-opposite of unlimited.) The two knobs outside `limits` with a real
+opposite of unlimited.) Two other knobs with an
 off-switch follow it: `server.write_timeout` and `server.hsts_max_age`,
 the off state spelled `-1` on both (write_timeout is otherwise ON by
 default — a stalled-reader bound, §9.11; hsts_max_age is off until asked
@@ -108,6 +109,9 @@ Example, which doubles as the documented reference:
 ```yaml
 server:
   listen: ":3210"                 # host:port (":3210" = every interface, IPv4+IPv6)
+  max_connections: 128           # open TCP connections, including TLS/header waits
+  concurrent_requests: 32        # active HTTP requests, including long-lived streams
+  max_body_bytes: 1MiB            # cap on every non-upload request body (§9.11)
   tls:
     enabled: false                # plain HTTP by default: trusted LAN or behind a proxy
     cert_file: ""
@@ -118,8 +122,7 @@ server:
   trusted_proxies: []             # CIDRs whose X-Forwarded-* headers we honor (§9.10)
   hsts_max_age: 31536000          # HSTS sent when serving TLS; -1 disables (§9.8)
 
-limits:
-  max_body_bytes: 1MiB            # cap on every non-upload request body (§9.11)
+app_limits:
   max_message_chars: 32000        # per chat message
   max_attachments: 8              # per message
   concurrent_streams_per_user: 2  # parallel SSE generations per user (§9.11)
@@ -128,11 +131,11 @@ limits:
   chat_messages_per_hour: 120     # per user
   hash_concurrency: 1             # simultaneous Argon2 computations (§9.11)
   concurrent_uploads: 8           # in-flight uploads, all users (§9.11)
-  # Cap syntax for the knobs above (§9.11): values shown are the program
+  # Concurrency/rate-cap syntax (§9.11): values shown are the program
   # defaults spelled out; positive limits the control, -1 disables it,
   # omitting the key takes the default, and 0 or any other negative is a
   # config error; the old rate_limit: block is retired — everything lives
-  # under limits: now
+  # under app_limits: now
 
 database:
   dir: "/var/lib/mullsmith/db"      # mullsmith.db (WAL mode) lives here
@@ -151,8 +154,8 @@ scratchpad:
       - { id: python3, binary: /usr/bin/python3 }
       - { id: sh,      binary: /bin/sh }
     timeout: 30s
-    max_output: 32KiB
-    max_memory: 256MiB
+    max_output: 256KiB
+    max_memory: 1GiB
     allow_network: false
 
 llm:
@@ -208,7 +211,7 @@ tools:
     timeout: 15s
   web_download:
     enabled: true                 # save a public URL to the scratchpad (same SSRF guard)
-    max_bytes: 25MiB
+    max_bytes: 1GiB
     timeout: 60s
   agent:
     max_tool_rounds: 20           # cap on tool-call loop per user turn
@@ -694,7 +697,7 @@ output is data, never instructions; approval gates bound the blast radius).
 |---|---|---|
 | `web_search` | `query` | Brave Search API → N results `{title, url, snippet}` as JSON. |
 | `web_fetch` | `url` | GET, http/https only, ≤ 3 redirects, ≤ `max_bytes`; strip HTML→text; SSRF blocklist (§9.6). |
-| `web_download` | `url, path` | GET a public HTTP(S) URL through the same guarded client as `web_fetch`, saving original bytes to a new file under `work/` or `artifacts/` (parent must exist). Requires HTTP 200; size, read, cancellation or quota failures discard the temporary file. No overwrites or partial files; returns path, bytes, content type and final URL. Independently configurable via `tools.web_download.enabled/max_bytes/timeout`; defaults: disabled, 25 MiB, 60 s, auto approval. Does not require code-execution network access. Use `files_share` to deliver the file to the user. |
+| `web_download` | `url, path` | GET a public HTTP(S) URL through the same guarded client as `web_fetch`, saving original bytes to a new file under `work/` or `artifacts/` (parent must exist). Requires HTTP 200; size, read, cancellation or quota failures discard the temporary file. No overwrites or partial files; returns path, bytes, content type and final URL. Independently configurable via `tools.web_download.enabled/max_bytes/timeout`; defaults: disabled, 1 GiB, 60 s, auto approval. Does not require code-execution network access. Use `files_share` to deliver the file to the user. |
 | `fs_list` | `path?` | List scratchpad dir (relative paths only; default root). |
 | `fs_read` | `path` | Read text file (≤ 256 KiB) from user's scratchpad. |
 | `fs_write` | `path, content` | Write text file inside scratchpad; creates parent dirs; quota-checked. |
@@ -1180,8 +1183,9 @@ open registration (startup warns).
   is the first non-trusted hop scanning back from the right — the leftmost rule would
   instead hand attackers their own forged IP and let them evade per-IP limits
   (audit finding 2). Malformed or over-long (>16 hops) chains, and all-trusted chains,
-  fall back to the socket peer. `X-Forwarded-Proto`
-  from a trusted proxy sets the `Secure` cookie decision.
+  fall back to the socket peer. A trusted HTTP proxy must overwrite
+  `X-Forwarded-Proto` with one `http` or `https` value; ambiguous or repeated
+  values are rejected. Direct TLS does not rely on forwarded protocol headers.
 - TLS floor: 1.2 minimum, prefer 1.3; modern curve/cipher suites; session tickets off.
 - Backups (sqlite copy + scratchpad copy) contain **all user PII and chat** — README
   instructs encrypted storage of backups and OS-level disk encryption; DB + scratchpad
@@ -1191,15 +1195,15 @@ open registration (startup warns).
 
 | Control | Mechanism |
 |---|---|
-| Request body cap | `http.MaxBytesReader` on every route (`limits.max_body_bytes` = 1 MiB default); multipart streams to a spooled temp file with its own `max_file_size` cap and `defer os.Remove` on abort — never buffered whole in memory |
-| Field caps | message ≤ `max_message_chars`; titles/names/emails length-bounded; `attachment_paths` ≤ `limits.max_attachments`; pagination `limit` ≤ 200; unknown JSON fields → 400 (§9.3) |
+| Request body cap | `http.MaxBytesReader` on every route (`server.max_body_bytes` = 1 MiB default); multipart streams to a spooled temp file with its own `max_file_size` cap and `defer os.Remove` on abort — never buffered whole in memory |
+| Field caps | message ≤ `max_message_chars`; titles/names/emails length-bounded; `attachment_paths` ≤ `app_limits.max_attachments`; pagination `limit` ≤ 200; unknown JSON fields → 400 (§9.3) |
 | Per-user generation limits | 1 concurrent generation per conversation (409), ≤ `concurrent_streams_per_user` overall, ≤ `concurrent_streams_total` server-wide — all three checked **and reserved atomically** inside the generation registry (a check-then-act split lets parallel requests for different conversations race past the caps); chat messages/hour token bucket, refused before any persistence or LLM work |
 | Auth endpoints | per-account lockout (failed logins) + stricter per-IP buckets for login and **password-change** (dedicated 5/15-min per user + 20/15-min per-IP bucket); login/register throttle buckets hardcoded; **global sign-up budget** `auth.max_signups_per_hour` (default 5, -1 = off) applies only in `registration: open` — the per-IP register bucket is worthless to a proxy pool, and with `email.enabled` every flood account is a mail from the operator's SMTP host (audit1 M-2). Both auth maps hard-capped at 16,384 entries with lockout-preserving saturation, and the fail-open windows now WARN-logged (self-rate-limited to 1/min per map so a flood cannot flood the log; audit1 L-1); lock keys SHA-256-digested; login rejects emails over `auth.MaxEmailLen` (254 B) up front (audit2 finding 1) |
-| Password hashing | **global gate** (`limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
-| Upload capacity | `limits.concurrent_uploads` (default 8) gates in-flight uploads server-wide — full ⇒ instant `429 server_busy` + `Retry-After`, bounding temp bytes to N × `max_file_size` regardless of the request bucket. The quota decision itself is **atomic**: fresh usage re-read and rename under one mutex, so concurrent uploads can never share a stale "used" figure (audit finding 5). The whole upload request is capped by `http.MaxBytesReader` at `max_file_size` + 64 KiB framing allowance, part count at 64: ignored multipart fields and no-file bodies can no longer drain unboundedly past both body limits (audit finding 6) |
+| Password hashing | **global gate** (`app_limits.hash_concurrency`, default 1): every Argon2 hash/verify across login, register and password-change admits at most N at once with a bounded 32-deep wait queue, then answers `429 server_busy` + `Retry-After`. Per-IP buckets bound each requester but never the total, so this is the backstop against a distributed flood exhausting memory/CPU on the 64 MiB hash. Unknown-email logins do exactly **one** dummy hash (was two), matching the wrong-password path (§9.1 timing equalisation); invite eligibility is checked before hashing on registration so a dead code costs no hash |
+| Upload capacity | `app_limits.concurrent_uploads` (default 8) gates in-flight uploads server-wide — full ⇒ instant `429 server_busy` + `Retry-After`, bounding temp bytes to N × `max_file_size` regardless of the request bucket. The quota decision itself is **atomic**: fresh usage re-read and rename under one mutex, so concurrent uploads can never share a stale "used" figure (audit finding 5). The whole upload request is capped by `http.MaxBytesReader` at `max_file_size` + 64 KiB framing allowance, part count at 64: ignored multipart fields and no-file bodies can no longer drain unboundedly past both body limits (audit finding 6) |
 | Runaway script | a 1 s **storage watchdog** wraps every `code_run`: user bytes past `user_quota`, or the host past the 5 % free-space floor, cancels the run context — the runner kills the whole jail (process-group SIGKILL, §9.9). Partial output stays on disk; the over-quota user is blocked by the ordinary pre-checks until cleanup. Overrun per run ≈ one poll interval of writing, itself capped by the jail's memory budget (§9.9), versus unbounded before (audit finding 5). Sub-second runs cannot slip past: every run ends with a **final weigh-in** that reports an overrun truthfully, and staging sizes are pre-checked under the shared quota lock so the copies mullsmith makes can never overrun (audit2 finding 3) |
-| Static/other API | token bucket per authenticated **user** (`limits.requests_per_minute`, 429 + `Retry-After`); user-keyed because the session already proves identity and IP-keying is hostage to NAT/proxy topology. Chat-stream POSTs are exempt — they answer to the hourly chat bucket and the generation caps above |
-| Disabling limits | the caps under `limits:` (`concurrent_streams_per_user`, `concurrent_streams_total`, `requests_per_minute`, `chat_messages_per_hour`, `hash_concurrency`, `concurrent_uploads`) are three-state: **unset** → program default (2 / 8 / 120 / 120 / 1 / 8), **0** → disabled by explicit operator choice, **negative** → config error. Shipped config files spell the defaults out so the live policy is readable; login/register throttle buckets are hardcoded and unaffected. The former `rate_limit:` block is retired: configs carrying it fail validation with a "move it into limits:" message |
+| Static/other API | token bucket per authenticated **user** (`app_limits.requests_per_minute`, 429 + `Retry-After`); user-keyed because the session already proves identity and IP-keying is hostage to NAT/proxy topology. Chat-stream POSTs are exempt — they answer to the hourly chat bucket and the generation caps above |
+| Disabling limits | The two server admission caps and optional caps under `app_limits:` use **unset** → program default, **-1** → disabled, **0** or any other negative → configuration error. Transport defaults are 128 open connections and 32 active requests; other defaults are 2 / 8 / 120 / 120 / 1 / 8 for per-user generations / total generations / requests per minute / chat messages per hour / hash concurrency / concurrent uploads. Login/register throttle buckets are hardcoded and unaffected. |
 | Slow clients / slowloris | `ReadHeaderTimeout` 10 s, idle timeouts on keep-alives; **`WriteTimeout` defaults to 60 s** — a client that stops reading otherwise blocks a response write in the kernel forever (handler, goroutine and connection pinned; read and idle timeouts bound reads only; astra2 finding 1). Go arms the cap once per request, so surfaces with legitimately long writes self-manage: SSE lifts it per stream and carries a rolling 10 s per-frame deadline; scratchpad downloads carry a rolling 30 s per-chunk deadline — bound PROGRESS, never total transfer time. The lift and the rolls reach the connection via `ResponseController` through every middleware wrapper (`statusWriter` implements `Unwrap`; audit finding 10); `-1` is the operator off-switch |
 | SSE hygiene | server-side heartbeat comments every 15 s; generation context tied to connection — client disappearance cancels upstream LLM call (no orphan burns of GPU). Every frame write+flush carries a **rolling 10 s write deadline** (armed per frame, cleared after): a stalled reader (TCP zero window, no FIN) once blocked the write in a syscall forever — heartbeat included, holding its mutex — pinning a generation slot until restart; now the deadline error surfaces, flush errors propagate (`statusWriter.FlushError`), and the generation cancels (audit finding 10) |
 | SQLite | WAL; busy_timeout 5 s; **single-writer semaphore** in the store; one pooled connection (`SetMaxOpenConns(1)` — a reader pool buys nothing at this scale and would only widen the writer's lock contention); TTL job deletes bounded per pass (≤ 1 000 rows/files) |
@@ -1540,4 +1544,4 @@ calls), and a smoke script per milestone.
 2. **Admin concept in the UI** — list/disable users and set quotas from a web admin page,
    or CLI-only in v1? (Spec assumes CLI-only.)
 3. **Per-user concurrency** — beyond the 1-per-conversation cap, a hard per-user concurrent
-   generation cap? (Currently `limits.concurrent_streams_per_user`, default 2.)
+   generation cap? (Currently `app_limits.concurrent_streams_per_user`, default 2.)

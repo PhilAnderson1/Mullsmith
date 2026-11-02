@@ -69,7 +69,7 @@ func (w *WebDownload) Execute(ctx context.Context, inv Invocation) (Result, erro
 	if !scratch.DiskFloorOK(root) {
 		return Result{}, managed.ErrDiskLow
 	}
-	if err := w.files.Check(root, inv.UserID); err != nil {
+	if err := w.files.Check(ctx, root, inv.UserID); err != nil {
 		return Result{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSpace(args.URL), nil)
@@ -117,7 +117,7 @@ func (w *WebDownload) Execute(ctx context.Context, inv Invocation) (Result, erro
 	if err != nil {
 		return Result{}, errors.New("web_download: download failed; no file saved")
 	}
-	if err := w.files.CommitDownload(root, inv.UserID, tmp.Name(), rel, n); err != nil {
+	if err := w.files.CommitDownload(ctx, root, inv.UserID, tmp.Name(), rel, n); err != nil {
 		return Result{}, err
 	}
 	body, _ := json.Marshal(map[string]any{

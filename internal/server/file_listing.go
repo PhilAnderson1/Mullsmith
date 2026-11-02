@@ -142,7 +142,7 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(fileCursor{Modified: last.info.ModTime().UnixNano(), Path: last.rel, Kind: kind})
 		next = base64.RawURLEncoding.EncodeToString(b)
 	}
-	used, err := scratch.DirSize(s.cfg.Scratchpad.Root, user.ID)
+	used, err := scratch.DirSize(r.Context(), s.cfg.Scratchpad.Root, user.ID)
 	if err != nil {
 		writeAPIError(w, r, http.StatusServiceUnavailable, "storage_unverified", "Storage usage could not be verified; check scratchpad permissions.")
 		return

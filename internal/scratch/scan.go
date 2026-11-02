@@ -52,7 +52,10 @@ type scanEntry struct {
 // exceeding scanMaxDepth, unreadable metadata or unreadable directories
 // abort with their own error. A root (or rel) that does not exist yields a
 // clean zero-visit scan — a fresh user holds no bytes.
-func scanUserTree(root, userID, rel string, budget int, visit func(scanEntry) error) error {
+func scanUserTree(ctx context.Context, root, userID, rel string, budget int, visit func(scanEntry) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cur, err := openUserRoot(root, userID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -71,6 +74,9 @@ func scanUserTree(root, userID, rel string, budget int, visit func(scanEntry) er
 		return perr
 	}
 	for _, s := range segs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		nfd, err := unix.Openat(int(cur.Fd()), s,
 			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 		_ = cur.Close()
@@ -89,8 +95,14 @@ func scanUserTree(root, userID, rel string, budget int, visit func(scanEntry) er
 	walk = func(dirf *os.File, dirRel string, depth int) error {
 		fd := int(dirf.Fd())
 		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			entries, err := dirf.ReadDir(scanBatch)
 			for _, e := range entries {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if visited++; visited > budget {
 					return fmt.Errorf("%w: over %d entries", errScanBudget, budget)
 				}
@@ -146,13 +158,7 @@ func scanUserTree(root, userID, rel string, budget int, visit func(scanEntry) er
 // incomplete scans return an error. A visitor may return fs.SkipDir for a
 // directory, or fs.SkipAll to stop early. Memory is bounded by batch and depth.
 func Walk(ctx context.Context, root, userID, rel string, budget int, visit func(string, fs.FileInfo) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	err := scanUserTree(root, userID, rel, budget, func(e scanEntry) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	err := scanUserTree(ctx, root, userID, rel, budget, func(e scanEntry) error {
 		return visit(e.rel, &statInfo{st: e.st, name: path.Base(e.rel)})
 	})
 	if errors.Is(err, fs.SkipAll) {

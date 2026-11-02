@@ -96,11 +96,11 @@ const (
 )
 
 func (s *Service) Begin(ctx context.Context, userID string, cmd Command) (_ *Operation, err error) {
-	if max := s.cfg.Limits.ChatMessagesPerHour; max > 0 && !s.limiter.Allow("chat:"+userID, max, time.Hour) {
+	if max := s.cfg.AppLimits.ChatMessagesPerHour; max > 0 && !s.limiter.Allow("chat:"+userID, max, time.Hour) {
 		return nil, &Refusal{Code: "chat_limited", Message: "hourly message limit reached, please try again later", RetryAfter: 3600}
 	}
 	genCtx, cancel := context.WithCancel(context.Background())
-	g, err := s.Generations.Start(cmd.ConversationID, userID, s.cfg.Limits.ConcurrentStreamsPerUser, s.cfg.Limits.ConcurrentStreamsTotal, cancel)
+	g, err := s.Generations.Start(cmd.ConversationID, userID, s.cfg.AppLimits.ConcurrentStreamsPerUser, s.cfg.AppLimits.ConcurrentStreamsTotal, cancel)
 	if err != nil {
 		cancel()
 		return nil, err

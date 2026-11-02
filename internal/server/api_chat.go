@@ -34,7 +34,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, r, http.StatusBadRequest, "empty_message", "message is empty")
 		return
 	}
-	if utf8.RuneCountInString(content) > s.cfg.Limits.MaxMessageChars {
+	if utf8.RuneCountInString(content) > s.cfg.AppLimits.MaxMessageChars {
 		writeAPIError(w, r, http.StatusBadRequest, "message_too_long", "message exceeds the size limit")
 		return
 	}
@@ -70,7 +70,7 @@ func (s *Server) validateAttachmentPaths(w http.ResponseWriter, r *http.Request,
 	if len(raws) == 0 {
 		return nil, true
 	}
-	max := s.cfg.Limits.MaxAttachments
+	max := s.cfg.AppLimits.MaxAttachments
 	if len(raws) > max {
 		writeAPIError(w, r, http.StatusBadRequest, "too_many_attachments",
 			"at most "+strconv.Itoa(max)+" attachments per message")
@@ -204,6 +204,8 @@ func (s *Server) runGeneration(w http.ResponseWriter, r *http.Request, cmd chat.
 			writeAPIError(w, r, status, refusal.Code, refusal.Message)
 		case errors.Is(err, chat.ErrUserStreams):
 			writeAPIError(w, r, http.StatusTooManyRequests, "too_many_streams", "you already have the maximum number of generations running")
+		case errors.Is(err, chat.ErrShuttingDown):
+			writeAPIError(w, r, http.StatusServiceUnavailable, "server_shutdown", "the server is shutting down")
 		case errors.Is(err, chat.ErrGlobalStreams):
 			writeAPIError(w, r, http.StatusServiceUnavailable, "server_busy", "the server is at its generation capacity, try again shortly")
 		case errors.Is(err, chat.ErrGenerating):

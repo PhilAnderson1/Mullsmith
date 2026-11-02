@@ -106,3 +106,35 @@ drained:
 	defer wcancel()
 	s.WaitIdle(wctx) // must return immediately, not on the deadline
 }
+
+func TestShutdownRefusesLateChatWithoutCreatingTurn(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	a, s := newBlockingChat(t, release, make(chan struct{}, 1))
+	conv := createConv(t, a, map[string]any{"title": "late request"})
+	s.AbortGenerations()
+	resp := a.do(http.MethodPost, "/api/v1/conversations/"+conv.ID+"/messages",
+		map[string]any{"content": "must not be accepted"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("late chat status=%d body=%s", resp.StatusCode, dumpBody(resp))
+	}
+	var failure struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "server_shutdown" {
+		t.Fatalf("unexpected error: %+v", failure)
+	}
+	history, err := s.store.ContextHistory(t.Context(), conv.ID)
+	if err != nil || len(history) != 0 {
+		t.Fatalf("shutdown refusal created history: %+v %v", history, err)
+	}
+	if s.chat.Generations.Count() != 0 {
+		t.Fatal("late chat retained a generation slot")
+	}
+}

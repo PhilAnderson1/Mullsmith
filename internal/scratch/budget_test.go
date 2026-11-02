@@ -7,6 +7,7 @@
 package scratch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -73,19 +74,19 @@ func TestQuotaScanEntryBudget(t *testing.T) {
 	root := newRoot(t)
 	flood(t, filepath.Join(root, testULID, "work"), 10) // + root & 3 subdirs > 8
 
-	if _, err := DirSize(root, testULID); !errors.Is(err, errScanBudget) {
+	if _, err := DirSize(context.Background(), root, testULID); !errors.Is(err, errScanBudget) {
 		t.Errorf("DirSize = %v, want errScanBudget", err)
 	}
 	// Unknown is NOT "within quota": the watchdog/write paths fail closed
 	// on exactly this error.
-	if over, err := DirSizeExceeds(root, testULID, 1<<30); err == nil || over {
+	if over, err := DirSizeExceeds(context.Background(), root, testULID, 1<<30); err == nil || over {
 		t.Errorf("DirSizeExceeds = (%v, %v), want (false, errScanBudget)", over, err)
 	}
 
 	// Budgets only bound the walk: raising it back reads the same tree
 	// accurately, nothing was mutated.
 	scanEntryBudget = 1000
-	size, err := DirSize(root, testULID)
+	size, err := DirSize(context.Background(), root, testULID)
 	if err != nil {
 		t.Fatalf("after raising budget: %v", err)
 	}

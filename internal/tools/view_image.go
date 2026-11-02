@@ -59,6 +59,9 @@ func (ViewImage) Parameters() map[string]any {
 }
 
 func (v ViewImage) Execute(ctx context.Context, inv Invocation) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	root, err := scratchRoot(inv)
 	if err != nil {
 		return Result{}, err
