@@ -198,12 +198,8 @@ Use `closed` if you do not want further signups. The default settings limit
 simultaneous connections, request rates, failed login attempts and file storage
 per user. Start with these defaults; see [Limits](#limits) if you need to adjust them.
 
-Expose only the intended Mullsmith listener through your router/firewall. The
-model endpoint, database and administration interfaces do not need public access.
-
-**Check:** from outside your home network, the HTTPS URL has a valid certificate,
-login works, and a private chat and file download work. Confirm that registration
-behaves as intended. Test code execution only if you deliberately enabled it.
+**Check:** from outside your home network, the HTTPS URL has a valid certificate
+and login works.
 
 **Understand:** HTTPS protects traffic. Authentication controls access. Resource
 limits reduce abuse but cannot prevent a large attack from saturating your
@@ -363,9 +359,7 @@ Set `auth.registration` according to who can reach your server:
 | `closed` | Browser signup is disabled; existing accounts can still log in | Any deployment once accounts are created, or when accounts are created through the administrative CLI |
 
 See [accounts and invitations](#accounts-and-invitations) to create accounts or
-issue codes. Email confirmation verifies access to a mailbox; it does not establish
-that an account holder is trustworthy. Likewise, tool confirmation prompts let
-users approve their own requests and are not a barrier against deliberate abuse.
+issue codes.
 
 ## Enable tools
 
@@ -411,8 +405,7 @@ one turn can contain multiple sequential runs.
 
 ### Optional code execution
 
-Install bubblewrap (for example, `sudo apt install bubblewrap`) and the
-interpreters listed under `tools.code_run.allowed_runtimes`. Then enable:
+Install bubblewrap (for example, `sudo apt install bubblewrap`). Then enable:
 
 ```yaml
 tools:
@@ -427,8 +420,7 @@ tools:
       code_run: "confirm"
 ```
 
-Use the shipped systemd service with cgroup v2 and working unprivileged
-namespaces. Mullsmith checks both the bubblewrap jail and cgroup delegation at
+Mullsmith checks both the bubblewrap jail and cgroup delegation at
 startup; if either cannot work, it refuses to start with code execution enabled.
 
 Each run gets a fresh bubblewrap jail. Selected system files are read-only;
@@ -438,14 +430,19 @@ mounted into the jail. Mullsmith separately creates cgroups to limit memory,
 CPU and task count across the process tree, and enforces the execution deadline.
 The sandbox shares the host kernel; it is not a virtual machine.
 
-Keep network access off unless the task requires it. Enabling it permits network
-access from executed code, including access to networks the host can reach; it
-does not inherit the web tools' public-address guard.
+It is recommended to keep network access for code execution turned off. Enabling
+it lets all Mullsmith users run code that connects to local-network services and
+internet destinations reachable from the server, subject to its firewall rules.
+This could be used to probe internal services, send accessible files to external
+servers or misuse your internet connection. The web tools' restrictions on
+non-public addresses do not apply to executed code.
 
 **Code execution is for trusted users.** Application storage accounting is not a
 hard filesystem quota: code can consume disk space or inodes in ways ordinary
-byte accounting does not fully capture. Put the scratchpad on a separate,
-size-limited filesystem when enabling execution. The default location is
+byte accounting does not fully capture. The default configuration is suitable
+for general use with trusted users. For additional hardening, place the scratchpad
+on a separate, size-limited filesystem, either on a dedicated partition or in a
+fixed-size file mounted through a loop device. The default location is
 `/var/lib/mullsmith/scratchpad`; mount it before starting the service and preserve
 ownership by `mullsmith`. If it contains existing files, move them to the new
 filesystem while the service is stopped rather than hiding them beneath a mount.
@@ -471,6 +468,7 @@ These example URLs must match the actual ports you chose for your model servers.
 
 | Server | Example `llm.endpoint` | `llm.endpoint_type` |
 |---|---|---|
+| Gufo | Your Gufo server's OpenAI-compatible API base URL | `gufo` |
 | llama.cpp | `http://127.0.0.1:9931/v1` | `llama_cpp` |
 | Ollama, OpenAI-compatible API | `http://127.0.0.1:11434/v1` | `ollama_openai` |
 | vLLM | `http://127.0.0.1:8000/v1` | `vllm` |
@@ -487,6 +485,8 @@ llm:
     - id: "your-model-id"
       default: true
       thinking_profile: "none"
+      vision: false # Set to true if the model and endpoint support image input.
+      # context_size: 32768 # Set to the endpoint's configured context window, or omit for discovery.
 ```
 
 For Ollama or vLLM, change the URL, endpoint type and model ID in this fragment.
@@ -510,7 +510,7 @@ Add more entries under `llm.models` to offer more models, with one marked
 - `vision: true`: enable image input only when the model and endpoint support it.
 - `thinking_profile`: select from [thinking-profiles.yaml](configs/thinking-profiles.yaml).
   The [endpoint catalogue](configs/endpoints.yaml) defines how choices become
-  request parameters. Gufo is also supplied as an endpoint type.
+  request parameters.
 
 Both catalogues are editable without rebuilding Mullsmith. Extending the endpoint
 catalogue adapts parameters within the supported protocol; it does not add native
@@ -525,28 +525,29 @@ Existing accounts can log in whether registration is open, invite-only or closed
 Run administrative commands on the server, using the installed configuration:
 
 ```sh
-sudo mullsmith admin invite 3
-sudo mullsmith admin list-users
-sudo mullsmith admin reset-password you@example.org
-sudo mullsmith admin disable-user you@example.org
-sudo mullsmith admin enable-user you@example.org
-```
-
-Invitations allow signup in invite-only mode. Disabling an account revokes its
-sessions; enabling it does not activate an unconfirmed signup. Password reset
-prompts interactively when email reset is unavailable; when email is enabled it
-normally sends a reset link instead. A completed password reset revokes sessions.
-
-To create an account without browser registration:
-
-```sh
+# Create an account without browser registration.
 sudo mullsmith admin create-user -email you@example.org -name You -password 'a long unique passphrase'
+
+# Generate three signup codes for invite-only registration.
+sudo mullsmith admin invite 3
+
+# List accounts, including IDs for unconfirmed signups.
+sudo mullsmith admin list-users
+
+# Send a password-reset email, or prompt for a password if email reset is unavailable.
+sudo mullsmith admin reset-password you@example.org
+
+# Disable an account and revoke its sessions.
+sudo mullsmith admin disable-user you@example.org
+
+# Re-enable a disabled account; this does not confirm a pending signup.
+sudo mullsmith admin enable-user you@example.org
+
+# Permanently delete an account and its scratchpad files; an account ID also works.
+sudo mullsmith admin delete-user you@example.org
 ```
 
-The password argument can be visible in shell history and process listings;
-prefer browser signup for normal account creation. `admin delete-user <id-or-email>`
-permanently deletes the account and its scratchpad files. Use `list-users` to find
-IDs for pending signups that do not yet have a confirmed email address.
+A completed password reset revokes existing sessions.
 
 ### Password reset & email confirmation
 
