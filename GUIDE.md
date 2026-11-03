@@ -15,6 +15,7 @@ who will use your server.
 - [Models and thinking controls](#models-and-thinking-controls)
 - [Everyday administration](#everyday-administration)
 - [Troubleshooting](#troubleshooting)
+- [Building from source](#building-from-source)
 - [Upgrade or remove](#upgrade-or-remove)
 
 The [commented configuration](configs/config.yaml) is the full option reference.
@@ -92,8 +93,8 @@ sudo systemctl start mullsmith
 
 `-check-config` validates settings, checks relevant paths and tests the connection
 to the model endpoint using the supplied API key. It does not exercise every tool
-or replace a real chat test. An endpoint
-outage can make this check fail even when the YAML is correct.
+or replace a real chat test. An endpoint outage can make this check fail even
+when the YAML is correct.
 
 If your configuration uses environment variables, load the same values for CLI
 commands as for the service; see [secrets](#secrets). Certificate files staged in
@@ -132,7 +133,7 @@ server:
     enabled: false
 ```
 
-Open `http://127.0.0.1:3210` and create your account.
+Open `http://127.0.0.1:3210` and log in using the account created earlier.
 
 Mullsmith will only be available on this machine.
 
@@ -156,8 +157,8 @@ You can use `invite-only` or `closed` if you prefer to control account creation.
 
 **Understand:** HTTP sends passwords and conversations without encryption.
 Use it only where you trust the network. On shared, guest or otherwise untrusted
-networks, use HTTPS and invite-only or closed registration. Saving the site as an installable web app generally requires
-HTTPS.
+networks, use HTTPS and invite-only or closed registration. Saving the site as an
+installable web app generally requires HTTPS.
 
 ### Public internet, private accounts
 
@@ -176,16 +177,12 @@ auth:
 ```
 
 Use `closed` if you do not want further signups; you can still add new accounts
-via the command line tool. The default settings limit
-simultaneous connections, request rates, failed login attempts and file storage
+via the command line tool. The default settings limit simultaneous connections,
+request rates, failed login attempts and file storage
 per user. Start with these defaults; see [Limits](#limits) if you need to adjust them.
 
 **Check:** from outside your home network, the HTTPS URL has a valid certificate
 and login works.
-
-**Understand:** HTTPS protects traffic. Authentication controls access. Resource
-limits reduce abuse but cannot prevent a large attack from saturating your
-internet connection. Code execution still assumes trusted account holders.
 
 ## Internet access and HTTPS
 
@@ -252,8 +249,9 @@ Uncomment the existing `ExecStartPre=...` line by removing its leading `#`, and
 replace both occurrences of `YOUR.HOSTNAME` with your certificate directory name.
 Save and close the editor.
 
-This copies the files into the service's runtime directory at each start. It
-works with Certbot's symlinks and leaves the originals in place for renewal.
+At each service start, this command copies the certificate and key to
+`/run/mullsmith`, where Mullsmith can read them. Certbot continues to manage
+the originals.
 If reusing certificates managed elsewhere, substitute those paths instead.
 
 ### 4. Enable HTTPS in Mullsmith
@@ -362,7 +360,7 @@ endpoint. A local model keeps that processing local; a remote provider receives 
 | `code_run` | Runs configured interpreters in the execution sandbox | Disabled; confirmation when enabled |
 
 Web fetch and download block non-public network destinations. This restriction
-does not govern the configured model/SMTP endpoints, or code execution when you
+does not apply to the configured model/SMTP endpoints, or code execution when you
 explicitly allow its network access.
 
 Enable search under `tools.web_search` with `enabled: true`, `provider: "brave"`
@@ -477,9 +475,9 @@ prefix. A model server on another machine needs that machine's address instead
 of `127.0.0.1`.
 
 Start with `thinking_profile: "none"` unless you know the appropriate profile.
-To enable the supplied Qwen3.8 controls, for example, set `thinking_profile:
-"qwen3_8"` on that model entry. The operator assigns the profile; Mullsmith then
-builds the applicable menu and formats requests for the selected endpoint.
+To enable the supplied Qwen3.8 controls, for example, set
+`thinking_profile: "qwen3_8"` on that model entry. The operator assigns the profile;
+Mullsmith then builds the applicable menu and formats requests for the selected endpoint.
 It does not discover arbitrary models' thinking capabilities automatically.
 
 Add more entries under `llm.models` to offer more models, with one marked
@@ -494,10 +492,10 @@ Add more entries under `llm.models` to offer more models, with one marked
   The [endpoint catalogue](configs/endpoints.yaml) defines how choices become
   request parameters.
 
-Both catalogues are editable without rebuilding Mullsmith. Extending the endpoint
-catalogue adapts parameters within the supported protocol; it does not add native
-Anthropic, Gemini or other API protocols. A catalogue entry also cannot make an
-unsupported parameter work on your model server. Validate changes and try a chat.
+Both catalogues are editable without rebuilding Mullsmith. The endpoint catalogue
+controls which request parameters Mullsmith sends; it cannot add support for
+native Anthropic or Gemini APIs, or features your model server does not support.
+Validate changes and try a chat.
 
 ## Everyday administration
 
@@ -535,7 +533,6 @@ A completed password reset revokes existing sessions.
 
 Email is optional and disabled by default. Enable it to offer password-reset
 links, confirm new signups before login and confirm email-address changes.
-Existing accounts are not retroactively put through confirmation.
 
 ```yaml
 email:
@@ -550,7 +547,7 @@ email:
     from: "mullsmith@example.org"
 ```
 
-Set `base_url` to the actual browser-facing origin, including any nonstandard
+Set `base_url` to the URL used to access Mullsmith, including any nonstandard
 port. Port 587 uses STARTTLS; port 465 uses implicit TLS. For a trusted LAN relay
 that needs no login, set `authenticated_smtp: false` and its actual host/port.
 Authenticated SMTP requires TLS.
@@ -605,9 +602,7 @@ The template supplies conservative defaults for a low-traffic server.
 | Upload/download workload | Scratchpad upload size, web download size and `app_limits` transfer concurrency |
 | Tool activity in a single turn | `tools.agent.max_tool_rounds`, `max_tool_calls_per_turn`, `max_network_tool_calls_per_turn` |
 
-Choose a total generation concurrency your model server can handle. Per-user
-limits do not guarantee capacity when many users are active; Mullsmith remains
-a single-process service with a single SQLite database.
+Choose a total generation concurrency your model server can handle.
 
 ### Backups and storage locations
 
@@ -663,18 +658,28 @@ SMTP delivery or every tool is working. Verify those features with real actions.
 Use the original sandbox probe error to diagnose execution problems rather than
 removing its isolation or running Mullsmith as root.
 
-See the source tree for implementation details. The [Makefile](Makefile)
-provides build, test, race, browser and security-check
-targets; none of that tooling is required to run a packaged installation.
+## Building from source
 
-For a source build, use `make build` with the Go version required by
-[go.mod](go.mod). The resulting `bin/mullsmith` contains the web interface.
+Install Git, Make and the Go version required by [go.mod](go.mod), then run:
+
+```sh
+git clone https://github.com/PhilAnderson1/Mullsmith.git
+cd Mullsmith
+make build
+```
+
+The resulting `bin/mullsmith` contains the web interface. To install it as a
+systemd service, run `sudo ./packaging/install.sh`, then follow
+[account and model setup](#create-your-first-account-and-connect-your-model).
+
+The [Makefile](Makefile) also provides test, race, browser and security-check
+targets for development; these are not required to build or run Mullsmith.
 
 ## Upgrade or remove
 
 Install the newer package with the same `apt` or `dnf` command. For a tar install,
-stop the service and run the new archive's installer; it starts the service again. Review
-configuration changes and check the logs after upgrading. The tar installer
+stop the service and run the new archive's installer; it starts the service again.
+Review configuration changes and check the logs after upgrading. The tar installer
 preserves existing configuration files but replaces its systemd unit; keep local
 service changes in systemd drop-ins.
 
@@ -688,6 +693,21 @@ before upgrading an installation whose history you need to keep.
 | Debian/Ubuntu, complete removal | `sudo apt purge mullsmith` | **Deletes configuration, history, files and service account** at the packaged locations |
 | RPM | `sudo dnf remove mullsmith` | Keeps generated state and service account; modified configuration may become `.rpmsave` files |
 | Tar archive | `sudo ./uninstall.sh` from the archive | Asks for confirmation, then **deletes software, configuration and data** at the default locations; optionally removes the service account |
+
+For complete removal of an RPM installation, including **all accounts, history,
+files and configuration** at the default locations:
+
+```sh
+sudo systemctl disable --now mullsmith
+sudo dnf remove mullsmith
+sudo rm -rf /etc/mullsmith /var/lib/mullsmith /run/mullsmith
+sudo rm -rf /etc/systemd/system/mullsmith.service /etc/systemd/system/mullsmith.service.d
+sudo systemctl daemon-reload
+sudo userdel mullsmith
+if getent group mullsmith >/dev/null; then sudo groupdel mullsmith; fi
+```
+
+`userdel` may also remove the service group; the last command removes it if it remains.
 
 Custom data locations require separate management. Do not install a native package
 over a tar installation without resolving the old service unit: a unit in

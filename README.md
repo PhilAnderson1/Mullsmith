@@ -3,7 +3,7 @@
 **Your local AI assistant, on every device.**
 
 A lightweight web interface for your model server, with built-in web and file
-tools and optional sandboxed code execution. Use it from your PC, tablet or phone.
+tools and optional sandboxed code execution.
 
 <p align="center">
   <img src="assets/mullsmith.png" alt="Mullsmith on desktop and phone, showing code execution, a downloadable file and web fetching" width="85%">
@@ -34,8 +34,8 @@ sudo apt install ./mullsmith_*.deb
 sudo dnf install ./mullsmith-*.rpm
 ```
 
-Mullsmith starts automatically with invite-only registration. Create your first account,
-substituting your email, name and password:
+Mullsmith starts automatically with invite-only registration. Manually create your
+first account, substituting your email, name and password:
 
 ```sh
 sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
@@ -43,7 +43,8 @@ sudo mullsmith admin create-user -email you@example.org -name 'Your name' -passw
 
 **Open `http://YOUR-SERVER-IP:3210` from any device on your network and log in to check the installation.**
 
-Set your endpoint and model under `llm:` in `/etc/mullsmith/config.yaml`, then restart:
+[Set your endpoint URL, endpoint type, API key if required, and model](GUIDE.md#create-your-first-account-and-connect-your-model)
+under `llm:` in `/etc/mullsmith/config.yaml`, then restart:
 
 ```sh
 sudo systemctl restart mullsmith
