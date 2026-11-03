@@ -133,7 +133,7 @@ listener is immediately reachable from the local network at
 substituting your email, name and password:
 
     sudo -u mullsmith /usr/bin/mullsmith -config /etc/mullsmith/config.yaml admin create-user \
-      -email you@example.org -name You -password 'a long unique passphrase'
+      -email you@example.org -name 'Your name' -password 'password at least 10 characters'
 
 Open the URL and log in to check the installation. Then edit
 `/etc/mullsmith/config.yaml` to configure the endpoint and models. Create

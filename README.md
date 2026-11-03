@@ -34,14 +34,14 @@ sudo apt install ./mullsmith_*.deb
 sudo dnf install ./mullsmith-*.rpm
 ```
 
-Mullsmith starts automatically with invite-only registration. Create your account,
+Mullsmith starts automatically with invite-only registration. Create your first account,
 substituting your email, name and password:
 
 ```sh
-sudo mullsmith admin create-user -email you@example.org -name You -password 'a long unique passphrase'
+sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
 ```
 
-**Open `http://YOUR-SERVER-IP:3210` from any device on your home network and log in to check the installation.**
+**Open `http://YOUR-SERVER-IP:3210` from any device on your network and log in to check the installation.**
 
 Set your endpoint and model under `llm:` in `/etc/mullsmith/config.yaml`, then restart:
 

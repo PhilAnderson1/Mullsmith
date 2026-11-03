@@ -1593,7 +1593,7 @@ calls), and a smoke script per milestone.
   ended for new keys, so this is a paid API — the only per-request cost in the stack).
   Brave is the only provider the config accepts; a future second provider would land as
   an implementation plus its provider name in the validation switch.
-- **The shipped configuration sets registration to `invite-only`.** Native packages
+- **The shipped configuration sets registration to `invite-only`.** All three installers
   start the service automatically; operators create their first account using
   `mullsmith admin create-user`, log in to verify the installation, then configure
   the model endpoint and restart. Additional accounts can use invitations from

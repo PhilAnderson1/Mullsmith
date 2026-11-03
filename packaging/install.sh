@@ -32,12 +32,17 @@ license_source="$content_root/LICENSE"
 third_party_notices_source="$content_root/THIRD_PARTY_NOTICES.md"
 third_party_licenses_source="$content_root/THIRD_PARTY_LICENSES"
 
-for required_file in "$binary" "$config_source" "$readme_source" "$guide_source" "$spec_source" "$license_source" "$third_party_notices_source"; do
+for required_file in "$binary" "$config_source" "$service_source" "$readme_source" "$guide_source" "$spec_source" "$license_source" "$third_party_notices_source"; do
     if [ ! -f "$required_file" ]; then
         echo "Required installation file is missing: $required_file" >&2
         exit 1
     fi
 done
+
+if ! command -v systemctl >/dev/null 2>&1; then
+    echo "The Mullsmith installer requires systemd to enable and start the service." >&2
+    exit 1
+fi
 
 if [ ! -d "$third_party_licenses_source" ]; then
     echo "Required installation directory is missing: $third_party_licenses_source" >&2
@@ -136,7 +141,10 @@ if [ -f "$service_source" ] && command -v systemctl >/dev/null 2>&1; then
     install -m 0644 "$service_unit" /etc/systemd/system/mullsmith.service
     rm -f -- "$service_unit"
     systemctl daemon-reload
-    echo "Installed the systemd service (not enabled or started)."
+    systemctl enable mullsmith.service
+    # restart also starts an inactive service and loads the new binary on upgrades.
+    systemctl restart mullsmith.service
+    echo "Enabled and started the Mullsmith service."
     echo ""
     echo "TLS is OFF by default: mullsmith serves plain HTTP on port 3210 on"
     echo "every interface for immediate trusted-LAN access. Do not forward that"
@@ -148,18 +156,12 @@ fi
 
 echo "Installed Mullsmith to /usr/local/bin/mullsmith"
 echo ""
-echo "Edit /etc/mullsmith/config.yaml (llm.endpoint and model at minimum) and"
-echo "/etc/mullsmith/env, then validate them with:"
-echo "  sh -c 'set -a; . /etc/mullsmith/env; set +a; /usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config'"
-echo ""
 echo "Create the first account with:"
 echo "  sudo -u mullsmith /usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml admin create-user \\"
-echo "    -email you@example.org -name You -password 'a long passphrase'"
+echo "    -email you@example.org -name 'Your name' -password 'password at least 10 characters'"
 echo ""
-if [ -f "$service_source" ] && command -v systemctl >/dev/null 2>&1; then
-    echo "Enable and start Mullsmith with:"
-    echo "  systemctl enable --now mullsmith"
-    echo ""
-    echo "For an upgrade where Mullsmith is already running, restart it with:"
-    echo "  systemctl restart mullsmith"
-fi
+echo "Open http://YOUR-SERVER-IP:3210 and log in to check the installation."
+echo "Then edit /etc/mullsmith/config.yaml (llm.endpoint and model at minimum)"
+echo "and /etc/mullsmith/env, then validate and restart:"
+echo "  sh -c 'set -a; . /etc/mullsmith/env; set +a; /usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config'"
+echo "  systemctl restart mullsmith"

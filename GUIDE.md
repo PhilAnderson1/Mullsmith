@@ -32,7 +32,7 @@ Download the `.deb` for your machine from
 sudo apt install ./mullsmith_*.deb
 ```
 
-Native packages create the service account and enable and start Mullsmith.
+All three installers create the service account and enable and start Mullsmith.
 The supplied configuration serves HTTP on port 3210 on all IPv4/IPv6 interfaces,
 with invite-only registration. It does not automatically configure your router
 or firewall.
@@ -40,7 +40,7 @@ or firewall.
 Create your first account, substituting your email, name and password:
 
 ```sh
-sudo mullsmith admin create-user -email you@example.org -name You -password 'a long unique passphrase'
+sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
 ```
 
 Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edit
@@ -70,12 +70,7 @@ For a Linux tar archive, extract it, enter the extracted directory and run:
 sudo ./install.sh
 ```
 
-**The tar installer installs the service but does not start it.** Start it yourself:
-
-```sh
-sudo systemctl enable --now mullsmith
-```
-
+The tar installer requires systemd and enables and starts Mullsmith automatically.
 Then create your account, log in and configure your model as described above.
 
 Native packages install the binary at `/usr/bin/mullsmith`; the tar installer
@@ -107,7 +102,7 @@ commands as for the service; see [secrets](#secrets). Certificate files staged i
 ### Upgrade or remove
 
 Install the newer package with the same `apt` or `dnf` command. For a tar install,
-stop the service, run the new archive's installer and start it again. Review
+stop the service and run the new archive's installer; it starts the service again. Review
 configuration changes and check the logs after upgrading. The tar installer
 preserves existing configuration files but replaces its systemd unit; keep local
 service changes in systemd drop-ins.
@@ -535,7 +530,7 @@ Run administrative commands on the server, using the installed configuration:
 
 ```sh
 # Create an account without browser registration.
-sudo mullsmith admin create-user -email you@example.org -name You -password 'a long unique passphrase'
+sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
 
 # Generate three signup codes for invite-only registration.
 sudo mullsmith admin invite 3
