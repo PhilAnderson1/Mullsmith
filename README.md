@@ -49,4 +49,5 @@ sudo systemctl restart mullsmith
 
 Requires a running model endpoint. Optional code execution requires bubblewrap;
 web search requires a Brave Search API key.
-Enable HTTPS and review access settings before exposing the server to the internet.
+Intended for trusted users. For internet access, enable HTTPS and use invite-only
+or closed registration.

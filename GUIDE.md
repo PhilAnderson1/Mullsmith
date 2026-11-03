@@ -1,428 +1,685 @@
 # Mullsmith guide
 
-[![CI](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml)
+Mullsmith connects your browser to a model endpoint you already run or subscribe
+to. It stores accounts, conversations and files on your server. It does not run
+or download the language model itself.
 
-Self-hosted, single-binary chat assistant with a ChatGPT-style web UI in front
-of any local OpenAI-compatible LLM endpoint (llama.cpp, Ollama, vLLM, …).
+Start with the installation instructions, then choose the deployment that fits
+who will use your server.
 
-* **Single static Go binary** — no runtime dependencies, no build step for the
-  UI (vanilla ES modules embedded via `go:embed`), pure-Go SQLite.
-* **Accounts** — email + password (argon2id), sessions with an optional
-  "Stay logged in" cookie, invite-only or closed registration, login lockout.
-  Optionally (off by default): "Forgot password?" links and
-  confirm-before-login sign-ups over your own SMTP relay
-  ([details](#password-reset--email-confirmation)).
-* **Streaming chat** — SSE token streaming, stop/regenerate, markdown answers,
-  dark/light theme, responsive from 320 px phones to ultrawide.
-* **Vision** — with `vision: true` on a model entry, that model is offered
-  the `view_image` tool: attached and scratchpad images (png/jpeg/webp) are
-  named to every model as a manifest, and a vision model ASKS for the ones
-  it wants — those then travel inline, and stay visible on later turns.
-  Text-only endpoints never see picture bytes at all; the manifest-only
-  behaviour is untouched.
-* **Tools with an approval layer** — `web_search` (Brave) and SSRF-guarded
-  `web_fetch`, `web_download`, per-conversation **scratchpad files** (`fs_list/fs_read/
-  fs_write/fs_delete`, uploads from the browser, artifact download cards, a
-  file manager with Uploads / Artifacts / Work tabs),
-  and optional sandboxed **`code_run`** (bubblewrap jail — see
-  [Code execution](#security)). Every
-  tool call is audited and shown as a card in the UI; policy decides which
-  ones ask for confirmation first.
-* **Privacy** — everything lives on your machine: SQLite history, per-user
-  scratchpad directories. Only what you ask the model to search/fetch ever
-  leaves the box, and only to the providers you configure.
+- [Install and connect your model](#install-and-connect-your-model)
+- [Choose your deployment](#choose-your-deployment)
+- [Internet access and HTTPS](#internet-access-and-https)
+- [Registration modes](#registration-modes)
+- [Enable tools](#enable-tools)
+- [Models and thinking controls](#models-and-thinking-controls)
+- [Everyday administration](#everyday-administration)
+- [Troubleshooting](#troubleshooting)
 
-Status: **M0–M7(a) complete** (see [`spec.md`](spec.md) §13). Hardening and
-audit artifacts stay with the operator as machine-local files (untracked
-`local-only/docs/`). See [Security](#security) for residual risks.
+The [commented configuration](configs/config.yaml) is the full option reference.
+**The YAML examples below are fragments:** edit the corresponding entries in your
+existing configuration; do not replace the whole file or add duplicate sections.
+Use two spaces per indentation level, never tabs. Restart after configuration changes.
 
-## Requirements
+## Install and connect your model
 
-* 64-bit Linux (amd64/arm64). Anything else that runs Go works too.
-* The `bubblewrap` package (`apt install bubblewrap`) — only if you enable
-  `tools.code_run`; mullsmith refuses to start with code execution on when a
-  working bwrap is missing (spec §9.9).
-* For `tools.code_run` under systemd: `Delegate=yes` on the unit (the shipped
-  `packaging/systemd/mullsmith.service` has it, with `DelegateSubgroup=payload`) so each run
-  can get a per-run cgroup resource meter — kernel ≥ 5.7 with cgroup v2. No
-  meterable subtree ⇒ code execution refuses to start, never runs un-metered.
-* An OpenAI-compatible endpoint for the model. Text is the baseline; if the
-  endpoint serves a vision model, set `vision: true` on that model entry and
-  it is offered the `view_image` tool: images (png/jpeg/webp) are named to
-  the model as a manifest and it asks for the ones it wants, which then
-  travel inline as `image_url` content parts.
-* To build: Go ≥ 1.26 (Ubuntu's `apt install golang-go` is fine if recent
-  enough; otherwise grab the latest from https://go.dev/dl/).
+### Debian and Ubuntu
 
-## Other installation options
+Download the `.deb` for your machine from
+[Releases](https://github.com/PhilAnderson1/Mullsmith/releases), then:
 
-Download the appropriate package or archive from
-[Releases](https://github.com/PhilAnderson1/Mullsmith/releases).
+```sh
+sudo apt install ./mullsmith_*.deb
+```
 
-For RPM-based systems:
+Native packages create the service account and enable and start Mullsmith.
+The supplied configuration serves HTTP on port 3210 on all IPv4/IPv6 interfaces,
+with account registration open. This is intended for initial setup on a trusted
+home network. It does not automatically configure your router or firewall.
+
+Open `http://YOUR-SERVER-IP:3210` and create your account. Then edit
+`/etc/mullsmith/config.yaml`: set `llm.endpoint` to your model server's API URL
+and replace the example `llm.models` entry with the model it actually serves.
+See [model examples](#models-and-thinking-controls).
+
+```sh
+sudo systemctl restart mullsmith
+```
+
+Send a short message to check the complete browser-to-model connection.
+
+### Other installation options
+
+For an RPM-based distribution with DNF:
 
 ```sh
 sudo dnf install ./mullsmith-*.rpm
 ```
 
-For the Linux tar archive, extract it, enter the extracted directory and run:
+For a Linux tar archive, extract it, enter the extracted directory and run:
 
 ```sh
 sudo ./install.sh
 ```
 
-Native packages start the service automatically. Configure your endpoint and
-model in `/etc/mullsmith/config.yaml`, then run `sudo systemctl restart mullsmith`.
-
-On Debian/Ubuntu, `sudo apt remove mullsmith` keeps configuration and user data;
-`sudo apt purge mullsmith` permanently deletes them. RPM removal keeps generated
-state and may retain modified configuration. Tar installations include an
-interactive `uninstall.sh` script.
-
-## Build
+**The tar installer installs the service but does not start it.** Edit the
+configuration, then start it yourself:
 
 ```sh
-make build            # bin/mullsmith, statically linked, version/commit/date stamped
-# or without make:
-mkdir -p bin
-CGO_ENABLED=0 go build -trimpath \
-  -ldflags "-s -w -X main.version=$(git describe --tags --always) -X main.commit=$(git rev-parse --short HEAD) -X main.buildDate=$(date -u +%FT%TZ)" \
-  -o bin/mullsmith ./cmd/mullsmith
+sudo systemctl enable --now mullsmith
 ```
 
-## Quick install on a fresh Ubuntu box
+Native packages install the binary at `/usr/bin/mullsmith`; the tar installer
+uses `/usr/local/bin/mullsmith`. Both use `/etc/mullsmith` for configuration and
+`/var/lib/mullsmith` for application data. Choose a release matching your CPU
+architecture; the current native-package build targets Linux x86-64.
+
+For a source build, use `make build` with the Go version required by
+[go.mod](go.mod). The resulting `bin/mullsmith` contains the web interface.
+
+### Check configuration and manage the service
 
 ```sh
-# 1. Binary
-sudo install -m 0755 bin/mullsmith /usr/local/bin/mullsmith
-
-# 2. Service user + state dirs
-sudo useradd --system --home-dir /var/lib/mullsmith --shell /usr/sbin/nologin mullsmith
-sudo mkdir -p /etc/mullsmith /var/lib/mullsmith
-sudo chown mullsmith:mullsmith /var/lib/mullsmith && sudo chmod 700 /var/lib/mullsmith
-
-# 3. Config (template with explanations: configs/config.yaml)
-sudo cp configs/config.yaml /etc/mullsmith/config.yaml
-sudo nano /etc/mullsmith/config.yaml         # set llm.endpoint + model at minimum
-sudo chmod 640 /etc/mullsmith/config.yaml && sudo chown root:mullsmith /etc/mullsmith/config.yaml
-
-# 4. Secrets (optional; referenced by ${ENV_VAR} expansion)
-printf 'MULLSMITH_SEARCH_API_KEY=...\n' | sudo tee /etc/mullsmith/env
-sudo chmod 640 /etc/mullsmith/env && sudo chown root:mullsmith /etc/mullsmith/env
-
-# 5. systemd
-sudo cp packaging/systemd/mullsmith.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now mullsmith
-
-# 6. Verify
-/usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config
-sudo -u mullsmith mullsmith -config /etc/mullsmith/config.yaml admin create-user \
-  -email you@example.org -name You -password 'a long passphrase'
-curl -sk https://127.0.0.1:3210/healthz || curl -s http://127.0.0.1:3210/healthz
+sudo mullsmith -config /etc/mullsmith/config.yaml -check-config
+sudo systemctl status mullsmith
+sudo systemctl restart mullsmith
+sudo systemctl stop mullsmith
+sudo systemctl start mullsmith
 ```
+
+`-check-config` validates settings, checks relevant paths and probes the model
+endpoint. It does not exercise every tool or replace a real chat test. An endpoint
+outage can make this check fail even when the YAML is correct.
+
+If your configuration uses environment variables, load the same values for CLI
+commands as for the service; see [secrets](#secrets). Certificate files staged in
+`/run/mullsmith` exist only while the service is running.
+
+### Upgrade or remove
+
+Install the newer package with the same `apt` or `dnf` command. For a tar install,
+stop the service, run the new archive's installer and start it again. Review
+configuration changes and check the logs after upgrading. The tar installer
+preserves existing configuration files but replaces its systemd unit; keep local
+service changes in systemd drop-ins.
+
+During development, database schema changes may require recreating the database;
+there is not yet a general migration path for older schemas. Check release notes
+before upgrading an installation whose history you need to keep.
+
+| Installation | Remove software | Data behaviour |
+|---|---|---|
+| Debian/Ubuntu | `sudo apt remove mullsmith` | Keeps configuration and user data |
+| Debian/Ubuntu, complete removal | `sudo apt purge mullsmith` | **Deletes configuration, history, files and service account** at the packaged locations |
+| RPM | `sudo dnf remove mullsmith` | Keeps generated state and service account; modified configuration may become `.rpmsave` files |
+| Tar archive | `sudo ./uninstall.sh` from the archive | Asks for confirmation, then **deletes software, configuration and data** at the default locations; optionally removes the service account |
+
+Custom data locations require separate management. Do not install a native package
+over a tar installation without resolving the old service unit: a unit in
+`/etc/systemd/system` overrides the packaged unit.
+
+## Choose your deployment
+
+### Trust model
+
+Mullsmith is designed to serve directly on your local network or the public
+internet, with accounts restricted to people you trust not to deliberately abuse
+the service.
+
+Open registration is intended for networks where everyone who can reach Mullsmith
+is trusted, such as a private home LAN. It is not recommended on shared or
+untrusted networks, or when Mullsmith is accessible from the public internet.
+In those environments, enable HTTPS and use invite-only or closed registration.
+
+Authenticated users can consume model resources, store files and use enabled
+tools. These capabilities expose more of the application than the login page
+does. Access controls, quotas and sandboxing provide protection, but Mullsmith is
+not intended as a public service for untrusted account holders. This is especially
+important when code execution is enabled.
+
+Trusted users can still make mistakes or run unsafe model-generated code, so
+sandboxing and resource limits remain important.
+
+### Personal computer
+
+**Use this when:** only browsers on the server itself need access.
+
+```yaml
+server:
+  listen: "127.0.0.1:3210"
+  tls:
+    enabled: false
+```
+
+Open `http://127.0.0.1:3210` and create your account.
+
+Mullsmith will only be available on this machine.
+
+### Trusted home network
+
+**Use this when:** your household uses Mullsmith from computers, tablets or phones.
+
+```yaml
+server:
+  listen: ":3210"
+  tls:
+    enabled: false
+auth:
+  registration: "open"
+```
+
+Open registration lets trusted household users create their own accounts.
+You can use `invite-only` or `closed` if you prefer to control account creation.
+
+**Check:** another household device can open Mullsmith, create an account and sign in.
+
+**Understand:** HTTP sends passwords and conversations without encryption.
+Use it only where you trust the network. On shared, guest or otherwise untrusted
+networks, use HTTPS and invite-only or closed registration. Saving the site as an installable web app generally requires
+HTTPS when accessed from another device.
+
+### Public internet, private accounts
+
+**Use this when:** you or people you invite need access away from home.
+
+Configure HTTPS as described below, then use:
+
+```yaml
+server:
+  listen: ":3210"
+  trusted_proxies: []
+  tls:
+    enabled: true
+auth:
+  registration: "invite-only"
+```
+
+Use `closed` if you do not want further signups. The default settings limit
+simultaneous connections, request rates, failed login attempts and file storage
+per user. Start with these defaults; see [Limits](#limits) if you need to adjust them.
+
+Expose only the intended Mullsmith listener through your router/firewall. The
+model endpoint, database and administration interfaces do not need public access.
+
+**Check:** from outside your home network, the HTTPS URL has a valid certificate,
+login works, and a private chat and file download work. Confirm that registration
+behaves as intended. Test code execution only if you deliberately enabled it.
+
+**Understand:** HTTPS protects traffic. Authentication controls access. Resource
+limits reduce abuse but cannot prevent a large attack from saturating your
+internet connection. Code execution still assumes trusted account holders.
 
 ## Internet access and HTTPS
 
-Enable `server.tls` in the config (with a real cert — Let's
-Encrypt via `certbot` if public), or terminate TLS in a reverse proxy
-(caddy/nginx) and set `server.trusted_proxies`. Mullsmith warns at startup when
-bound to a non-loopback address without TLS — on a trusted LAN that may be
-acceptable; read [Security](#security) first.
+Mullsmith can serve HTTPS directly without a reverse proxy. You need a hostname,
+a certificate for that hostname, and two configuration changes.
 
-Let's Encrypt keys stay `0600 root:root` by certbot policy, and mullsmith runs
-unprivileged. The shipped unit solves this without a second on-disk copy:
-`ExecStartPre` (root) stages cert+key into the RAM-only `RuntimeDirectory`
-`/run/mullsmith`, and a certbot *deploy hook* (`systemctl try-restart mullsmith`)
-picks up renewals. That line ships **commented out** — by default Mullsmith
-listens on plain HTTP port 3210 on every IPv4/IPv6 interface, making it
-immediately reachable from a trusted local network. Do not forward that port
-from the public internet; un-comment the line, set `YOUR.HOSTNAME`, and enable
-`server.tls` to serve HTTPS directly. If you terminate TLS at a proxy instead,
-bind Mullsmith to loopback and skip all of it.
+### 1. Set up a hostname
 
-### CLI
+If you already have a hostname pointing to this server, use it. Otherwise, create
+one with a service such as [Dynu](https://www.dynu.com/), which offers free dynamic
+DNS, or use your own domain.
 
-```text
-mullsmith                                      serve (default config /etc/mullsmith/config.yaml)
-mullsmith -config CFG                          serve with an explicit config (dev runs)
-mullsmith -config CFG -check-config            validate config + probe LLM endpoint
-mullsmith -version                             version/commit/build date
-mullsmith admin invite [n]                     mint invite codes (invite-only mode)
-mullsmith admin create-user -email E -name N -password P
-mullsmith admin reset-password <email>         (prompts, or mails a reset
-                                             link when email.enabled; revokes all sessions)
-mullsmith admin list-users                     every account incl. pending sign-ups
-mullsmith admin delete-user <id-or-email>
-mullsmith admin disable-user <id-or-email>     suspend: login refused now, all sessions
-                                             and outstanding reset/confirm links revoked
-mullsmith admin enable-user <id-or-email>      lift a suspension (cannot activate a
-                                             pending sign-up — its link does that)
+If your public IP address changes, follow your dynamic DNS provider's instructions
+to keep the hostname updated automatically.
+
+The examples below use `YOUR.HOSTNAME`; replace it with your actual hostname.
+
+### 2. Obtain or reuse an SSL/TLS certificate
+
+If the machine already runs an HTTPS web server, you may already have a suitable
+certificate. You can reuse it **if it covers the hostname you will use for
+Mullsmith**. Keep its existing renewal arrangement and skip certificate issuance.
+A certificate is not tied to a particular port.
+
+Otherwise, use [Let's Encrypt](https://letsencrypt.org/getting-started/) to obtain
+a free certificate through its client software, such as Certbot. On Debian/Ubuntu:
+
+```sh
+sudo apt update
+sudo apt install certbot
+sudo certbot certonly --standalone -d YOUR.HOSTNAME
 ```
 
-`admin create-user` run as root hands the new user's scratchpad directories to
-the owner the daemon itself uses — derived from the deepest directory at or
-above the configured `scratchpad.root` that is not root-owned (the packaged
-data directory, by default `/var/lib/mullsmith`). `admin delete-user` removes
-the user's scratchpad tree along with the row.
+Before running the last command, use port forwarding on your router to forward
+TCP port **80** to port **80** on your machine's local IP address. Allow port 80
+through the machine's firewall if enabled. No other program can be using port 80
+while standalone Certbot runs. Keep the forwarding rule for certificate renewals.
 
-Relative paths in the config resolve against the config file's directory, so
-the binary can run from anywhere. `${VAR}` / `${VAR:-default}` expansion keeps
-secrets out of the YAML.
+If another web server uses port 80, use Certbot's web-server or webroot integration
+instead. If inbound port 80 is unavailable, use DNS validation. See the
+[Certbot guide](https://eff-certbot.readthedocs.io/en/stable/using.html) and
+[Let's Encrypt validation methods](https://letsencrypt.org/docs/challenge-types/)
+for these alternatives; for other distributions, follow the
+[Certbot installation instructions](https://certbot.eff.org/instructions).
 
-## Password reset & email confirmation
+Certbot prints the certificate paths. They normally look like:
 
-Off by default. Turning `email.enabled: true` on switches on two user-facing
-flows, each reachable only through links sent to a mailbox you control:
+```text
+/etc/letsencrypt/live/YOUR.HOSTNAME/fullchain.pem
+/etc/letsencrypt/live/YOUR.HOSTNAME/privkey.pem
+```
 
-* **"Forgot password?"** on the login page — a one-shot link (30 min) sets a
-  new password and signs every device out. Only accounts with a *confirmed*
-  address can use it.
-* **Confirm before login** for new sign-ups — the account stays pending
-  (invisible to login) until the 24 h confirmation link is clicked; the login
-  page offers a resend, and pending sign-ups expire automatically after a day.
+Use the actual paths printed, which may have a suffix such as `-0001`.
 
-An address change in Settings follows the same rule: the new address waits
-for its own confirm click (the old mailbox is notified), and cancelling is
-one click. Turning the switch on later never touches existing accounts —
-nothing is backfilled, nobody is retroactively un-confirmed.
+### 3. Configure the startup unit
 
-You need an SMTP submission server; the password belongs in the service's
-`EnvironmentFile` (`MULLSMITH_SMTP_PASSWORD`), not in the YAML. Any server
-speaking STARTTLS on 587 or implicit TLS on 465 works — for Gmail, an app
-password plus `smtp.gmail.com:587`. A LAN relay that doesn't accept logins
-(most local `postfix`/`ssmtp` setups) is just as valid:
+The service needs its own readable copies of the certificate and key. Run:
+
+```sh
+sudo systemctl edit --full mullsmith
+```
+
+Uncomment the existing `ExecStartPre=...` line by removing its leading `#`, and
+replace both occurrences of `YOUR.HOSTNAME` with your certificate directory name.
+Save and close the editor.
+
+This copies the files into the service's runtime directory at each start. It
+works with Certbot's symlinks and leaves the originals in place for renewal.
+If reusing certificates managed elsewhere, substitute those paths instead.
+
+### 4. Enable HTTPS in Mullsmith
+
+Edit these entries in `/etc/mullsmith/config.yaml`:
+
+```yaml
+server:
+  listen: ":3210"
+  tls:
+    enabled: true
+    cert_file: "/run/mullsmith/cert.pem"
+    key_file: "/run/mullsmith/key.pem"
+auth:
+  registration: "invite-only"
+```
+
+Use `closed` instead if all accounts already exist. Then restart:
+
+```sh
+sudo systemctl restart mullsmith
+```
+
+For internet access, allow incoming TCP port **3210** to this machine, forwarding
+it through your router if needed. Open `https://YOUR.HOSTNAME:3210` and check that
+the browser accepts the certificate. Test from outside your home network too.
+The listener now uses HTTPS rather than HTTP; update bookmarks accordingly.
+
+### 5. Keep certificates renewed
+
+Check that Certbot's scheduled renewal is enabled and test it:
+
+```sh
+sudo systemctl list-timers --all certbot.timer
+sudo certbot renew --dry-run
+```
+
+If the Debian/Ubuntu package's timer is disabled, enable it with
+`sudo systemctl enable --now certbot.timer`. Other installation methods may use
+a different timer or cron job.
+
+Mullsmith loads certificates at startup. To restart it after successful Certbot
+renewals, create an executable deploy hook:
+
+```sh
+sudo install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/mullsmith.sh >/dev/null <<'HOOK'
+#!/bin/sh
+systemctl try-restart mullsmith
+HOOK
+sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/mullsmith.sh
+```
+
+If you use another certificate manager, add the same restart command to its
+successful-renewal hook. Keep any existing web-server renewal hooks in place.
+
+### Use an existing reverse proxy
+
+Let the proxy serve HTTPS and forward to a loopback HTTP listener:
+
+```yaml
+server:
+  listen: "127.0.0.1:3210"
+  tls:
+    enabled: false
+  trusted_proxies:
+    - "127.0.0.1/32"
+```
+
+This example assumes the proxy connects from `127.0.0.1`. For other topologies,
+trust only the proxy addresses you actually use and restrict direct backend
+access. The proxy must overwrite forwarded client/protocol headers, including a
+single correct `X-Forwarded-Proto` value. Disable response buffering for streaming
+chat and allow sufficient time for long responses. Never trust arbitrary internet
+clients as proxies.
+
+## Registration modes
+
+Set `auth.registration` according to who can reach your server:
+
+| Mode | Behaviour | Suitable use |
+|---|---|---|
+| `open` | Anyone who can reach Mullsmith can sign up | Localhost or a private LAN where everyone with access is trusted |
+| `invite-only` | Signup requires an invitation code | Shared networks or internet access, with invitations given only to trusted people |
+| `closed` | Browser signup is disabled; existing accounts can still log in | Any deployment once accounts are created, or when accounts are created through the administrative CLI |
+
+See [accounts and invitations](#accounts-and-invitations) to create accounts or
+issue codes. Email confirmation verifies access to a mailbox; it does not establish
+that an account holder is trustworthy. Likewise, tool confirmation prompts let
+users approve their own requests and are not a barrier against deliberate abuse.
+
+## Enable tools
+
+The model chooses which offered tools to request. Tool results go back to the
+model, so contents read from files or fetched pages may be sent to your configured
+endpoint. A local model keeps that processing local; a remote provider receives it.
+
+| Tool | Purpose and access | Supplied policy |
+|---|---|---|
+| `web_search` | Searches through Brave; requires a Brave Search API key | Disabled; automatic when enabled |
+| `web_fetch` | Reads public web pages using the guarded HTTP client | Enabled; automatic |
+| `web_download` | Downloads public URLs into the user's scratchpad | Enabled; automatic |
+| `fs_list`, `fs_read` | Lists and reads the user's scratchpad files | Always available; automatic |
+| `fs_write` | Writes within the user's work/artifact areas | Always available; automatic |
+| `fs_delete` | Deletes permitted scratchpad files, including uploads | Always available; confirmation |
+| `files_share` | Creates a downloadable artifact from a scratchpad file | Always available; automatic |
+| `view_image` | Sends selected scratchpad images to a vision-capable model | Offered to configured vision models; automatic |
+| `code_run` | Runs configured interpreters in the execution sandbox | Disabled; confirmation when enabled |
+
+Web fetch and download block non-public network destinations. This restriction
+does not govern the configured model/SMTP endpoints, or code execution when you
+explicitly allow its network access.
+
+Enable search under `tools.web_search` with `enabled: true`, `provider: "brave"`
+and your API key. No search key is required for direct web fetch/download.
+
+### Approvals and execution limits
+
+`tools.agent.approval` accepts `auto` (run immediately) or `confirm` (ask the user).
+An approval may be remembered for the current conversation. Use an optional tool's
+`enabled` setting to disable it; `confirm` is not a disable switch.
+
+Keep deletion and code execution on `confirm` unless you deliberately want them
+to run unattended. Read the requested action: web pages and uploaded files can
+contain instructions intended to manipulate the model, and approval does not
+eliminate that risk.
+
+A **round** is one batch of tool requests from a model response; it may contain
+several **calls**. The supplied per-turn limits are 20 tool rounds, 100 proposed
+tool calls and 10 network tool calls. They bound a single response workflow, not
+the lifetime of a conversation. The code execution timeout applies to each run;
+one turn can contain multiple sequential runs.
+
+### Optional code execution
+
+Install bubblewrap (for example, `sudo apt install bubblewrap`) and the
+interpreters listed under `tools.code_run.allowed_runtimes`. Then enable:
+
+```yaml
+tools:
+  code_run:
+    enabled: true
+    timeout: 30s
+    max_memory: 1GiB
+    max_output: 256KiB
+    allow_network: false
+  agent:
+    approval:
+      code_run: "confirm"
+```
+
+Use the shipped systemd service with cgroup v2 and working unprivileged
+namespaces. Mullsmith checks both the bubblewrap jail and cgroup delegation at
+startup; if either cannot work, it refuses to start with code execution enabled.
+
+Each run gets a fresh bubblewrap jail. Selected system files are read-only;
+the user's `work/` and `artifacts/` directories are writable, and `uploads/` is
+read-only. Other users' files, the database and server configuration are not
+mounted into the jail. Mullsmith separately creates cgroups to limit memory,
+CPU and task count across the process tree, and enforces the execution deadline.
+The sandbox shares the host kernel; it is not a virtual machine.
+
+Keep network access off unless the task requires it. Enabling it permits network
+access from executed code, including access to networks the host can reach; it
+does not inherit the web tools' public-address guard.
+
+**Code execution is for trusted users.** Application storage accounting is not a
+hard filesystem quota: code can consume disk space or inodes in ways ordinary
+byte accounting does not fully capture. Put the scratchpad on a separate,
+size-limited filesystem when enabling execution. The default location is
+`/var/lib/mullsmith/scratchpad`; mount it before starting the service and preserve
+ownership by `mullsmith`. If it contains existing files, move them to the new
+filesystem while the service is stopped rather than hiding them beneath a mount.
+
+### Files and retention
+
+Each user has three areas:
+
+- `uploads/`: original uploaded files, retained until deleted.
+- `work/`: temporary work, expired by the maintenance sweep after the configured
+  retention period (24 hours by default).
+- `artifacts/`: shared outputs, expired after seven days by default.
+
+Retention is based on file modification time; cleanup happens on a later sweep,
+not at the exact expiration instant. Download outputs you want to keep. Files are
+served as downloads; opening downloaded content locally is outside the sandbox.
+
+## Models and thinking controls
+
+Mullsmith uses one configured OpenAI-compatible Chat Completions endpoint, which
+can offer multiple models. Set IDs exactly as your endpoint advertises them.
+These example URLs must match the actual ports you chose for your model servers.
+
+| Server | Example `llm.endpoint` | `llm.endpoint_type` |
+|---|---|---|
+| llama.cpp | `http://127.0.0.1:9931/v1` | `llama_cpp` |
+| Ollama, OpenAI-compatible API | `http://127.0.0.1:11434/v1` | `ollama_openai` |
+| vLLM | `http://127.0.0.1:8000/v1` | `vllm` |
+| LM Studio | `http://127.0.0.1:1234/v1` | `lm_studio` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `openrouter` |
+
+For a model on llama.cpp:
+
+```yaml
+llm:
+  endpoint: "http://127.0.0.1:9931/v1"
+  endpoint_type: "llama_cpp"
+  models:
+    - id: "your-model-id"
+      default: true
+      thinking_profile: "none"
+```
+
+For Ollama or vLLM, change the URL, endpoint type and model ID in this fragment.
+For OpenRouter, also set `llm.api_key`; its model IDs normally include a provider
+prefix. A model server on another machine needs that machine's address instead
+of `127.0.0.1`.
+
+Start with `thinking_profile: "none"` unless you know the appropriate profile.
+To enable the supplied Qwen3.8 controls, for example, set `thinking_profile:
+"qwen3_8"` on that model entry. The operator assigns the profile; Mullsmith then
+builds the applicable menu and formats requests for the selected endpoint.
+It does not discover arbitrary models' thinking capabilities automatically.
+
+Add more entries under `llm.models` to offer more models, with one marked
+`default: true`. Give each its own thinking profile and capabilities:
+
+- `context_size`: the context window actually configured on your endpoint,
+  which may be smaller than the model's theoretical maximum. Omit it to use
+  discovery if the endpoint reports it. Without either, the usage meter shows
+  token counts without a known capacity.
+- `vision: true`: enable image input only when the model and endpoint support it.
+- `thinking_profile`: select from [thinking-profiles.yaml](configs/thinking-profiles.yaml).
+  The [endpoint catalogue](configs/endpoints.yaml) defines how choices become
+  request parameters. Gufo is also supplied as an endpoint type.
+
+Both catalogues are editable without rebuilding Mullsmith. Extending the endpoint
+catalogue adapts parameters within the supported protocol; it does not add native
+Anthropic, Gemini or other API protocols. A catalogue entry also cannot make an
+unsupported parameter work on your model server. Validate changes and try a chat.
+
+## Everyday administration
+
+### Accounts and invitations
+
+Existing accounts can log in whether registration is open, invite-only or closed.
+Run administrative commands on the server, using the installed configuration:
+
+```sh
+sudo mullsmith admin invite 3
+sudo mullsmith admin list-users
+sudo mullsmith admin reset-password you@example.org
+sudo mullsmith admin disable-user you@example.org
+sudo mullsmith admin enable-user you@example.org
+```
+
+Invitations allow signup in invite-only mode. Disabling an account revokes its
+sessions; enabling it does not activate an unconfirmed signup. Password reset
+prompts interactively when email reset is unavailable; when email is enabled it
+normally sends a reset link instead. A completed password reset revokes sessions.
+
+To create an account without browser registration:
+
+```sh
+sudo mullsmith admin create-user -email you@example.org -name You -password 'a long unique passphrase'
+```
+
+The password argument can be visible in shell history and process listings;
+prefer browser signup for normal account creation. `admin delete-user <id-or-email>`
+permanently deletes the account and its scratchpad files. Use `list-users` to find
+IDs for pending signups that do not yet have a confirmed email address.
+
+### Password reset & email confirmation
+
+Email is optional and disabled by default. Enable it to offer password-reset
+links, confirm new signups before login and confirm email-address changes.
+Existing accounts are not retroactively put through confirmation.
 
 ```yaml
 email:
   enabled: true
-  base_url: "https://mullsmith.example:3210"   # where users reach you — links
-                                             # are built from this, never from
-                                             # request headers
+  base_url: "https://mullsmith.example.org:3210"
   smtp:
-    host: "192.168.0.10"
-    port: 25
-    authenticated_smtp: false   # unauthenticated send through a trusted relay;
-                                # AUTH is never sent over a cleartext connection
+    host: "smtp.example.org"
+    port: 587
+    authenticated_smtp: true
+    username: "mullsmith@example.org"
+    password: "${MULLSMITH_SMTP_PASSWORD}"
     from: "mullsmith@example.org"
 ```
 
-`-check-config` dials the relay when the feature is on — a failure warns but
-never fails the check, so a mail outage can't block restarts. If a user is
-locked out anyway, `admin reset-password <email>` mails a real reset link
-when the feature is enabled (or prompts for a password directly, which works
-with mail down). Pending sign-ups have no email column to match — list them
-with `admin list-users` and name them by id to `admin delete-user`.
+Set `base_url` to the actual browser-facing origin, including any nonstandard
+port. Port 587 uses STARTTLS; port 465 uses implicit TLS. For a trusted LAN relay
+that needs no login, set `authenticated_smtp: false` and its actual host/port.
+Authenticated SMTP requires TLS.
 
-Context windows: `llm.max_context_tokens: -1` (the default) reads the window
-from the endpoint's `/v1/models` listing (`context_length`, as llama.cpp and
-vLLM report it) — the fullness meter gets a real denominator, refreshed at
-startup and whenever a new chat starts. A spelled-out number pins it instead
-and the endpoint is never consulted. A backend that reports nothing shows
-plain "K tokens used" and overlong conversations fail at the endpoint: the
-server never guesses a window. `admin`/`-check-config` prints which number is
-in force and warns when a pin disagrees with the endpoint.
+Put the SMTP secret in the service environment as below. Check logs and perform
+a real test signup/reset. Mail is queued and retried; a successful HTTP response
+does not prove delivery. Reset links expire after 30 minutes, signup confirmation
+links after 24 hours; expired pending signups are cleaned up automatically.
 
-Mail is best-effort: sends are queued and retried asynchronously, and a mail
-problem never turns into a failed request. See spec §9.17 for the full
-security doctrine (no-enumeration answers, hashed one-shot tokens).
+### Secrets
 
-## Backups
-
-All state lives in two directories named by the config:
-
-* `database.dir` — SQLite (`mullsmith.db` + WAL files)
-* `scratchpad.root` — per-user `uploads/`, `artifacts/`, `work/`. Files live on
-  disk under their real names and the path is their only identity — there is no
-  file registry to keep in sync. `uploads/` is durable user data; `artifacts/`
-  and `work/` expire on the mtime sweep (`artifact_ttl`, `work_ttl`), so losing
-  them costs generated output, not originals. The assistant never writes into
-  `uploads/`; it can delete files there only through `fs_delete`, which asks
-  your confirmation every time — scripts in the `code_run` jail never can.
-
-Plus `/etc/mullsmith/config.yaml` and `/etc/mullsmith/env`.
-
-The shipped systemd unit uses `ProtectSystem=strict` and permits writes only
-beneath `/var/lib/mullsmith`. For a hard storage boundary around code
-execution, the simplest arrangement is therefore to mount a dedicated,
-size-limited filesystem at `/var/lib/mullsmith/scratchpad` (or mount one at
-`/var/lib/mullsmith` for all application state). The configured paths may live
-elsewhere, but Unix ownership alone is not enough: add every external database
-or scratchpad location to the service's writable-path allowlist:
+Secrets may be written directly in the protected configuration file, or supplied
+through `${ENV_VAR}` / `${ENV_VAR:-default}` references. The service reads optional
+`/etc/mullsmith/env`, for example:
 
 ```sh
-sudo systemctl edit mullsmith
+MULLSMITH_LLM_API_KEY='your-provider-key'
+MULLSMITH_SEARCH_API_KEY='your-brave-key'
+MULLSMITH_SMTP_PASSWORD='your-smtp-password'
 ```
+
+Creating this file alone does not change the configuration: set the relevant
+`api_key` or `password` entry to reference the variable. Protect the file:
+
+```sh
+sudo chown root:mullsmith /etc/mullsmith/env
+sudo chmod 640 /etc/mullsmith/env
+```
+
+A CLI process does not automatically read systemd's environment file. If you keep
+it in simple shell-compatible `NAME='value'` form, run a configuration check with:
+
+```sh
+sudo sh -c 'set -a; if [ -f /etc/mullsmith/env ]; then . /etc/mullsmith/env; fi; set +a; exec mullsmith -config /etc/mullsmith/config.yaml -check-config'
+```
+
+The same wrapper can run an `admin` command instead of `-check-config`. Restart
+the service after changing secrets. Keep backups containing credentials private.
+
+### Limits
+
+Use `server:` for HTTP transport controls and `app_limits:` for application use.
+The template supplies conservative defaults for a low-traffic server.
+
+| What you want to constrain | Settings to review |
+|---|---|
+| Connections and stalled clients | `server.max_connections`, `concurrent_requests`, read/write timeouts |
+| Concurrent model work | `app_limits.concurrent_streams_per_user`, `concurrent_streams_total` |
+| Per-user request/message rates | `app_limits.requests_per_minute`, `chat_messages_per_hour` |
+| Stored conversations/messages | `app_limits.max_conversations_per_user`, `max_messages_per_user` |
+| File storage and entry count | `scratchpad.user_quota`, `max_entries` |
+| Upload/download workload | Scratchpad upload size, web download size and `app_limits` transfer concurrency |
+| Tool activity in a single turn | `tools.agent.max_tool_rounds`, `max_tool_calls_per_turn`, `max_network_tool_calls_per_turn` |
+
+Choose a total generation concurrency your model server can handle. Per-user
+limits do not guarantee capacity when many users are active; Mullsmith remains
+a single-process service with a single SQLite database.
+
+### Backups and storage locations
+
+With the default paths, preserve `/etc/mullsmith` and `/var/lib/mullsmith`.
+They contain configuration, secrets, the SQLite database and users' files.
+
+The simplest consistent backup is to stop the service, copy both directories
+while preserving ownership and permissions, then start it again. For online
+database backups, use SQLite's backup facility rather than copying a live `.db`
+file without its WAL. Files may change while a separate file backup runs.
+
+To restore, stop the service, restore configuration and data with their original
+permissions, then start and verify login and file access. Restore a binary
+compatible with the saved schema. Store backups securely: they contain private
+conversations and potentially credentials.
+
+If you move `database.dir` or `scratchpad.root` outside `/var/lib/mullsmith`, grant
+the service account ownership and add the new locations to a systemd drop-in:
 
 ```ini
 [Service]
-ReadWritePaths=/mnt/mullsmith-scratch /srv/mullsmith-db
+ReadWritePaths=/srv/mullsmith-db /srv/mullsmith-files
 ```
 
-Create those directories as `mullsmith:mullsmith`, then run
-`sudo systemctl restart mullsmith`. The drop-in augments the packaged
-`/var/lib/mullsmith` allowance; retain `ProtectSystem=strict`.
+Retain `ProtectSystem=strict`; ownership alone does not override the service's
+filesystem restrictions. Mounting a dedicated scratchpad filesystem under the
+default `/var/lib/mullsmith` path avoids changing this allowlist.
 
-Deployment policy for this development installation: do not create deployment
-backups. Run the relevant checks before installing a binary and verify service
-health afterwards. Keep runtime data outside the source checkout.
+## Troubleshooting
 
-**Optional data backup** (independent of deployment; server can stay up; uses the `sqlite3` CLI so the
-WAL is folded in correctly):
+Start with:
 
 ```sh
-#!/bin/sh -e
-DEST=/backups/mullsmith/$(date +%F)
-mkdir -p "$DEST"
-install -d -m 700 "$DEST"
-sqlite3 /var/lib/mullsmith/db/mullsmith.db ".backup '$DEST/mullsmith.db'"
-rsync -a --delete /var/lib/mullsmith/scratchpad "$DEST/scratchpad"
-tar czf "$DEST/config.tgz" -C /etc mullsmith
+sudo systemctl status mullsmith
+sudo journalctl -u mullsmith -n 100 --no-pager
+mullsmith -version
 ```
 
-Cold backup instead: `systemctl stop mullsmith && cp -a /var/lib/mullsmith …`.
-Restore by stopping the service, copying the files back (preserve
-`mullsmith:mullsmith` ownership and `0700`), and starting again. The scratchpad
-holds untrusted uploaded content — keep backups encrypted at rest (`age`,
-restic, or an encrypted mount); the database contains full conversation
-history.
+| Symptom | Check |
+|---|---|
+| Page unreachable | Service status, listener address, host firewall, routing and whether the URL needs HTTP or HTTPS |
+| Page loads but chat fails | Endpoint address, API key and exact model ID; run `-check-config` with the service's environment |
+| New configuration rejected | YAML indentation, duplicate/unknown keys and option values; compare with the supplied template |
+| HTTPS fails after restart | Certificate hostname, expiry and readability; certificate staging command and file paths |
+| Code execution prevents startup | Bubblewrap, unprivileged namespaces, cgroup v2 and systemd delegation; inspect the logged probe failure |
+| Thinking menu missing | Selected model's `thinking_profile`, catalogue paths and endpoint compatibility |
+| Signup unavailable | Registration mode, invitation code, signup limits or email confirmation |
+| Reset email missing | SMTP settings, service environment, delivery logs and junk folder |
+| Upload/write rejected | File-size limit, byte quota, entry ceiling, blocked extensions, filesystem space and permissions |
 
-## Security
+`/healthz` indicates the HTTP service responds; it does not prove model generation,
+SMTP delivery or every tool is working. Verify those features with real actions.
+Use the original sandbox probe error to diagnose execution problems rather than
+removing its isolation or running Mullsmith as root.
 
-Mullsmith supports direct HTTPS exposure without a required reverse proxy. The
-transport defaults allow 128 open connections (`server.max_connections`) and 32
-active HTTP requests (`server.concurrent_requests`), including long-lived streams.
-Excess connections close before TLS/HTTP parsing; excess requests receive 503 with
-`Retry-After: 1`. Both limits accept a positive value, or `-1` to disable; omission
-uses the default and explicit zero is invalid. Size these budgets for streaming
-clients as well as ordinary requests.
-
-HTTP transport settings, including `max_body_bytes`, live under `server:`.
-Application quotas and workload caps live under `app_limits:`: message and
-attachment sizes, model-generation concurrency, per-user request/message quotas,
-password hashing concurrency, and upload concurrency.
-
-Request headers are limited to 32 KiB. HTTP/2 uses a 30-second write-progress
-budget, a ping after 10 seconds without received frames, and a five-second ping
-response budget. These are internal defaults; normal idle connections and healthy
-streams remain supported. If using a trusted reverse proxy, it must overwrite
-`X-Forwarded-Proto` with one `http` or `https` value. Missing, ambiguous, repeated,
-or unrecognized protocol headers from trusted HTTP proxy peers are rejected.
-
-Design: `spec.md` §9 (auth, CSRF, XSS/Markdown sandbox, SQL, upload/MIME,
-SSRF egress guard, scratchpad path sandbox, code-execution sandboxing, TLS,
-rate limiting, logging, secrets, dependency policy) with a §9.16 OWASP Top-10
-map. Release gates and what we actually ran:
-
-```sh
-make check            # go vet + go test -race + gosec + govulncheck + node JS suite
-make test-browser     # real-Chromium live-vs-history equivalence (dev-only Playwright)
-make fuzz-short       # 60 s of coverage-guided fuzzing on the path sandbox
-```
-
-`make test-browser` boots the built binary against a scripted LLM endpoint and
-drives the shipped client in Chromium (web/test/browser/). Playwright is a
-test-only dependency — the runtime stays dependency-free — so it is a separate
-target and a separate CI job rather than part of `make check`.
-
-Artifacts for the current release (gosec, govulncheck, OWASP ZAP baseline)
-and the §9.16 re-audit with evidence per line — false-positive justifications
-included — are operator machine-local files under `local-only/docs/`, kept
-out of the repository like the dev and scan configs they belong to. Any of
-them is reproducible from the commands above.
-
-### Residual risks (read this)
-
-* **No 2FA in v1.** Password + session cookies only. Use closed/invite-only
-  registration and strong passphrases; keep the box LAN-only or behind a proxy
-  with mTLS/VPN if that matters to your threat model.
-* **Plain HTTP is opt-in.** If you run without TLS, everything — passwords,
-  cookies, history — is readable on the network path. Mullsmith prints a startup
-  warning; session cookies drop their `Secure` flag automatically so login
-  works over plain HTTP (they keep it whenever the request really arrives over
-  HTTPS, including via a trusted reverse proxy).
-* **The LLM sees everything.** Conversations, file excerpts you attach, tool
-  output and search queries are sent to `llm.endpoint`; search queries and
-  fetched URLs go to the configured search provider (Brave). Treat those
-  endpoints/providers as trusted sinks.
-* **Prompt injection (§9.13) is mitigated, not solved.** Web pages, search
-  results and file contents are wrapped as *data, not instructions*, tool
-  approval gates exist, and denials are honoured — but a model can still be
-  manipulated into *asking* you to approve something. Keep `code_run: confirm`
-  (the default) and never combine `code_run: auto` with open registration —
-  mullsmith warns when you do.
-* **Code execution means trusted users.** Enabling `tools.code_run.enabled`
-  is a statement that the accounts you serve are trusted not to spend the
-  host down. The jail and the per-run cgroup v2 meter *do* hard-cap memory,
-  task count and CPU in the kernel — but nothing hard-caps **storage**.
-  The per-user byte quota, the storage watchdog and the bounded scans keep
-  usage honest and metered; a determined user can still consume disk and
-  inodes with legitimate primitives (empty files cost ~nothing against a
-  byte quota; deleted-but-still-open files evade accounting entirely). If
-  your population is not trusted, keep code execution off or gate
-  enrollment (invite-only/closed) — or move the scratch root onto a bounded
-  filesystem with project quotas, which is operator hardening, not a
-  feature gap (spec §9.9).
-* **Code execution is defence-in-depth, not a VM.** Every run is jailed by
-  [bubblewrap](https://github.com/containers/bubblewrap): its own
-  user/mount/PID/net namespaces, a root filesystem containing only a
-  read-only `/usr` plus the user's own scratchpad at `/scratchpad` — root
-  mounted READ-ONLY, with `work/` and `artifacts/` as the writable overlays
-  (workspace and finished output) and `uploads/` read-only, so a script can
-  never litter the root beside the three directories — the database, other
-  users' files and server configs have no path inside the jail — with
-  rlimits, a scrubbed environment and no-new-privs underneath, and no
-  network unless you set `allow_network: true` (mullsmith warns when you do).
-  Every run also gets its own cgroup v2 meter: total memory (no swap), task
-  count and CPU are capped for the whole process tree, so a multiplying
-  script cannot exhaust the host (spec §9.9; needs the unit's delegated
-  subtree, refuse-not-degrade).
-  `bwrap` is a hard requirement when code execution is on: missing or
-  non-functional bwrap stops mullsmith at startup, never a silent downgrade.
-  Files a script produces can be shared back into the chat: assume anyone
-  who can approve runs can read/write that user's scratchpad.
-* **Uploads are for download, not browsing.** Every download is served as
-  `Content-Disposition: attachment` — uploaded bytes never render inside the
-  app's origin. But once the user downloads and opens a file locally, it runs
-  with their local privileges. The optional `scratchpad.block_extensions`
-  gate keeps chosen types off the disk entirely; it is disk hygiene, not
-  antivirus.
-* **Single process, single SQLite.** Rate limits and per-user caps blunt DoS,
-  but one heavy user can degrade everyone; there is no horizontal scaling.
-
-## Development
-
-```sh
-make test          # unit + integration (httptest, temp SQLite, fake LLM)
-make race          # same with -race
-make lint vuln     # gosec + govulncheck
-make fuzz-short    # path-sandbox containment fuzzer
-make dist          # stamped release binary + sha256 under dist/
-```
-
-`local-only/dev.yaml` (kept out of the repo, like my other machine-specific
-files under `local-only/`) is my local dev config: loopback `:8081`, its own
-`local-only/data/`; run `mullsmith -config local-only/dev.yaml` from the repo
-root. Copy `configs/config.yaml` and point it at your endpoint. The UI lives
-in `web/` and is embedded into the binary at build time — rebuild and
-hard-refresh after editing assets.
-
-The database schema lives in `internal/store/schema/schema.sql` and is initialized
-atomically on startup. There is no upgrade path for older database schemas
-during development: recreate a development database after structural schema
-changes. Startup can reopen databases already using the current schema.
-
-### Layout
-
-```text
-cmd/mullsmith/        main: flags, config load, startup wiring, graceful shutdown, admin CLI
-internal/config/    YAML schema, env expansion, strict validation, startup warnings
-internal/auth/      argon2id, sessions, CSRF tokens, invite codes, login limiter
-internal/store/     SQLite (modernc.org) + schema/schema.sql; users/conversations/messages/tool_calls (no files table — the disk is the file state)
-internal/server/    routing, middleware, SSE chat, files API, maintenance sweeps
-internal/llm/       OpenAI-compatible streaming client (tools + reasoning channels)
-internal/agent/     context budgeting + turn grouping fed to the model
-internal/tools/     registry + web_search/web_fetch/web_download/fs_*/files_share/code_run + SSRF egress guard
-internal/scratch/   path sandbox (§9.7): openat chain, O_NOFOLLOW, containment fuzzer
-internal/runner/    code execution: bubblewrap jail + rlimit launcher (§9.9)
-web/                embedded SPA: app.js, SSE client, DOM-only markdown renderer, CSS
-```
+Development and implementation details belong in [spec.md](spec.md) and the
+source tree. The Makefile provides build, test, race, browser and security-check
+targets; none of that tooling is required to run a packaged installation.
