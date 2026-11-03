@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 )
@@ -75,20 +75,20 @@ func (c *Client) Complete(ctx context.Context, model string, msgs []ChatMessage,
 		if ctx.Err() != nil {
 			return "", ErrAborted
 		}
-		return "", fmt.Errorf("upstream request: %w", err)
+		return "", endpointConnectionFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: HTTP %d", ErrUpstream, resp.StatusCode)
+		return "", endpointHTTPFailure(resp.StatusCode)
 	}
 	var out completionResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
-		return "", fmt.Errorf("%w: bad completion body", ErrUpstream)
+		return "", endpointResponseFailure(errors.New("bad completion body"))
 	}
 	for _, ch := range out.Choices {
 		if ch.Message.Content != "" {
 			return ch.Message.Content, nil
 		}
 	}
-	return "", fmt.Errorf("%w: empty completion", ErrUpstream)
+	return "", endpointResponseFailure(errors.New("empty completion"))
 }

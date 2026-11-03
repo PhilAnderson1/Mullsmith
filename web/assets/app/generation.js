@@ -232,6 +232,11 @@ export function createGenerationController({
     syncComposerButtons();
     if (!st.rounds.length) return; // nothing ever streamed onto the screen
     const err = (st.errorData && st.errorData.message) || "";
+    // Endpoint failures arrive after the assistant round has started, so
+    // they historically appeared only as the round's small durable status
+    // note. Announce them prominently too; the inline note remains after
+    // the red toast fades and keeps the failed round meaningful on reload.
+    if (st.errorData && st.errorData.code === "upstream_error" && err) toast(err);
     const outcomes = new Map((done.rounds || []).map((entry) => [entry.message_id, entry]));
     for (const r of st.rounds) {
       const entry = outcomes.get(r.id);

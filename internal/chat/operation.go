@@ -305,7 +305,7 @@ func (op *Operation) Run(emit Emit) {
 			"conversation", conv.ID, "endpoint", s.cfg.LLM.Endpoint,
 			"model", s.Model(conv.Model), "thinking", s.ThinkingChoice(conv),
 			"rid", cmd.RequestID)
-		_ = conn.Send(Failed{Code: "upstream_error", Message: "the model endpoint failed; try again", RequestID: cmd.RequestID})
+		_ = conn.Send(Failed{Code: "upstream_error", Message: llm.EndpointErrorMessage(res.Err), RequestID: cmd.RequestID})
 	}
 	// Terminal events describe DURABLE outcomes (finding 4): the client
 	// must be able to tell an endpoint failure from a storage failure from

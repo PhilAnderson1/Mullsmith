@@ -365,18 +365,42 @@ body.drawer-open #sidebar { transform: translateX(0); }
   -webkit-user-select: text;
   -webkit-touch-callout: default;
 }
-.conv-item:hover { background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg-sidebar)); }
+.conv-item:hover { background: color-mix(in srgb, var(--accent) 8%, var(--bg-sidebar)); }
 .conv-item.active {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-sidebar));
   box-shadow: inset 2px 0 0 var(--accent);
 }
 .conv-item.active .conv-title { font-weight: 600; }
 /* The row's actions hide behind "…": revealed on hover where hover exists;
-   on touch devices the button yields to the long press entirely (below). */
-.conv-menu-btn { opacity: 0; flex: none; }
+   on touch devices the button yields to the long press entirely (below).
+   It overlays the title instead of reserving a permanent empty column. */
+.conv-menu-btn {
+  position: absolute;
+  z-index: 1;
+  inset-inline-end: 0.25rem;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  background: var(--bg-sidebar);
+}
 .conv-item:hover .conv-menu-btn,
-.conv-menu-btn:focus-visible { opacity: 0.75; }
-.conv-menu-btn:hover { opacity: 1 !important; }
+.conv-menu-btn:focus-visible {
+  opacity: 0.75;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-sidebar));
+}
+.conv-item.active .conv-menu-btn {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-sidebar));
+}
+.conv-menu-btn:hover,
+.conv-item.active .conv-menu-btn:hover {
+  opacity: 1 !important;
+}
+@media (hover: hover) {
+  .conv-item:hover .conv-title {
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 5rem), rgba(0, 0, 0, 0.28) calc(100% - 2.75rem), transparent calc(100% - 1.25rem));
+    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 5rem), rgba(0, 0, 0, 0.28) calc(100% - 2.75rem), transparent calc(100% - 1.25rem));
+  }
+}
 @media (hover: none) {
   /* Phones and tablets summon the same menu by long press, so the button
      hides here — pointer-events keeps the invisible target inert, and the
@@ -394,7 +418,7 @@ body.drawer-open #sidebar { transform: translateX(0); }
   font: inherit;
   text-align: left;
   padding: 0.7rem 0.75rem;
-  font-size: 0.92em;
+  font-size: 0.88em;
   cursor: pointer;
 }
 .conv-title {
@@ -725,7 +749,7 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 
 @media (min-width: 1024px) {
   #view-chat {
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 310px minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas:
       "sidebar topbar"
@@ -779,6 +803,16 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
 .stream-text.md ul,
 .stream-text.md ol { margin: 0.4em 0; padding-inline-start: 1.5em; }
 .stream-text.md li { margin: 0.15em 0; }
+.stream-text.md li > ul,
+.stream-text.md li > ol { margin: 0.2em 0; }
+.stream-text.md .task-list { list-style: none; }
+.stream-text.md .task-list-item > input[type="checkbox"] {
+  width: 1em;
+  height: 1em;
+  margin: 0 0.45em 0 -1.4em;
+  vertical-align: -0.1em;
+  accent-color: var(--accent);
+}
 .stream-text.md blockquote {
   margin: 0.5em 0;
   padding: 0.15em 0.9em;
@@ -793,6 +827,45 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   font: 0.9em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .stream-text.md a { color: var(--accent); text-underline-offset: 2px; }
+.stream-text.md del { color: var(--fg-muted); }
+.stream-text.md hr {
+  margin: 0.8em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.stream-text.md .md-table-wrap {
+  max-width: 100%;
+  margin: 0.65em 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.stream-text.md table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94em;
+}
+.stream-text.md th,
+.stream-text.md td {
+  max-width: 32rem;
+  padding: 0.45em 0.65em;
+  border-inline-end: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.stream-text.md th:last-child,
+.stream-text.md td:last-child { border-inline-end: 0; }
+.stream-text.md tbody tr:last-child td { border-bottom: 0; }
+.stream-text.md th {
+  background: var(--bg-sunken);
+  font-weight: 650;
+}
+.stream-text.md tbody tr:nth-child(even) { background: var(--bg-sunken); }
+.stream-text.md .md-align-left { text-align: left; }
+.stream-text.md .md-align-center { text-align: center; }
+.stream-text.md .md-align-right { text-align: right; }
 
 /* fenced code block with language tag + copy button */
 

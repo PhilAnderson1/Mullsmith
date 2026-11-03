@@ -670,7 +670,7 @@ cd Mullsmith
 make build
 ```
 
-The resulting `bin/mullsmith` contains the web interface. To install it as a
+The resulting `bin/mullsmith` contains the web application. To install it as a
 systemd service, run `sudo ./packaging/install.sh`, then follow
 [account setup](#create-your-first-account) and [model configuration](#models-and-thinking-controls).
 
@@ -682,13 +682,9 @@ targets for development; these are not required to build or run Mullsmith.
 Install the newer package with the same `apt` or `dnf` command. For a tar install,
 stop the service and run the new archive's installer; it starts the service again.
 Review configuration changes and check the logs after upgrading. The tar installer
-preserves existing configuration files but replaces its systemd unit; keep local
-service changes in systemd drop-ins.
-
-If you enabled HTTPS using the certificate-staging instructions above, a tar
-upgrade overwrites that unit edit and the service may fail to start. Reapply
-the [startup-unit change](#3-configure-the-startup-unit), then run
-`sudo systemctl restart mullsmith`.
+preserves existing configuration files and updates its supplied systemd unit.
+A unit customised with `systemctl edit --full mullsmith` remains under `/etc`
+and continues to override the supplied unit; review new unit changes when upgrading.
 
 During development, database schema changes may require recreating the database;
 there is not yet a general migration path for older schemas. Check release notes

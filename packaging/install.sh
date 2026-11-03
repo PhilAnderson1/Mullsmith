@@ -31,7 +31,17 @@ license_source="$content_root/LICENSE"
 third_party_notices_source="$content_root/THIRD_PARTY_NOTICES.md"
 third_party_licenses_source="$content_root/THIRD_PARTY_LICENSES"
 
-for required_file in "$binary" "$config_source" "$service_source" "$readme_source" "$guide_source" "$license_source" "$third_party_notices_source"; do
+for required_file in \
+    "$binary" \
+    "$config_source" \
+    "$endpoints_source" \
+    "$profiles_source" \
+    "$service_source" \
+    "$readme_source" \
+    "$guide_source" \
+    "$license_source" \
+    "$third_party_notices_source"
+do
     if [ ! -f "$required_file" ]; then
         echo "Required installation file is missing: $required_file" >&2
         exit 1
@@ -72,14 +82,6 @@ fi
 
 install -m 0755 "$binary" /usr/local/bin/mullsmith
 install -d -o root -g mullsmith -m 0750 /etc/mullsmith
-# The data directory holds the scratchpad (spec §8, §9.7). The daemon's own
-# meter is byte-based with bounded scans; a true hard cap on what one
-# deployment can consume lives below it: putting /var/lib/mullsmith on its
-# own bounded filesystem (or enabling filesystem project quotas) is the
-# operator's step and the only defence against entry-count (inode) pressure
-# and files deleted while still open. Mounting it directly at
-# /var/lib/mullsmith/scratchpad needs no systemd unit override. Optional —
-# nothing here depends on it.
 install -d -o mullsmith -g mullsmith -m 0700 /var/lib/mullsmith
 install -d -o root -g root -m 0755 /usr/local/share/mullsmith
 install -o root -g root -m 0644 "$readme_source" /usr/local/share/mullsmith/README.md
@@ -104,24 +106,15 @@ install_config_if_missing() {
 }
 
 install_config_if_missing "$config_source" /etc/mullsmith/config.yaml
-# The sample config names these thinking catalogues: they are the sole
-# source of the endpoint and profile IDs, so they must be present (and
-# may be edited freely) for the thinking selector to work.
 install_config_if_missing "$endpoints_source" /etc/mullsmith/endpoints.yaml
 install_config_if_missing "$profiles_source" /etc/mullsmith/thinking-profiles.yaml
 
-# The systemd unit reads this EnvironmentFile (optional, referenced by the
-# config's ${ENV_VAR} expansions). Same install-if-missing rule; it may later
-# hold API keys, so owner-read/write only.
+# Preserve an existing secrets file; otherwise install an empty protected one.
 if [ -e /etc/mullsmith/env ]; then
     echo "Preserving existing /etc/mullsmith/env"
 else
-    # Template only (no secrets yet), so writing it plainly is safe; the
-    # mode/group below is what real keys added later require.
     cat > /etc/mullsmith/env <<'EOF'
-# Mullsmith runtime secrets (§9.12). /etc/mullsmith/config.yaml references these
-# as ${ENV_VAR} / ${ENV_VAR:-default}. Keep this file mode 0640,
-# root:mullsmith — the service reads it as the mullsmith user.
+# Mullsmith runtime secrets referenced by /etc/mullsmith/config.yaml.
 # MULLSMITH_SEARCH_API_KEY=...
 EOF
     chown root:mullsmith /etc/mullsmith/env
@@ -129,28 +122,38 @@ EOF
     echo "Installed /etc/mullsmith/env"
 fi
 
-if [ -f "$service_source" ] && command -v systemctl >/dev/null 2>&1; then
-    # Native packages keep documentation under /usr/share/doc; manual
-    # installs belong under /usr/local. Derive the installed variant from the
-    # same unit template rather than maintaining a duplicate service file.
-    service_unit=$(mktemp)
-    sed 's@Documentation=file:/usr/share/doc/mullsmith/README.md@Documentation=file:/usr/local/share/mullsmith/README.md@' \
-        "$service_source" > "$service_unit"
-    install -m 0644 "$service_unit" /etc/systemd/system/mullsmith.service
-    rm -f -- "$service_unit"
-    systemctl daemon-reload
-    systemctl enable mullsmith.service
-    # restart also starts an inactive service and loads the new binary on upgrades.
-    systemctl restart mullsmith.service
-    echo "Enabled and started the Mullsmith service."
-    echo ""
-    echo "TLS is OFF by default: mullsmith serves plain HTTP on port 3210 on"
-    echo "every interface for immediate trusted-LAN access. Do not forward that"
-    echo "port from the internet without TLS. To serve HTTPS with certbot"
-    echo "certificates, un-comment the ExecStartPre line in"
-    echo "/etc/systemd/system/mullsmith.service, replace YOUR.HOSTNAME with"
-    echo "your certbot domain, and set server.tls.enabled: true in the config."
+service_path=/usr/local/lib/systemd/system/mullsmith.service
+install -d -o root -g root -m 0755 /usr/local/lib/systemd/system
+
+# Manual installs use systemd's /usr/local vendor-unit path. A unit customised
+# with `systemctl edit --full` lives under /etc and remains untouched.
+service_unit=$(mktemp)
+trap 'rm -f -- "$service_unit"' 0
+trap 'exit 1' HUP INT TERM
+sed 's@Documentation=file:/usr/share/doc/mullsmith/README.md@Documentation=file:/usr/local/share/mullsmith/README.md@' \
+    "$service_source" > "$service_unit"
+install -m 0644 "$service_unit" "$service_path"
+rm -f -- "$service_unit"
+trap - 0 HUP INT TERM
+
+if [ -e /etc/systemd/system/mullsmith.service ]; then
+    echo "WARNING: /etc/systemd/system/mullsmith.service overrides the updated vendor unit." >&2
+    echo "Review it, or run the following after installation to use the supplied unit:" >&2
+    echo "  systemctl revert mullsmith && systemctl reenable mullsmith && systemctl restart mullsmith" >&2
 fi
+
+systemctl daemon-reload
+systemctl enable mullsmith.service
+# Restart also starts an inactive service and loads the new binary on upgrades.
+systemctl restart mullsmith.service
+echo "Enabled and started the Mullsmith service."
+
+echo ""
+echo "TLS is OFF by default: mullsmith serves plain HTTP on port 3210 on"
+echo "every interface for immediate trusted-LAN access. Do not forward that"
+echo "port from the internet without TLS. To serve HTTPS with certbot"
+echo "certificates, run 'systemctl edit --full mullsmith', un-comment the"
+echo "ExecStartPre line, replace YOUR.HOSTNAME, and set server.tls.enabled: true."
 
 echo "Installed Mullsmith to /usr/local/bin/mullsmith"
 echo ""
@@ -161,5 +164,5 @@ echo ""
 echo "Open http://YOUR-SERVER-IP:3210 and log in to check the installation."
 echo "Then edit /etc/mullsmith/config.yaml (llm.endpoint and model at minimum)"
 echo "and /etc/mullsmith/env, then validate and restart:"
-echo "  sh -c 'set -a; . /etc/mullsmith/env; set +a; /usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config'"
+echo "  sudo -u mullsmith sh -c 'set -a; . /etc/mullsmith/env; set +a; /usr/local/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config'"
 echo "  systemctl restart mullsmith"

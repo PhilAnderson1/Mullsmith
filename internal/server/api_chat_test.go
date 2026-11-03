@@ -712,6 +712,9 @@ func TestChatUpstreamFailure(t *testing.T) {
 	if data["code"] != "upstream_error" {
 		t.Errorf("error code = %v", data["code"])
 	}
+	if data["message"] != "the model provider is temporarily unavailable" {
+		t.Errorf("error message = %v", data["message"])
+	}
 	if strings.Contains(fmt.Sprint(data["message"]), "503") ||
 		strings.Contains(fmt.Sprint(data), "overloaded") {
 		t.Errorf("upstream detail leaked to client: %v", data)

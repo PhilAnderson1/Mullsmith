@@ -290,7 +290,7 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 		if ctx.Err() != nil {
 			return ErrAborted
 		}
-		return fmt.Errorf("upstream request: %w", err)
+		return endpointConnectionFailure(err)
 	}
 	defer resp.Body.Close()
 	w.startBody() // headers are here: the stall budget measures silence from now on
@@ -298,7 +298,7 @@ func (c *Client) streamOnce(ctx context.Context, model string, msgs []ChatMessag
 		// Drain a little for the log but never surface upstream bodies.
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		_ = peek
-		return fmt.Errorf("%w: HTTP %d", ErrUpstream, resp.StatusCode)
+		return endpointHTTPFailure(resp.StatusCode)
 	}
 
 	err = parseSSE(&touchReader{r: resp.Body, w: w}, onDelta, attemptCtx.Err)
@@ -546,7 +546,7 @@ func parseSSE(r io.Reader, onDelta func(Delta) error, abort func() error) error 
 		if abort != nil && abort() != nil {
 			return ErrAborted
 		}
-		return fmt.Errorf("upstream stream: %w", err)
+		return endpointStreamFailure(err)
 	}
 	// Flush a trailing event that never got its blank line, then accept EOF
 	// even without [DONE] (spec §6.2 tolerance).

@@ -4,8 +4,8 @@
 
 **Your local AI assistant, on every device.**
 
-A lightweight web interface for your model server, with built-in web and file
-tools and optional sandboxed code execution.
+A lightweight, self-hosted AI assistant for your model server, with a web
+interface, built-in web and file tools, and optional sandboxed code execution.
 
 <p align="center">
   <img src="assets/mullsmith.png" alt="Mullsmith on desktop and phone, showing code execution, a downloadable file and web fetching" width="85%">
@@ -13,10 +13,13 @@ tools and optional sandboxed code execution.
 
 - **Small and self-contained.** Approximately 14 MiB. No Docker, Python, Node.js
   or separate database required for the core application.
-- **Made for local models.** Connect to llama.cpp, Ollama, vLLM or LM Studio,
-  with supplied model-specific thinking controls.
+- **Made for local models.** Connect to Gufo, llama.cpp, Ollama, vLLM or LM Studio—or
+  use OpenRouter—with supplied model-specific thinking controls.
 - **Useful tools included.** Search the web, work with files and download the results.
-- **Share your server.** Separate accounts, private conversations and personal file storage.
+- **Optional command and code execution.** Run shell commands and Python in a
+  resource-limited bubblewrap sandbox.
+- **Your data, on your server.** Accounts, conversation history and files stored
+  locally, with separate private storage for each user.
 - **Serve it directly.** Designed for your home network or the public internet,
   with built-in HTTPS—no reverse proxy required.
 - **Use any device.** Responsive interface for desktop, tablet and phone.
@@ -53,6 +56,7 @@ sudo systemctl restart mullsmith
 ```
 
 [Tar installation](GUIDE.md#tar-archive) ·
+[Build from source](GUIDE.md#building-from-source) ·
 [Configuration reference](configs/config.yaml) ·
 [Internet access and HTTPS](GUIDE.md#internet-access-and-https) ·
 [Full guide](GUIDE.md)

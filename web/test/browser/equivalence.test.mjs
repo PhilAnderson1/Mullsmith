@@ -453,10 +453,11 @@ test("output-limit and filtering explanations survive reload", { timeout: 120_00
 });
 
 test("markdown styles apply to the prose wrapper live and after reload", { timeout: 120_000 }, async () => {
-  const { ctx, page } = await newSession();
+  const { ctx, page } = await newSession({ viewport: { width: 360, height: 800 } });
   const styles = () => {
     const prose = document.querySelector(".from-assistant .stream-text.md");
     const css = (selector) => getComputedStyle(prose.querySelector(selector));
+    const tableWrap = prose.querySelector(".md-table-wrap");
     return {
       whiteSpace: getComputedStyle(prose).whiteSpace,
       paragraphMargin: parseFloat(css("p").marginBottom),
@@ -464,10 +465,31 @@ test("markdown styles apply to the prose wrapper live and after reload", { timeo
       codeFont: css("code").fontFamily,
       linkColor: css("a").color,
       accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+      table: {
+        headings: [...prose.querySelectorAll("th")].map((cell) => cell.textContent),
+        rows: prose.querySelectorAll("tbody tr").length,
+        firstCellStrong: prose.querySelector("tbody td strong")?.textContent,
+        codeWithPipe: prose.querySelector("tbody td code")?.textContent,
+        rightAligned: css("tbody td:nth-child(2)").textAlign,
+        overflow: getComputedStyle(tableWrap).overflowX,
+        scrolls: tableWrap.scrollWidth > tableWrap.clientWidth,
+      },
+      extras: {
+        strike: prose.querySelector("del")?.textContent,
+        ruleWidth: parseFloat(css("hr").borderTopWidth),
+        nestedItems: prose.querySelectorAll("ul > li > ol > li").length,
+        nestedTaskItems: prose.querySelectorAll("ol > li > ul > li.task-list-item").length,
+        checkedTasks: prose.querySelectorAll('.task-list-item input[type="checkbox"]:checked').length,
+        disabledTasks: prose.querySelectorAll('.task-list-item input[type="checkbox"]:disabled').length,
+        orderedStart: prose.querySelector("ul > li > ol")?.start,
+        orderedValues: [...prose.querySelectorAll("ul > li > ol > li")].map((li) => li.value),
+        continuation: prose.querySelector("ul > li br")?.nextSibling?.textContent,
+        deepestHeadings: prose.querySelectorAll("h6").length,
+      },
     };
   };
   try {
-    llm.queueScripts(textScript("# Heading\n\nA paragraph with `code` and [a link](https://example.com).\n\n- One\n- Two\n\n> A quotation"));
+    llm.queueScripts(textScript("# Heading\n\n##### Deep heading\n\n###### Deepest heading\n\nA paragraph with `code`, [a link](https://example.com), and ~~old text~~.\n\n---\n\n- Parent\n  3. Third nested item\n     - [x] Complete\n     - [ ] Pending\n  5. Fifth nested item\n- Continued item\n  on another line\n\n> A quotation\n\n| Option | Est. cost | Status |\n|:-------|----------:|:------:|\n| **Bravo** | $55k | Blocked |\n| Alpha-with-a-name-too-long-for-a-phone | $61k | `Draft|review` |"));
     await sendChat(page, "format an answer");
     await waitIdle(page);
     const live = await page.evaluate(styles);
@@ -475,6 +497,23 @@ test("markdown styles apply to the prose wrapper live and after reload", { timeo
     assert.ok(live.paragraphMargin > 0);
     assert.ok(live.quoteBorder > 0);
     assert.match(live.codeFont, /monospace/);
+    assert.deepEqual(live.table.headings, ["Option", "Est. cost", "Status"]);
+    assert.equal(live.table.rows, 2);
+    assert.equal(live.table.firstCellStrong, "Bravo");
+    assert.equal(live.table.codeWithPipe, "Draft|review");
+    assert.equal(live.table.rightAligned, "right");
+    assert.equal(live.table.overflow, "auto");
+    assert.equal(live.table.scrolls, true);
+    assert.equal(live.extras.strike, "old text");
+    assert.ok(live.extras.ruleWidth > 0);
+    assert.equal(live.extras.nestedItems, 2);
+    assert.equal(live.extras.nestedTaskItems, 2);
+    assert.equal(live.extras.checkedTasks, 1);
+    assert.equal(live.extras.disabledTasks, 2);
+    assert.equal(live.extras.orderedStart, 3);
+    assert.deepEqual(live.extras.orderedValues, [3, 5]);
+    assert.equal(live.extras.continuation, "on another line");
+    assert.equal(live.extras.deepestHeadings, 2);
     // CSS resolves the custom property's color to rgb() for the anchor.
     const expectedColor = await page.evaluate(() => {
       const el = document.createElement("span");

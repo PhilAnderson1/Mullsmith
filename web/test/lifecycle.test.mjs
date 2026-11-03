@@ -192,6 +192,38 @@ test("new chat carries the model currently selected in the picker", async () => 
   assert.equal(navigation.currentId, "NEW");
 });
 
+test("an unknown model refreshes the picker from the restarted server", async () => {
+  reset("A");
+  state.meta = { models: ["old-model"], default_model: "old-model", show_reasoning: false };
+  elFor("#model-picker").value = "old-model";
+  let createBody;
+  fetcher = async (url, opts = {}) => {
+    if (url.endsWith("/api/v1/conversations") && opts.method === "POST") {
+      createBody = JSON.parse(opts.body);
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({ error: { code: "invalid_model", message: "unknown model" } }),
+      };
+    }
+    if (url.endsWith("/api/v1/client-config")) {
+      return ok({
+        models: ["new-model", "other-model"],
+        default_model: "new-model",
+        thinking: null,
+      });
+    }
+    return CHAT_OK(url);
+  };
+
+  await newChat();
+
+  assert.equal(createBody.model, "old-model");
+  assert.equal(state.meta.default_model, "new-model");
+  assert.deepEqual(elFor("#model-picker").options.map((o) => o.value), ["new-model", "other-model"]);
+  assert.equal(elFor("#model-picker").value, "new-model");
+});
+
 test("rendering a conversation rebuilds thinking choices for its model", () => {
   reset("A");
   state.meta = {
@@ -302,6 +334,21 @@ test("control: a 401 while STILL owner ends the generation", async () => {
   });
   await startGeneration("/api/v1/conversations/A/messages", { content: "hi" }, null, null);
   assert.equal(generation.current, null);
+});
+
+test("a streamed endpoint failure raises the prominent error toast", async () => {
+  reset("A");
+  elFor("#toast").textContent = "";
+  const s = sseStream();
+  fetcher = () => Promise.resolve(s.response);
+  const p = startGeneration("/api/v1/conversations/A/messages", { content: "hi" }, null, null);
+  await tick();
+  s.push('event: start\ndata: {"generation_id":"g1","message_id":"m1"}\n\n');
+  s.push('event: error\ndata: {"code":"upstream_error","message":"the configured endpoint or model was not found"}\n\n');
+  s.push('event: done\ndata: {"status":"error","rounds":[{"message_id":"m1","status":"error"}]}\n\n');
+  s.close();
+  await p;
+  assert.equal(elFor("#toast").textContent, "the configured endpoint or model was not found");
 });
 
 // --- C5: conversation identity commits WITH its rendered messages --------------

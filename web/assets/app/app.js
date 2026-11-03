@@ -444,7 +444,21 @@ function applyMetaFlags() {
     opt.title = value;
     sel.appendChild(opt);
   }
+  // Be explicit instead of relying on a browser selecting the first option:
+  // this is also the recovery path when a restarted server rejects a model
+  // left in an already-open page.
+  sel.value = m.default_model || (sel.options[0] && sel.options[0].value) || "";
   populateThinkingChoices();
+}
+
+async function refreshModelsAfterInvalidModel(err) {
+  if (!(err instanceof ApiError) || err.code !== "invalid_model") return;
+  try {
+    state.meta = { ...state.meta, ...await api.clientConfig() };
+    applyMetaFlags();
+  } catch (refreshErr) {
+    handleErr(refreshErr, "reload models");
+  }
 }
 
 async function onLogin(ev) {
@@ -1347,6 +1361,7 @@ async function newChat() {
     if (isPhone()) closeDrawer();
   } catch (err) {
     handleErr(err, "new chat");
+    await refreshModelsAfterInvalidModel(err);
   }
 }
 
@@ -1377,6 +1392,7 @@ async function onModelChange(ev) {
     } catch (err) {
       if (!owns()) return;
       handleErr(err, "set model");
+      await refreshModelsAfterInvalidModel(err);
     }
     if (!owns()) return; // the new screen rendered its own state
     // The dropdown describes the model now in force, so it is rebuilt
