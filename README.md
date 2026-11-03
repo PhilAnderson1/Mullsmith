@@ -1,5 +1,7 @@
 # Mullsmith
 
+[![CI](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml)
+
 **Your local AI assistant, on every device.**
 
 A lightweight web interface for your model server, with built-in web and file
@@ -43,7 +45,7 @@ sudo mullsmith admin create-user -email you@example.org -name 'Your name' -passw
 
 **Open `http://YOUR-SERVER-IP:3210` from any device on your network and log in to check the installation.**
 
-[Set your endpoint URL, endpoint type, API key if required, and model](GUIDE.md#create-your-first-account-and-connect-your-model)
+[Set your endpoint URL, endpoint type, API key if required, and model](GUIDE.md#models-and-thinking-controls)
 under `llm:` in `/etc/mullsmith/config.yaml`, then restart:
 
 ```sh

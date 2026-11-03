@@ -7,23 +7,24 @@ or download the language model itself.
 Start with the installation instructions, then choose the deployment that fits
 who will use your server.
 
-- [Install and connect your model](#install-and-connect-your-model)
+- [Install Mullsmith](#install-mullsmith)
+- [Models and thinking controls](#models-and-thinking-controls)
 - [Choose your deployment](#choose-your-deployment)
 - [Internet access and HTTPS](#internet-access-and-https)
 - [Registration modes](#registration-modes)
 - [Enable tools](#enable-tools)
-- [Models and thinking controls](#models-and-thinking-controls)
 - [Everyday administration](#everyday-administration)
 - [Troubleshooting](#troubleshooting)
 - [Building from source](#building-from-source)
 - [Upgrade or remove](#upgrade-or-remove)
 
 The [commented configuration](configs/config.yaml) is the full option reference.
+
 **The YAML examples below are fragments:** edit the corresponding entries in your
 existing configuration; do not replace the whole file or add duplicate sections.
 Use two spaces per indentation level, never tabs. Restart after configuration changes.
 
-## Install and connect your model
+## Install Mullsmith
 
 ### Debian and Ubuntu
 
@@ -55,7 +56,7 @@ Native packages install the binary at `/usr/bin/mullsmith`; the tar installer
 uses `/usr/local/bin/mullsmith`. Both use `/etc/mullsmith` for configuration and
 `/var/lib/mullsmith` for application data.
 
-### Create your first account and connect your model
+### Create your first account
 
 The installer enables and starts the Mullsmith service.
 The supplied configuration serves HTTP on port 3210 on all IPv4/IPv6 interfaces,
@@ -68,26 +69,84 @@ sudo mullsmith admin create-user -email you@example.org -name 'Your name' -passw
 ```
 
 Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edit
-`/etc/mullsmith/config.yaml`: set the endpoint URL (`llm.endpoint`), endpoint type
-(`llm.endpoint_type`), API key (`llm.api_key`, if required), and model name
-(`id` under `llm.models`). Optionally set the model's thinking profile
-(`thinking_profile`), maximum context size (`context_size`), and image support
-(`vision`).
-See [model examples](#models-and-thinking-controls).
+`/etc/mullsmith/config.yaml`, setting the endpoint and model details as described below.
+
+## Models and thinking controls
+
+Mullsmith uses one configured OpenAI-compatible Chat Completions endpoint, which
+can offer multiple models. Set IDs exactly as your endpoint advertises them.
+These example URLs must match the actual IP addresses and ports you chose for your model servers.
+
+| Server | Example `llm.endpoint` | `llm.endpoint_type` |
+|---|---|---|
+| Gufo | `http://127.0.0.1:8080/v1` | `gufo` |
+| llama.cpp | `http://127.0.0.1:9931/v1` | `llama_cpp` |
+| Ollama, OpenAI-compatible API | `http://127.0.0.1:11434/v1` | `ollama_openai` |
+| vLLM | `http://127.0.0.1:8000/v1` | `vllm` |
+| LM Studio | `http://127.0.0.1:1234/v1` | `lm_studio` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `openrouter` |
+
+For a model on llama.cpp:
+
+```yaml
+llm:
+  endpoint: "http://127.0.0.1:9931/v1"
+  endpoint_type: "llama_cpp"
+  # Uncomment and enter your API key if required.
+  # api_key: ""
+  models:
+    - id: "your-model-id"
+      default: true
+      thinking_profile: "none"
+      vision: false # Set to true if the model and endpoint support image input.
+      # context_size: 32768 # Set to the endpoint's configured context window, or omit for discovery.
+```
+
+`thinking_profile` determines which thinking controls appear for a model, such as
+on/off or low/medium/high. Choose the matching profile from
+[thinking-profiles.yaml](configs/thinking-profiles.yaml)—for example, `"qwen3_8"`
+for the Qwen3.8 family of models. Use `"none"` to hide thinking controls.
+
+Set the model's context size and image support as appropriate:
+
+- `context_size`: the context window actually configured on your endpoint,
+  which may be smaller than the model's theoretical maximum. Omit it to use
+  discovery if the endpoint reports it. Without either, the usage meter shows
+  token counts without a known capacity.
+- `vision: true`: enable image input only when the model and endpoint support it.
+
+Add more entries under `llm.models` to offer more models, with one marked
+`default: true`. Give each its own thinking profile, context size and image support.
+
+If your endpoint or model's thinking options are not listed, you may be able to
+add them by editing `endpoints.yaml` or `thinking-profiles.yaml` in `/etc/mullsmith`.
+
+Restart Mullsmith after making changes.
 
 ```sh
 sudo systemctl restart mullsmith
 ```
 
-Log in to Mullsmith and start a new chat to test the endpoint.
+Log in to Mullsmith and start a new chat to test the endpoint after adding it to your configuration file.
 
 ### Check configuration and manage the service
 
+Run the command for the operation you need:
+
 ```sh
+# Validate configuration and test the endpoint connection.
 sudo mullsmith -config /etc/mullsmith/config.yaml -check-config
+
+# Show service status.
 sudo systemctl status mullsmith
+
+# Restart after configuration changes.
 sudo systemctl restart mullsmith
+
+# Stop the service.
 sudo systemctl stop mullsmith
+
+# Start the service.
 sudo systemctl start mullsmith
 ```
 
@@ -177,9 +236,9 @@ auth:
 ```
 
 Use `closed` if you do not want further signups; you can still add new accounts
-via the command line tool. The default settings limit simultaneous connections,
-request rates, failed login attempts and file storage
-per user. Start with these defaults; see [Limits](#limits) if you need to adjust them.
+via the command line tool. The defaults limit connections, request rates, failed
+login attempts and each user's file storage. Start with these defaults; see
+[Limits](#limits) if you need to adjust them.
 
 **Check:** from outside your home network, the HTTPS URL has a valid certificate
 and login works.
@@ -350,7 +409,7 @@ endpoint. A local model keeps that processing local; a remote provider receives 
 | Tool | Purpose and access | Supplied policy |
 |---|---|---|
 | `web_search` | Searches through Brave; requires a Brave Search API key | Disabled; automatic when enabled |
-| `web_fetch` | Reads public web pages using the guarded HTTP client | Enabled; automatic |
+| `web_fetch` | Reads public web pages | Enabled; automatic |
 | `web_download` | Downloads public URLs into the user's scratchpad | Enabled; automatic |
 | `fs_list`, `fs_read` | Lists and reads the user's scratchpad files | Always available; automatic |
 | `fs_write` | Writes within the user's work/artifact areas | Always available; automatic |
@@ -439,63 +498,6 @@ Each user has three areas:
 Retention is based on file modification time; cleanup happens on a later sweep,
 not at the exact expiration instant. Download outputs you want to keep. Files are
 served as downloads; opening downloaded content locally is outside the sandbox.
-
-## Models and thinking controls
-
-Mullsmith uses one configured OpenAI-compatible Chat Completions endpoint, which
-can offer multiple models. Set IDs exactly as your endpoint advertises them.
-These example URLs must match the actual ports you chose for your model servers.
-
-| Server | Example `llm.endpoint` | `llm.endpoint_type` |
-|---|---|---|
-| Gufo | `http://127.0.0.1:8080/v1` | `gufo` |
-| llama.cpp | `http://127.0.0.1:9931/v1` | `llama_cpp` |
-| Ollama, OpenAI-compatible API | `http://127.0.0.1:11434/v1` | `ollama_openai` |
-| vLLM | `http://127.0.0.1:8000/v1` | `vllm` |
-| LM Studio | `http://127.0.0.1:1234/v1` | `lm_studio` |
-| OpenRouter | `https://openrouter.ai/api/v1` | `openrouter` |
-
-For a model on llama.cpp:
-
-```yaml
-llm:
-  endpoint: "http://127.0.0.1:9931/v1"
-  endpoint_type: "llama_cpp"
-  models:
-    - id: "your-model-id"
-      default: true
-      thinking_profile: "none"
-      vision: false # Set to true if the model and endpoint support image input.
-      # context_size: 32768 # Set to the endpoint's configured context window, or omit for discovery.
-```
-
-For Ollama or vLLM, change the URL, endpoint type and model ID in this fragment.
-For OpenRouter, also set `llm.api_key`; its model IDs normally include a provider
-prefix. A model server on another machine needs that machine's address instead
-of `127.0.0.1`.
-
-Start with `thinking_profile: "none"` unless you know the appropriate profile.
-To enable the supplied Qwen3.8 controls, for example, set
-`thinking_profile: "qwen3_8"` on that model entry. The operator assigns the profile;
-Mullsmith then builds the applicable menu and formats requests for the selected endpoint.
-It does not discover arbitrary models' thinking capabilities automatically.
-
-Add more entries under `llm.models` to offer more models, with one marked
-`default: true`. Give each its own thinking profile and capabilities:
-
-- `context_size`: the context window actually configured on your endpoint,
-  which may be smaller than the model's theoretical maximum. Omit it to use
-  discovery if the endpoint reports it. Without either, the usage meter shows
-  token counts without a known capacity.
-- `vision: true`: enable image input only when the model and endpoint support it.
-- `thinking_profile`: select from [thinking-profiles.yaml](configs/thinking-profiles.yaml).
-  The [endpoint catalogue](configs/endpoints.yaml) defines how choices become
-  request parameters.
-
-Both catalogues are editable without rebuilding Mullsmith. The endpoint catalogue
-controls which request parameters Mullsmith sends; it cannot add support for
-native Anthropic or Gemini APIs, or features your model server does not support.
-Validate changes and try a chat.
 
 ## Everyday administration
 
@@ -670,7 +672,7 @@ make build
 
 The resulting `bin/mullsmith` contains the web interface. To install it as a
 systemd service, run `sudo ./packaging/install.sh`, then follow
-[account and model setup](#create-your-first-account-and-connect-your-model).
+[account setup](#create-your-first-account) and [model configuration](#models-and-thinking-controls).
 
 The [Makefile](Makefile) also provides test, race, browser and security-check
 targets for development; these are not required to build or run Mullsmith.
@@ -682,6 +684,11 @@ stop the service and run the new archive's installer; it starts the service agai
 Review configuration changes and check the logs after upgrading. The tar installer
 preserves existing configuration files but replaces its systemd unit; keep local
 service changes in systemd drop-ins.
+
+If you enabled HTTPS using the certificate-staging instructions above, a tar
+upgrade overwrites that unit edit and the service may fail to start. Reapply
+the [startup-unit change](#3-configure-the-startup-unit), then run
+`sudo systemctl restart mullsmith`.
 
 During development, database schema changes may require recreating the database;
 there is not yet a general migration path for older schemas. Check release notes
