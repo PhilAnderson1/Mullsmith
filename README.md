@@ -5,7 +5,9 @@
 A lightweight web interface for your model server, with built-in web and file
 tools and optional sandboxed code execution. Use it from your PC, tablet or phone.
 
-<img src="assets/mullsmith.png" alt="Mullsmith on desktop and phone, showing code execution, a downloadable file and web fetching" width="85%">
+<p align="center">
+  <img src="assets/mullsmith.png" alt="Mullsmith on desktop and phone, showing code execution, a downloadable file and web fetching" width="85%">
+</p>
 
 - **Small and self-contained.** Approximately 14 MiB. No Docker, Python, Node.js
   or separate database required for the core application.
