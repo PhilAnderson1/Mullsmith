@@ -157,7 +157,7 @@ You can use `invite-only` or `closed` if you prefer to control account creation.
 **Understand:** HTTP sends passwords and conversations without encryption.
 Use it only where you trust the network. On shared, guest or otherwise untrusted
 networks, use HTTPS and invite-only or closed registration. Saving the site as an installable web app generally requires
-HTTPS when accessed from another device.
+HTTPS.
 
 ### Public internet, private accounts
 
@@ -175,7 +175,8 @@ auth:
   registration: "invite-only"
 ```
 
-Use `closed` if you do not want further signups. The default settings limit
+Use `closed` if you do not want further signups; you can still add new accounts
+via the command line tool. The default settings limit
 simultaneous connections, request rates, failed login attempts and file storage
 per user. Start with these defaults; see [Limits](#limits) if you need to adjust them.
 
@@ -449,7 +450,7 @@ These example URLs must match the actual ports you chose for your model servers.
 
 | Server | Example `llm.endpoint` | `llm.endpoint_type` |
 |---|---|---|
-| Gufo | Your Gufo server's OpenAI-compatible API base URL | `gufo` |
+| Gufo | `http://127.0.0.1:8080/v1` | `gufo` |
 | llama.cpp | `http://127.0.0.1:9931/v1` | `llama_cpp` |
 | Ollama, OpenAI-compatible API | `http://127.0.0.1:11434/v1` | `ollama_openai` |
 | vLLM | `http://127.0.0.1:8000/v1` | `vllm` |
