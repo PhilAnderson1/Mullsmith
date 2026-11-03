@@ -670,11 +670,11 @@ mullsmith -version
 
 | Symptom | Check |
 |---|---|
-| Page unreachable | Service status, listener address, host firewall, routing and whether the URL needs HTTP or HTTPS |
+| Page unreachable | Service status, listener address, host firewall, routing and whether the URL needs HTTP or HTTPS. Check Mullsmith's logs for errors: `sudo journalctl -u mullsmith -n 100 --no-pager` |
 | Page loads but chat fails | Endpoint address, API key and exact model ID; run `-check-config` with the service's environment |
 | New configuration rejected | YAML indentation, duplicate/unknown keys and option values; compare with the supplied template |
 | HTTPS fails after restart | Certificate hostname, expiry and readability; certificate staging command and file paths |
-| Code execution prevents startup | Bubblewrap, unprivileged namespaces, cgroup v2 and systemd delegation; inspect the logged probe failure |
+| Enabling code execution prevents startup | Bubblewrap, unprivileged namespaces, cgroup v2 and systemd delegation; inspect the logged probe failure |
 | Thinking menu missing | Selected model's `thinking_profile`, catalogue paths and endpoint compatibility |
 | Signup unavailable | Registration mode, invitation code, signup limits or email confirmation |
 | Reset email missing | SMTP settings, service environment, delivery logs and junk folder |
@@ -685,6 +685,6 @@ SMTP delivery or every tool is working. Verify those features with real actions.
 Use the original sandbox probe error to diagnose execution problems rather than
 removing its isolation or running Mullsmith as root.
 
-Development and implementation details belong in [spec.md](spec.md) and the
-source tree. The Makefile provides build, test, race, browser and security-check
+See the source tree for implementation details. The [Makefile](Makefile)
+provides build, test, race, browser and security-check
 targets; none of that tooling is required to run a packaged installation.

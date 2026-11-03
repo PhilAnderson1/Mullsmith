@@ -101,7 +101,7 @@ stage_archive() {
     install -m 0755 packaging/install.sh packaging/uninstall.sh "$archive_dir/"
     install -m 0644 packaging/systemd/mullsmith.service "$archive_dir/packaging/systemd/"
     cp -R configs THIRD_PARTY_LICENSES "$archive_dir/"
-    install -m 0644 README.md GUIDE.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$archive_dir/"
+    install -m 0644 README.md GUIDE.md THIRD_PARTY_NOTICES.md LICENSE "$archive_dir/"
     tar -C "$work_dir" -czf "$artifacts/$archive_root.tar.gz" "$archive_root"
 }
 
@@ -118,7 +118,7 @@ stage_native_payload() {
     chmod 0644 "$payload/usr/lib/systemd/system/mullsmith.service"
     install -m 0640 configs/config.yaml configs/endpoints.yaml \
         configs/thinking-profiles.yaml "$payload/etc/mullsmith/"
-    install -m 0644 README.md GUIDE.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$payload/usr/share/doc/mullsmith/"
+    install -m 0644 README.md GUIDE.md THIRD_PARTY_NOTICES.md LICENSE "$payload/usr/share/doc/mullsmith/"
     cp -R THIRD_PARTY_LICENSES "$payload/usr/share/doc/mullsmith/THIRD_PARTY_LICENSES"
     cat > "$payload/usr/share/doc/mullsmith/PACKAGED_INSTALL.md" <<'EOF'
 # Package installation
@@ -352,7 +352,6 @@ fi
 /usr/lib/systemd/system/mullsmith.service
 %doc /usr/share/doc/mullsmith/README.md
 %doc /usr/share/doc/mullsmith/GUIDE.md
-%doc /usr/share/doc/mullsmith/spec.md
 %doc /usr/share/doc/mullsmith/PACKAGED_INSTALL.md
 %doc /usr/share/doc/mullsmith/THIRD_PARTY_NOTICES.md
 %doc /usr/share/doc/mullsmith/THIRD_PARTY_LICENSES

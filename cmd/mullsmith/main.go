@@ -1,4 +1,4 @@
-// Command mullsmith is a self-hosted, single-binary chat assistant (spec.md).
+// Command mullsmith is a self-hosted, single-binary chat assistant.
 //
 // Usage:
 //

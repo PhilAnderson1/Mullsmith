@@ -27,12 +27,11 @@ profiles_source="$content_root/configs/thinking-profiles.yaml"
 service_source="$content_root/packaging/systemd/mullsmith.service"
 readme_source="$content_root/README.md"
 guide_source="$content_root/GUIDE.md"
-spec_source="$content_root/spec.md"
 license_source="$content_root/LICENSE"
 third_party_notices_source="$content_root/THIRD_PARTY_NOTICES.md"
 third_party_licenses_source="$content_root/THIRD_PARTY_LICENSES"
 
-for required_file in "$binary" "$config_source" "$service_source" "$readme_source" "$guide_source" "$spec_source" "$license_source" "$third_party_notices_source"; do
+for required_file in "$binary" "$config_source" "$service_source" "$readme_source" "$guide_source" "$license_source" "$third_party_notices_source"; do
     if [ ! -f "$required_file" ]; then
         echo "Required installation file is missing: $required_file" >&2
         exit 1
@@ -85,7 +84,6 @@ install -d -o mullsmith -g mullsmith -m 0700 /var/lib/mullsmith
 install -d -o root -g root -m 0755 /usr/local/share/mullsmith
 install -o root -g root -m 0644 "$readme_source" /usr/local/share/mullsmith/README.md
 install -o root -g root -m 0644 "$guide_source" /usr/local/share/mullsmith/GUIDE.md
-install -o root -g root -m 0644 "$spec_source" /usr/local/share/mullsmith/spec.md
 install -o root -g root -m 0644 "$license_source" /usr/local/share/mullsmith/LICENSE
 install -o root -g root -m 0644 "$third_party_notices_source" /usr/local/share/mullsmith/THIRD_PARTY_NOTICES.md
 install -d -o root -g root -m 0755 /usr/local/share/mullsmith/THIRD_PARTY_LICENSES
