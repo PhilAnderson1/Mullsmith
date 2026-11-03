@@ -49,7 +49,7 @@ Set your endpoint and model under `llm:` in `/etc/mullsmith/config.yaml`, then r
 sudo systemctl restart mullsmith
 ```
 
-[Other installation options](GUIDE.md#other-installation-options) ·
+[Tar installation](GUIDE.md#tar-archive) ·
 [Configuration reference](configs/config.yaml) ·
 [Internet access and HTTPS](GUIDE.md#internet-access-and-https) ·
 [Full guide](GUIDE.md)

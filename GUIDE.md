@@ -15,6 +15,7 @@ who will use your server.
 - [Models and thinking controls](#models-and-thinking-controls)
 - [Everyday administration](#everyday-administration)
 - [Troubleshooting](#troubleshooting)
+- [Upgrade or remove](#upgrade-or-remove)
 
 The [commented configuration](configs/config.yaml) is the full option reference.
 **The YAML examples below are fragments:** edit the corresponding entries in your
@@ -32,37 +33,16 @@ Download the `.deb` for your machine from
 sudo apt install ./mullsmith_*.deb
 ```
 
-All three installers create the service account and enable and start Mullsmith.
-The supplied configuration serves HTTP on port 3210 on all IPv4/IPv6 interfaces,
-with invite-only registration. It does not automatically configure your router
-or firewall.
+### RPM-based distributions
 
-Create your first account, substituting your email, name and password:
-
-```sh
-sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
-```
-
-Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edit
-`/etc/mullsmith/config.yaml`: set `llm.endpoint` to your model server's API URL
-and replace the example `llm.models` entry with the model it actually serves.
-See [model examples](#models-and-thinking-controls).
-
-```sh
-sudo systemctl restart mullsmith
-```
-
-Send a short message to check the complete browser-to-model connection.
-
-### Other installation options
-
-For an RPM-based distribution with DNF:
+Download the `.rpm` for your machine from
+[Releases](https://github.com/PhilAnderson1/Mullsmith/releases), then install with DNF:
 
 ```sh
 sudo dnf install ./mullsmith-*.rpm
 ```
 
-Then create your account, log in and configure your model as described above.
+### Tar archive
 
 For a Linux tar archive, extract it, enter the extracted directory and run:
 
@@ -70,16 +50,35 @@ For a Linux tar archive, extract it, enter the extracted directory and run:
 sudo ./install.sh
 ```
 
-The tar installer requires systemd and enables and starts Mullsmith automatically.
-Then create your account, log in and configure your model as described above.
-
 Native packages install the binary at `/usr/bin/mullsmith`; the tar installer
 uses `/usr/local/bin/mullsmith`. Both use `/etc/mullsmith` for configuration and
-`/var/lib/mullsmith` for application data. Choose a release matching your CPU
-architecture; the current native-package build targets Linux x86-64.
+`/var/lib/mullsmith` for application data.
 
-For a source build, use `make build` with the Go version required by
-[go.mod](go.mod). The resulting `bin/mullsmith` contains the web interface.
+### Create your first account and connect your model
+
+The installer enables and starts the Mullsmith service.
+The supplied configuration serves HTTP on port 3210 on all IPv4/IPv6 interfaces,
+with invite-only registration.
+
+Create your first Mullsmith account, substituting your email, name and password:
+
+```sh
+sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
+```
+
+Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edit
+`/etc/mullsmith/config.yaml`: set the endpoint URL (`llm.endpoint`), endpoint type
+(`llm.endpoint_type`), API key (`llm.api_key`, if required), and model name
+(`id` under `llm.models`). Optionally set the model's thinking profile
+(`thinking_profile`), maximum context size (`context_size`), and image support
+(`vision`).
+See [model examples](#models-and-thinking-controls).
+
+```sh
+sudo systemctl restart mullsmith
+```
+
+Log in to Mullsmith and start a new chat to test the endpoint.
 
 ### Check configuration and manage the service
 
@@ -91,36 +90,14 @@ sudo systemctl stop mullsmith
 sudo systemctl start mullsmith
 ```
 
-`-check-config` validates settings, checks relevant paths and probes the model
-endpoint. It does not exercise every tool or replace a real chat test. An endpoint
+`-check-config` validates settings, checks relevant paths and tests the connection
+to the model endpoint using the supplied API key. It does not exercise every tool
+or replace a real chat test. An endpoint
 outage can make this check fail even when the YAML is correct.
 
 If your configuration uses environment variables, load the same values for CLI
 commands as for the service; see [secrets](#secrets). Certificate files staged in
 `/run/mullsmith` exist only while the service is running.
-
-### Upgrade or remove
-
-Install the newer package with the same `apt` or `dnf` command. For a tar install,
-stop the service and run the new archive's installer; it starts the service again. Review
-configuration changes and check the logs after upgrading. The tar installer
-preserves existing configuration files but replaces its systemd unit; keep local
-service changes in systemd drop-ins.
-
-During development, database schema changes may require recreating the database;
-there is not yet a general migration path for older schemas. Check release notes
-before upgrading an installation whose history you need to keep.
-
-| Installation | Remove software | Data behaviour |
-|---|---|---|
-| Debian/Ubuntu | `sudo apt remove mullsmith` | Keeps configuration and user data |
-| Debian/Ubuntu, complete removal | `sudo apt purge mullsmith` | **Deletes configuration, history, files and service account** at the packaged locations |
-| RPM | `sudo dnf remove mullsmith` | Keeps generated state and service account; modified configuration may become `.rpmsave` files |
-| Tar archive | `sudo ./uninstall.sh` from the archive | Asks for confirmation, then **deletes software, configuration and data** at the default locations; optionally removes the service account |
-
-Custom data locations require separate management. Do not install a native package
-over a tar installation without resolving the old service unit: a unit in
-`/etc/systemd/system` overrides the packaged unit.
 
 ## Choose your deployment
 
@@ -688,3 +665,29 @@ removing its isolation or running Mullsmith as root.
 See the source tree for implementation details. The [Makefile](Makefile)
 provides build, test, race, browser and security-check
 targets; none of that tooling is required to run a packaged installation.
+
+For a source build, use `make build` with the Go version required by
+[go.mod](go.mod). The resulting `bin/mullsmith` contains the web interface.
+
+## Upgrade or remove
+
+Install the newer package with the same `apt` or `dnf` command. For a tar install,
+stop the service and run the new archive's installer; it starts the service again. Review
+configuration changes and check the logs after upgrading. The tar installer
+preserves existing configuration files but replaces its systemd unit; keep local
+service changes in systemd drop-ins.
+
+During development, database schema changes may require recreating the database;
+there is not yet a general migration path for older schemas. Check release notes
+before upgrading an installation whose history you need to keep.
+
+| Installation | Remove software | Data behaviour |
+|---|---|---|
+| Debian/Ubuntu | `sudo apt remove mullsmith` | Keeps configuration and user data |
+| Debian/Ubuntu, complete removal | `sudo apt purge mullsmith` | **Deletes configuration, history, files and service account** at the packaged locations |
+| RPM | `sudo dnf remove mullsmith` | Keeps generated state and service account; modified configuration may become `.rpmsave` files |
+| Tar archive | `sudo ./uninstall.sh` from the archive | Asks for confirmation, then **deletes software, configuration and data** at the default locations; optionally removes the service account |
+
+Custom data locations require separate management. Do not install a native package
+over a tar installation without resolving the old service unit: a unit in
+`/etc/systemd/system` overrides the packaged unit.
