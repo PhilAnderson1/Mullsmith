@@ -101,7 +101,7 @@ stage_archive() {
     install -m 0755 packaging/install.sh packaging/uninstall.sh "$archive_dir/"
     install -m 0644 packaging/systemd/mullsmith.service "$archive_dir/packaging/systemd/"
     cp -R configs THIRD_PARTY_LICENSES "$archive_dir/"
-    install -m 0644 README.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$archive_dir/"
+    install -m 0644 README.md GUIDE.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$archive_dir/"
     tar -C "$work_dir" -czf "$artifacts/$archive_root.tar.gz" "$archive_root"
 }
 
@@ -118,7 +118,7 @@ stage_native_payload() {
     chmod 0644 "$payload/usr/lib/systemd/system/mullsmith.service"
     install -m 0640 configs/config.yaml configs/endpoints.yaml \
         configs/thinking-profiles.yaml "$payload/etc/mullsmith/"
-    install -m 0644 README.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$payload/usr/share/doc/mullsmith/"
+    install -m 0644 README.md GUIDE.md spec.md THIRD_PARTY_NOTICES.md LICENSE "$payload/usr/share/doc/mullsmith/"
     cp -R THIRD_PARTY_LICENSES "$payload/usr/share/doc/mullsmith/THIRD_PARTY_LICENSES"
     cat > "$payload/usr/share/doc/mullsmith/PACKAGED_INSTALL.md" <<'EOF'
 # Package installation
@@ -141,7 +141,7 @@ them on, set `email.enabled: true` in `/etc/mullsmith/config.yaml`, point
 `/etc/mullsmith/env` as `MULLSMITH_SMTP_PASSWORD` (the shipped config references
 it through `${ENV}` — nothing else to change). `-check-config` below then also
 dials the mail server; that probe warns but never fails, so a mail outage
-cannot block restarts. See the README section "Password reset & email
+cannot block restarts. See the GUIDE.md section "Password reset & email
 confirmation" for relay options including unauthenticated LAN relays.
 
 TLS: OFF by default — when started, Mullsmith listens on plain HTTP port 3210
@@ -350,6 +350,7 @@ fi
 /usr/bin/mullsmith
 /usr/lib/systemd/system/mullsmith.service
 %doc /usr/share/doc/mullsmith/README.md
+%doc /usr/share/doc/mullsmith/GUIDE.md
 %doc /usr/share/doc/mullsmith/spec.md
 %doc /usr/share/doc/mullsmith/PACKAGED_INSTALL.md
 %doc /usr/share/doc/mullsmith/THIRD_PARTY_NOTICES.md
