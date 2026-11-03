@@ -236,8 +236,7 @@ tools:
       code_run: confirm           # requires user approval (see §9.9 / §9.13)
 
 auth:
-  registration: open               # frictionless trusted-LAN default; change to
-                                   # invite-only or closed before public exposure (§9.12)
+  registration: invite-only       # create the first account with the admin CLI (§9.12)
   max_signups_per_hour: 5         # GLOBAL creation cap, enforced only when registration
                                   # is open; absent = 5, -1 disables (audit1 M-2)
   remember_login: true            # show the "Stay logged in" checkbox at login (§9.1)
@@ -1594,10 +1593,11 @@ calls), and a smoke script per milestone.
   ended for new keys, so this is a paid API — the only per-request cost in the stack).
   Brave is the only provider the config accepts; a future second provider would land as
   an implementation plus its provider name in the validation switch.
-- **The shipped configuration sets registration to `open`** for a frictionless first run
-  on a trusted home LAN; the code fallback for an omitted setting remains `invite-only`.
-  Before public exposure, operators should change the explicit setting to `invite-only`
-  (admin mints codes with `mullsmith admin invite`) or `closed`. Email confirmation
+- **The shipped configuration sets registration to `invite-only`.** Native packages
+  start the service automatically; operators create their first account using
+  `mullsmith admin create-user`, log in to verify the installation, then configure
+  the model endpoint and restart. Additional accounts can use invitations from
+  `mullsmith admin invite`; open registration is suitable only on a trusted LAN. Email confirmation
   (§9.17) proves mailbox control but does not decide who may sign up.
 - **Code execution = bubblewrap jail on this host** — `bubblewrap` 0.11.x is
   installed and unprivileged user namespaces are enabled, so the single §9.9 mode

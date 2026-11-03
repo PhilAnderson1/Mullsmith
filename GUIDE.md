@@ -34,10 +34,16 @@ sudo apt install ./mullsmith_*.deb
 
 Native packages create the service account and enable and start Mullsmith.
 The supplied configuration serves HTTP on port 3210 on all IPv4/IPv6 interfaces,
-with account registration open. This is intended for initial setup on a trusted
-home network. It does not automatically configure your router or firewall.
+with invite-only registration. It does not automatically configure your router
+or firewall.
 
-Open `http://YOUR-SERVER-IP:3210` and create your account. Then edit
+Create your first account, substituting your email, name and password:
+
+```sh
+sudo mullsmith admin create-user -email you@example.org -name You -password 'a long unique passphrase'
+```
+
+Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edit
 `/etc/mullsmith/config.yaml`: set `llm.endpoint` to your model server's API URL
 and replace the example `llm.models` entry with the model it actually serves.
 See [model examples](#models-and-thinking-controls).
@@ -56,18 +62,21 @@ For an RPM-based distribution with DNF:
 sudo dnf install ./mullsmith-*.rpm
 ```
 
+Then create your account, log in and configure your model as described above.
+
 For a Linux tar archive, extract it, enter the extracted directory and run:
 
 ```sh
 sudo ./install.sh
 ```
 
-**The tar installer installs the service but does not start it.** Edit the
-configuration, then start it yourself:
+**The tar installer installs the service but does not start it.** Start it yourself:
 
 ```sh
 sudo systemctl enable --now mullsmith
 ```
+
+Then create your account, log in and configure your model as described above.
 
 Native packages install the binary at `/usr/bin/mullsmith`; the tar installer
 uses `/usr/local/bin/mullsmith`. Both use `/etc/mullsmith` for configuration and

@@ -129,8 +129,14 @@ On AlmaLinux, install the `.rpm` with `sudo dnf install ./mullsmith-*.rpm`.
 The package installs `/usr/bin/mullsmith`, creates the `mullsmith` account,
 and enables and starts the systemd service on first installation. The default
 listener is immediately reachable from the local network at
-`http://SERVER-IP:3210`; edit `/etc/mullsmith/config.yaml` to configure the
-endpoint, models and registration policy. Create
+`http://SERVER-IP:3210`, with invite-only registration. Create your first account,
+substituting your email, name and password:
+
+    sudo -u mullsmith /usr/bin/mullsmith -config /etc/mullsmith/config.yaml admin create-user \
+      -email you@example.org -name You -password 'a long unique passphrase'
+
+Open the URL and log in to check the installation. Then edit
+`/etc/mullsmith/config.yaml` to configure the endpoint and models. Create
 `/etc/mullsmith/env` with any secrets the config references through `${ENV}`
 expansion, for example `MULLSMITH_SEARCH_API_KEY=...` (mode 0640,
 root:mullsmith).
@@ -161,11 +167,6 @@ Check the configuration and endpoint after editing it, then restart:
 
     sudo sh -c 'set -a; . /etc/mullsmith/env 2>/dev/null; set +a; /usr/bin/mullsmith -config /etc/mullsmith/config.yaml -check-config'
     sudo systemctl restart mullsmith
-
-Then create the first account:
-
-    sudo -u mullsmith /usr/bin/mullsmith -config /etc/mullsmith/config.yaml admin create-user \
-      -email you@example.org -name You -password 'a long passphrase'
 
 Configuration is preserved on upgrade. On Debian and Ubuntu, `apt remove`
 preserves configuration, the SQLite database, user files and the service

@@ -111,8 +111,8 @@ llm:
 # Account access and session policy.
 auth:
   # Account creation: "open", "invite-only", or "closed". "open" is
-  # convenient on a trusted LAN; change it before public exposure.
-  registration: "open"
+  # suitable only on a trusted LAN. Create the first account using the admin CLI.
+  registration: "invite-only"
 
   # Global open-registration rate limit.
   max_signups_per_hour: 5
