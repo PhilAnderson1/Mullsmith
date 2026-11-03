@@ -15,20 +15,26 @@ tools and optional sandboxed code execution. Use it from your PC, tablet or phon
   with supplied model-specific thinking controls.
 - **Useful tools included.** Search the web, work with files and download the results.
 - **Share your server.** Separate accounts, private conversations and personal file storage.
-- **Reach it anywhere.** Responsive, installable web app; built-in HTTPS for access
-  beyond your home network.
+- **Serve it directly.** Designed for your home network or the public internet,
+  with built-in HTTPS—no reverse proxy required.
+- **Use any device.** Responsive interface for desktop, tablet and phone.
+  Save it to your home screen as a web app.
 - **Free and open source.** No subscriptions, paid tiers or upselling.
 
 ## Install
 
-On Debian or Ubuntu, download the `.deb` from
-[Releases](https://github.com/PhilAnderson1/Mullsmith/releases), then:
+Download the appropriate `.deb` or `.rpm` package from
+[Releases](https://github.com/PhilAnderson1/Mullsmith/releases), then install:
 
 ```sh
+# Debian / Ubuntu
 sudo apt install ./mullsmith_*.deb
+
+# RPM-based systems
+sudo dnf install ./mullsmith-*.rpm
 ```
 
-**Open `http://YOUR-SERVER-IP:3210` from any device on your home network.**
+**Open `http://YOUR-SERVER-IP:3210` from any device on your home network and create an account.**
 
 Set your endpoint and model under `llm:` in `/etc/mullsmith/config.yaml`, then restart:
 
