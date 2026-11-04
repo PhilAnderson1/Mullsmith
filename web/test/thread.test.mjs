@@ -151,6 +151,12 @@ test("useful mode hides successful status-only cards live and on reload", () => 
     "all mode reveals status-only history");
   assert.equal(buildCallCard({ ...stored, status: "error" }, "{}", "useful") !== null, true,
     "errors remain visible in useful mode");
+  const oldStored = callFromStored({
+    id: "old-1", tool: event.tool, status: "ok",
+    display: JSON.stringify({ summary: event.summary, data: null }),
+  });
+  assert.equal(buildCallCard(oldStored, "{}", "useful") !== null, true,
+    "old records without the explicit flag are not inferred to be status-only");
 });
 
 test("an assistant shell collapses when its final visible tool card disappears", () => {

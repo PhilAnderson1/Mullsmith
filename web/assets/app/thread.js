@@ -154,7 +154,7 @@ export function callFromEvent(d) {
     summary: d.summary || "",
     data: d.data ?? null,
     truncated: Boolean(d.truncated),
-    statusOnly: d.status_only === undefined ? d.data == null : Boolean(d.status_only),
+    statusOnly: Boolean(d.status_only),
   };
 }
 
@@ -167,7 +167,7 @@ export function callFromStored(c) {
     summary: display.summary || "",
     data: display.data ?? null,
     truncated: Boolean(display.truncated),
-    statusOnly: display.status_only === undefined ? display.data == null : Boolean(display.status_only),
+    statusOnly: Boolean(display.status_only),
   };
 }
 
