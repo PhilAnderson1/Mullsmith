@@ -271,6 +271,16 @@ func (s *Service) WriteText(ctx context.Context, root, userID, rel, content stri
 	return n, nil
 }
 func (s *Service) Share(ctx context.Context, root, userID, source string) (File, error) {
+	return s.snapshotArtifact(ctx, root, userID, source, "files_share", false)
+}
+
+// DisplayImage snapshots a file using the same quota-checked artifact path as
+// files_share, while keeping operation names in user-visible errors accurate.
+func (s *Service) DisplayImage(ctx context.Context, root, userID, source string) (File, error) {
+	return s.snapshotArtifact(ctx, root, userID, source, "display_image", true)
+}
+
+func (s *Service) snapshotArtifact(ctx context.Context, root, userID, source, operation string, allowUploads bool) (File, error) {
 	if err := ctx.Err(); err != nil {
 		return File{}, err
 	}
@@ -278,24 +288,25 @@ func (s *Service) Share(ctx context.Context, root, userID, source string) (File,
 	if rel == "" {
 		return File{}, errors.New("path is required")
 	}
-	// The uploads namespace is off-limits AFTER normalization (same lesson
-	// as audit finding 7): uploads must never gain a TTL'd artifact copy —
-	// the sweep or a card-delete must never reach the user's originals.
+	// files_share keeps uploads out after normalization: those files are
+	// already downloadable. display_image deliberately permits an artifact
+	// snapshot so an upload can be shown inline; expiry removes only that
+	// copy and never reaches the original upload.
 	segs, err := scratch.ParseRel(rel)
 	if err != nil {
-		return File{}, safeError("files_share", err)
+		return File{}, safeError(operation, err)
 	}
 	if len(segs) == 0 {
 		return File{}, errors.New("path is required")
 	}
-	if segs[0] == "uploads" {
+	if segs[0] == "uploads" && !allowUploads {
 		return File{}, errors.New("uploads are the user's data and already downloadable " +
 			"from the Files page; share files under work/ or artifacts/ instead")
 	}
 	rel = path.Join(segs...) // canonical spelling all the way through (§8)
 	fi, err := scratch.Stat(root, userID, rel)
 	if err != nil {
-		return File{}, safeError("files_share", err)
+		return File{}, safeError(operation, err)
 	}
 	if fi.IsDir() {
 		return File{}, errors.New("path is a directory, not a file")
@@ -324,12 +335,12 @@ func (s *Service) Share(ctx context.Context, root, userID, source string) (File,
 
 	src, err := scratch.OpenFile(root, userID, rel)
 	if err != nil {
-		return File{}, safeError("files_share", err)
+		return File{}, safeError(operation, err)
 	}
 	defer src.Close()
 	srcInfo, err := src.Stat()
 	if err != nil {
-		return File{}, safeError("files_share", err)
+		return File{}, safeError(operation, err)
 	}
 	sourceSize := srcInfo.Size()
 	if _, err := s.admitAddition(ctx, root, userID, sourceSize, 1); err != nil {
@@ -339,7 +350,7 @@ func (s *Service) Share(ctx context.Context, root, userID, source string) (File,
 		return File{}, ErrDiskLow
 	}
 	if err := scratch.MkdirAll(root, userID, "artifacts"); err != nil {
-		return File{}, safeError("files_share", err)
+		return File{}, safeError(operation, err)
 	}
 
 	// Stream to a temp in the scratch ROOT (same filesystem as the

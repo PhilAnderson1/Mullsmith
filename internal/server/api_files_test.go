@@ -422,6 +422,35 @@ func TestDownloadAlwaysAttachment(t *testing.T) {
 	}
 }
 
+func TestInlineImageEndpointServesOnlyRasterArtifacts(t *testing.T) {
+	cfg := scratchCfg(t)
+	a := newAuthTest(t, cfg)
+	signupAs(a, "images@test.io", "gk-code-1")
+	uid := meID(a)
+
+	seedFile(t, cfg, uid, "artifacts/chart.png", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...))
+	seedFile(t, cfg, uid, "artifacts/vector.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`))
+	seedFile(t, cfg, uid, "work/draft.png", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...))
+
+	resp := a.do(http.MethodGet, "/api/v1/files/image?path=artifacts%2Fchart.png", nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "image/png") {
+		t.Fatalf("PNG response: %d %q %q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
+		t.Errorf("Content-Disposition = %q, want inline", cd)
+	}
+
+	for _, rel := range []string{"artifacts%2Fvector.svg", "work%2Fdraft.png", "artifacts%2Fmissing.png"} {
+		resp := a.do(http.MethodGet, "/api/v1/files/image?path="+rel, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("image %s: status %d, want 404", rel, resp.StatusCode)
+		}
+	}
+}
+
 // One physical walk per directory: kinds come from the directory, hidden
 // entries and special files never appear, folders are listed (even empty)
 // so they are manageable instead of litter, filters are the plural

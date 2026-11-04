@@ -103,9 +103,11 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.Approval["code_run"] != "confirm" {
 		t.Errorf("code_run approval default = %q, want confirm", cfg.Tools.Agent.Approval["code_run"])
 	}
-	if cfg.Tools.Agent.Approval["fs_delete"] != "confirm" || cfg.Tools.Agent.Approval["view_image"] != "auto" {
-		t.Errorf("file/image approval defaults = %q / %q, want confirm / auto",
-			cfg.Tools.Agent.Approval["fs_delete"], cfg.Tools.Agent.Approval["view_image"])
+	if cfg.Tools.Agent.Approval["fs_delete"] != "confirm" ||
+		cfg.Tools.Agent.Approval["display_image"] != "auto" || cfg.Tools.Agent.Approval["view_image"] != "auto" {
+		t.Errorf("file/image approval defaults = %q / %q / %q, want confirm / auto / auto",
+			cfg.Tools.Agent.Approval["fs_delete"], cfg.Tools.Agent.Approval["display_image"],
+			cfg.Tools.Agent.Approval["view_image"])
 	}
 	// write_timeout defaults ON (astra2 finding 1): 60s, passed to the
 	// http.Server unchanged; the bare -1 stays the explicit off-switch,

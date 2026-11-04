@@ -2,14 +2,14 @@
 // navigation port owns identity; the view port owns thread DOM assembly.
 import { api, ApiError } from "/assets/app/api.js";
 import { streamChat } from "/assets/app/sse.js";
-import { toolCardNode, formatToolArgs, callFromEvent, paintCallOutcome, sharedFileFor } from "/assets/app/thread.js";
+import { toolCardNode, formatToolArgs, callFromEvent, paintCallOutcome, sharedFileFor, displayedImageFor } from "/assets/app/thread.js";
 export function createGenerationController({
   navigation, view, getMeta, syncComposerButtons, toast, handleErr, applyTitle, showCtxFull, updateCtxMeter, promoteConversation
 }) {
   const $ = (selector) => document.querySelector(selector);
   let inflight = null;
   const {
-    openRound, cardHost, stopSpinner, syncRoundBody, ensureThinking, artifactCard, attachApproval, retireStrandedCards, settleRound, attachRegen, refreshLastAssistant, maybeScroll
+    openRound, cardHost, stopSpinner, syncRoundBody, ensureThinking, artifactCard, displayImage, attachApproval, retireStrandedCards, settleRound, attachRegen, refreshLastAssistant, maybeScroll
   } = view;
   async function startGeneration(url, body, rollback, onAccepted, onUncertain) {
     const controller = new AbortController();
@@ -131,6 +131,12 @@ export function createGenerationController({
             if (file) {
               const host = cardHost(st, d);
               if (host) host.append(artifactCard(file));
+            }
+            const image = displayedImageFor(view);
+            if (image) {
+              const host = cardHost(st, d);
+              const figure = displayImage(image);
+              if (host && figure) host.append(figure);
             }
             maybeScroll();
           },

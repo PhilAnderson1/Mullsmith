@@ -2,7 +2,7 @@
 // lifecycle effects enter through explicit callbacks.
 import { renderMarkdown } from "/assets/app/markdown.js";
 import { humanSize, fileApiUrl } from "/assets/app/file-presenter.js";
-import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, roundStatusNote, formatToolArgs } from "/assets/app/thread.js";
+import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, displayedImageFor, roundStatusNote, formatToolArgs } from "/assets/app/thread.js";
 export function createThreadRenderer({
   onRegenerate, onEarlier, onApproval, updateCtxMeter, recordActivity, toast
 }) {
@@ -49,6 +49,11 @@ export function createThreadRenderer({
         host.append(buildCallCard(view, c.arguments));
         const file = sharedFileFor(view); // files_share ⇒ visible download card
         if (file) host.append(artifactCard(file));
+        const image = displayedImageFor(view); // display_image ⇒ inline picture
+        if (image) {
+          const figure = displayImage(image);
+          if (figure) host.append(figure);
+        }
       }
     }
     if (m.role === "user" && Array.isArray(m.files) && m.files.length) {
@@ -254,6 +259,52 @@ export function createThreadRenderer({
     return card;
   }
 
+  function displayImage(image) {
+    const href = fileApiUrl(image.url);
+    if (!href || !href.startsWith("/api/v1/files/image?")) return null;
+    const figure = document.createElement("figure");
+    figure.className = "display-image";
+    const link = document.createElement("a");
+    link.className = "display-image-link";
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.setAttribute("aria-label", `Open ${image.name || "image"} at full size`);
+    const img = document.createElement("img");
+    img.alt = image.caption || image.name || "Displayed image";
+    img.loading = "lazy";
+    img.decoding = "async";
+    link.append(img);
+    const unavailable = document.createElement("div");
+    unavailable.className = "display-image-unavailable muted";
+    unavailable.textContent = "Image no longer available";
+    unavailable.hidden = true;
+    figure.append(link, unavailable);
+    if (image.caption) {
+      const caption = document.createElement("figcaption");
+      caption.textContent = image.caption;
+      figure.append(caption);
+    }
+
+    // A busy per-user transfer slot is transient; retry twice before treating
+    // the artifact as expired. Cache-busting also prevents a cached 404/429
+    // from making the replacement attempt meaningless.
+    let failures = 0;
+    img.addEventListener("error", () => {
+      if (failures < 2 && img.isConnected) {
+        failures++;
+        setTimeout(() => {
+          if (img.isConnected) img.src = `${href}&attempt=${failures}`;
+        }, failures * 750);
+        return;
+      }
+      link.remove();
+      unavailable.hidden = false;
+    });
+    img.src = href;
+    return figure;
+  }
+
   function attachRegen(el) {
     const regen = el.querySelector(".regen-btn");
     if (!regen || regen.dataset.bound) return;
@@ -415,7 +466,7 @@ export function createThreadRenderer({
 
   return {
     earlierButtonNode, prependPage, msgNode, appendUserBubble, appendFileChips,
-    stopSpinner, ensureThinking, attachApproval, artifactCard, attachRegen,
+    stopSpinner, ensureThinking, attachApproval, artifactCard, displayImage, attachRegen,
     syncRoundBody, settleRound, retireStrandedCards, refreshLastAssistant,
     scrollThreadToBottom, maybeScroll, renderThread, initialEmptyState,
     openRound, cardHost,

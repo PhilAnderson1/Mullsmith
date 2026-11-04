@@ -15,8 +15,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"path"
 	"strings"
 
@@ -107,19 +105,11 @@ func (v ViewImage) Execute(ctx context.Context, inv Invocation) (Result, error) 
 	}
 	// The sniffed type decides, never the extension (§9.4): the bytes are
 	// about to enter the model's context as a picture.
-	f, err := scratch.OpenFile(root, inv.UserID, rel)
-	if err != nil {
+	if _, err := rasterImageType(root, inv.UserID, rel); err != nil {
+		if errors.Is(err, errImageRead) || errors.Is(err, errUnsupportedImage) {
+			return Result{}, err
+		}
 		return Result{}, fsErr("view_image", err)
-	}
-	defer f.Close()
-	head, err := io.ReadAll(io.LimitReader(f, 512))
-	if err != nil || len(head) == 0 {
-		return Result{}, errors.New("read failed")
-	}
-	switch http.DetectContentType(head) {
-	case "image/png", "image/jpeg", "image/webp":
-	default:
-		return Result{}, errors.New("file is not a PNG, JPEG or WebP image")
 	}
 
 	body, _ := json.Marshal(map[string]any{

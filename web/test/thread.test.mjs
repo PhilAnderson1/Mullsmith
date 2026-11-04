@@ -70,7 +70,7 @@ globalThis.location = { origin: "https://app.example" };
 
 const {
   callFromEvent, callFromStored, buildCallCard, paintCallOutcome, toolCardNode,
-  sharedFileFor, roundStatusNote,
+  sharedFileFor, displayedImageFor, roundStatusNote,
 } = await import("../assets/app/thread.js");
 
 // digest collapses a rendered card to everything a viewer can read:
@@ -146,6 +146,16 @@ test("files_share resolves its display download payload", () => {
     tool: "files_share", status: "ok", display: JSON.stringify({ data: { file } }),
   })), file);
   assert.equal(sharedFileFor({ tool: "files_share", status: "denied", data: { file } }), null);
+});
+
+test("display_image resolves its inline image payload", () => {
+  const image = { name: "chart.png", url: "/api/v1/files/image?path=artifacts%2Fchart.png", caption: "Results" };
+  assert.deepEqual(displayedImageFor(callFromEvent({ tool: "display_image", status: "ok", data: { image } })), image);
+  assert.deepEqual(displayedImageFor(callFromStored({
+    tool: "display_image", status: "ok", display: JSON.stringify({ data: { image } }),
+  })), image);
+  assert.equal(displayedImageFor({ tool: "display_image", status: "error", data: { image } }), null);
+  assert.equal(displayedImageFor({ tool: "files_share", status: "ok", data: { image } }), null);
 });
 
 // --- round notes: one function for both views -------------------------------------

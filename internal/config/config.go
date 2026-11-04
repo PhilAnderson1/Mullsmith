@@ -405,7 +405,7 @@ func validApprovalTool(name string) bool {
 	switch name {
 	case "web_search", "web_fetch", "web_download",
 		"fs_list", "fs_read", "fs_write", "fs_delete", "files_share",
-		"view_image", "code_run":
+		"display_image", "view_image", "code_run":
 		return true
 	default:
 		return false
@@ -1068,7 +1068,8 @@ func (c *Config) setDefaults() {
 	}
 	for tool, def := range map[string]string{
 		"web_search": "auto", "web_fetch": "auto", "web_download": "auto", "fs_list": "auto", "fs_read": "auto",
-		"fs_write": "auto", "fs_delete": "confirm", "files_share": "auto", "view_image": "auto", "code_run": "confirm",
+		"fs_write": "auto", "fs_delete": "confirm", "files_share": "auto", "display_image": "auto",
+		"view_image": "auto", "code_run": "confirm",
 	} {
 		if _, ok := c.Tools.Agent.Approval[tool]; !ok {
 			c.Tools.Agent.Approval[tool] = def

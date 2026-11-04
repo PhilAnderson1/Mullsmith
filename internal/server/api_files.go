@@ -411,6 +411,60 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	_ = rc.SetWriteDeadline(time.Time{})
 }
 
+// handleFileImage serves only sniffed raster images from artifacts/. It is a
+// separate endpoint from downloads so generated pictures can appear inline in
+// chat without weakening the rule that every ordinary file response is an
+// attachment. SVG is excluded because a directly opened SVG is an active web
+// document, not merely image pixels.
+func (s *Server) handleFileImage(w http.ResponseWriter, r *http.Request) {
+	user := UserFrom(r.Context())
+	if !s.downloads.tryAcquire(user.ID) {
+		w.Header().Set("Retry-After", "2")
+		writeAPIError(w, r, http.StatusTooManyRequests, "too_many_downloads", "you already have the maximum number of downloads running; try again shortly")
+		return
+	}
+	defer s.downloads.release(user.ID)
+
+	rel, ok := fileRelFrom(w, r)
+	if !ok || !strings.HasPrefix(rel, "artifacts/") {
+		if ok {
+			writeAPIError(w, r, http.StatusNotFound, "not_found", "image not found")
+		}
+		return
+	}
+	fi, err := scratch.Stat(s.cfg.Scratchpad.Root, user.ID, rel)
+	if err != nil || !fi.Mode().IsRegular() {
+		writeAPIError(w, r, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	f, err := scratch.OpenFile(s.cfg.Scratchpad.Root, user.ID, rel)
+	if err != nil {
+		writeAPIError(w, r, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	defer f.Close()
+
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	mediaType := http.DetectContentType(head[:n])
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/webp":
+	default:
+		writeAPIError(w, r, http.StatusNotFound, "not_found", "image not found")
+		return
+	}
+	name := path.Base(rel)
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Disposition", mineDisposition("inline", name))
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	if r.Method == http.MethodHead {
+		return
+	}
+	rc := http.NewResponseController(w)
+	_, _ = io.Copy(deadlineWriter{rc: rc, w: w}, io.MultiReader(bytes.NewReader(head[:n]), f))
+	_ = rc.SetWriteDeadline(time.Time{})
+}
+
 // downloadWriteTimeout bounds ONE chunk handoff of a download. 30 s without
 // handing over 32 KB means the client is gone. Var so tests can shrink it.
 var downloadWriteTimeout = 30 * time.Second

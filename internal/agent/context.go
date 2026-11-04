@@ -33,7 +33,10 @@ const ToolGuidance = "\n\nYou may call the provided tools to help answer. " +
 	"confirmation first. To put a file in the chat, " +
 	"deliver it with files_share: it snapshots the file into artifacts/ " +
 	"and the user sees a download card; re-sharing an edited file produces " +
-	"a new snapshot, so each card keeps the bytes it was made from."
+	"a new snapshot, so each card keeps the bytes it was made from. To show " +
+	"a PNG, JPEG or WebP picture from uploads/, work/ or artifacts/ inline " +
+	"without a download card, use " +
+	"display_image instead; it snapshots the displayed image in the same way."
 
 // CodeRunGuidance extends the prompt further when code execution is on
 // (§7.3 workflow); appended only when code_run is actually registered.
@@ -42,7 +45,8 @@ const CodeRunGuidance = " You may also run short-lived scripts with code_run (li
 	"script write output under work/, or drop a finished file directly into artifacts/ " +
 	"— inside the jail only work/ and artifacts/ are writable, the scratchpad root and " +
 	"uploads/ are read-only. Share a result with files_share to give the user a " +
-	"download card in the chat. The user must approve each run unless " +
+	"download card, or use display_image for an inline picture. The user must " +
+	"approve each run unless " +
 	"they chose to allow this conversation."
 
 // BuildContext assembles the request per spec §6.1 step 2: conversation

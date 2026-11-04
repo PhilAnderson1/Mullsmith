@@ -13,8 +13,8 @@ import (
 // by tools.*.enabled). Disabled or misconfigured tools are skipped with a
 // log line — the chat still runs, just without that capability (§14:
 // search stays disabled until the key exists). The fs_* tools and
-// files_share ride the scratchpad and are always available (sharing is a
-// file copy, nothing to configure); code_run needs a Runner and is
+// files_share and display_image ride the scratchpad and are always available
+// (both use the same artifact snapshot); code_run needs a Runner and is
 // registered only when code execution is enabled (§9.9 layer 1: opt-in).
 // cfg is prepared by the application constructor. files owns the shared
 // managed-write policy, including quota serialization.
@@ -72,6 +72,7 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	reg.Register(FsWrite{Files: files})
 	reg.Register(FsDelete{})
 	reg.Register(FilesShare{Files: files})
+	reg.Register(DisplayImage{Files: files, MaxImageBytes: int64(cfg.Scratchpad.MaxFileSize)})
 	// Seeing pictures is only a capability when some model can take
 	// them (llm.models[].vision): with no entry flagged the tool is not
 	// offered at all. Per conversation the offer is filtered further by

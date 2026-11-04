@@ -676,6 +676,7 @@ func TestUnauthenticatedEndpoints(t *testing.T) {
 		{http.MethodPost, "/api/v1/conversations/00000000000000000000000000/messages"},
 		{http.MethodGet, "/api/v1/files"},
 		{http.MethodGet, "/api/v1/files/download?path=work%2Fx"},
+		{http.MethodGet, "/api/v1/files/image?path=artifacts%2Fx.png"},
 		{http.MethodDelete, "/api/v1/files?path=work%2Fx"},
 		{http.MethodPost, "/api/v1/files"},
 	} {

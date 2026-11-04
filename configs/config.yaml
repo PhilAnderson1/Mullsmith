@@ -217,6 +217,7 @@ tools:
       fs_write: "auto"
       fs_delete: "confirm"
       files_share: "auto"
+      display_image: "auto"
       view_image: "auto"
       code_run: "confirm"
 

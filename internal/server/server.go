@@ -166,6 +166,7 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	mux.Handle("POST /api/v1/files", s.authRequired(s.handleFileUpload))
 	mux.Handle("GET /api/v1/files", s.authRequired(s.handleFileList))
 	mux.Handle("GET /api/v1/files/download", s.authRequired(s.handleFileDownload))
+	mux.Handle("GET /api/v1/files/image", s.authRequired(s.handleFileImage))
 	mux.Handle("DELETE /api/v1/files", s.authRequired(s.handleFileDelete))
 	mux.HandleFunc("GET /assets/", s.staticAssetsHandler())
 	mux.HandleFunc("GET /{$}", s.handleIndex)

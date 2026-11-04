@@ -187,6 +187,14 @@ export function sharedFileFor(view) {
   return file && typeof file === "object" ? file : null;
 }
 
+// display_image carries a compact, durable artifact reference. The image
+// bytes stay on disk; live and history views consume the same projection.
+export function displayedImageFor(view) {
+  if (view.tool !== "display_image" || view.status !== "ok") return null;
+  const image = view.data?.image;
+  return image && typeof image === "object" ? image : null;
+}
+
 // --- round status -------------------------------------------------------------------
 
 // roundStatusNote is what a finished round says beneath its answer, live

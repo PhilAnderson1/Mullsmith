@@ -416,6 +416,7 @@ endpoint. A local model keeps that processing local; a remote provider receives 
 | `fs_write` | Writes within the user's work/artifact areas | Always available; automatic |
 | `fs_delete` | Deletes permitted scratchpad files, including uploads | Always available; confirmation |
 | `files_share` | Creates a downloadable artifact from a scratchpad file | Always available; automatic |
+| `display_image` | Displays a PNG, JPEG or WebP artifact inline in the chat | Always available; automatic |
 | `view_image` | Sends selected scratchpad images to a vision-capable model | Offered to configured vision models; automatic |
 | `code_run` | Runs configured interpreters in the execution sandbox | Disabled; confirmation when enabled |
 
