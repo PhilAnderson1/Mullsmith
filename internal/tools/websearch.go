@@ -38,7 +38,8 @@ func NewBraveSearch(apiKey string, maxResults int, client *http.Client) *BraveSe
 	return &BraveSearch{apiKey: apiKey, maxResults: maxResults, http: client, endpoint: braveEndpoint}
 }
 
-func (b *BraveSearch) Name() string { return "web_search" }
+func (b *BraveSearch) Name() string      { return "web_search" }
+func (b *BraveSearch) HasRichCard() bool { return true }
 
 func (b *BraveSearch) Description() string {
 	return "Search the web for current information. Returns a JSON list of results " +

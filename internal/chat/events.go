@@ -38,9 +38,10 @@ func (e TextDelta) Kind() string {
 }
 
 type ToolStarted struct {
-	CallID    string `json:"call_id"`
-	MessageID string `json:"message_id"`
-	Tool      string `json:"tool"`
+	CallID     string `json:"call_id"`
+	MessageID  string `json:"message_id"`
+	Tool       string `json:"tool"`
+	StatusOnly bool   `json:"status_only,omitempty"`
 }
 
 func (ToolStarted) Kind() string { return "tool_start" }

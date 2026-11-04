@@ -43,6 +43,10 @@ func (s stubTool) Execute(context.Context, Invocation) (Result, error) {
 	return Result{Content: "ok"}, nil
 }
 
+type richStubTool struct{ stubTool }
+
+func (richStubTool) HasRichCard() bool { return true }
+
 func TestRegistryOrderAndDedupe(t *testing.T) {
 	reg := NewRegistry(nil)
 	reg.Register(stubTool{"a"})
@@ -54,6 +58,21 @@ func TestRegistryOrderAndDedupe(t *testing.T) {
 	}
 	if _, ok := reg.Get("missing"); ok {
 		t.Error("Get(missing) = true")
+	}
+}
+
+func TestRegistryStatusOnlyClassification(t *testing.T) {
+	reg := NewRegistry(nil)
+	reg.Register(stubTool{"quiet"})
+	reg.Register(richStubTool{stubTool{"rich"}})
+	if !reg.StatusOnly("quiet") {
+		t.Error("ordinary tool should be classified as status-only")
+	}
+	if reg.StatusOnly("rich") {
+		t.Error("rich-card tool should not be classified as status-only")
+	}
+	if reg.StatusOnly("unknown") {
+		t.Error("unknown tool should remain visible")
 	}
 }
 

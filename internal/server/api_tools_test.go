@@ -325,6 +325,9 @@ func TestSuccessfulStatusOnlyCardVisibility(t *testing.T) {
 			resp := sendChat(t, a, conv.ID, "run it")
 			defer resp.Body.Close()
 			events := drainSSE(t, newSSEReader(t, resp))
+			if got, _ := events.data["tool_start"]["status_only"].(bool); !got {
+				t.Fatalf("tool_start status_only = %v: %+v", got, events.data["tool_start"])
+			}
 			if got, _ := events.data["tool_end"]["status_only"].(bool); !got {
 				t.Fatalf("live status_only = %v: %+v", got, events.data["tool_end"])
 			}

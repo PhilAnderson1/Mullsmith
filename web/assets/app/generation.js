@@ -104,9 +104,14 @@ export function createGenerationController({
             if (!st.cur) return;
             const host = cardHost(st, d);
             if (!host) return;
-            const card = toolCardNode(d.call_id, d.tool);
-            host.append(card);
-            st.cards[d.call_id] = { card, args: "" };
+            const quiet = getMeta()?.tool_cards === "useful" && Boolean(d.status_only);
+            const card = quiet ? null : toolCardNode(d.call_id, d.tool);
+            if (card) host.append(card);
+            st.cards[d.call_id] = { card, args: "", tool: d.tool };
+            if (quiet) {
+              const round = st.byId.get(d.message_id);
+              if (round) syncAssistantVisibility(round.nodes.el);
+            }
             maybeScroll();
           },
           onToolArgs(d) {
@@ -114,6 +119,7 @@ export function createGenerationController({
             const c = st.cards[d.call_id];
             if (!c) return;
             c.args += d.t || "";
+            if (!c.card) return;
             const pre = c.card.querySelector(".tool-args");
             pre.textContent = formatToolArgs(c.args);
             pre.hidden = false;
@@ -126,7 +132,20 @@ export function createGenerationController({
             // The SAME projection a reload renders from tool_calls.display
             // (C7): one paintCallOutcome for both views.
             const view = callFromEvent(d);
-            paintCallOutcome(c.card, view, getMeta()?.tool_cards);
+            const quiet = getMeta()?.tool_cards === "useful" && view.statusOnly && view.status === "ok";
+            if (!c.card && !quiet) {
+              const host = cardHost(st, d);
+              if (host) {
+                c.card = toolCardNode(d.call_id, d.tool || c.tool);
+                host.append(c.card);
+                if (c.args) {
+                  const pre = c.card.querySelector(".tool-args");
+                  pre.textContent = formatToolArgs(c.args);
+                  pre.hidden = false;
+                }
+              }
+            }
+            if (c.card) paintCallOutcome(c.card, view, getMeta()?.tool_cards);
             // files_share ⇒ a visible download card next to the card (§10.2).
             const file = sharedFileFor(view);
             if (file) {
@@ -148,10 +167,11 @@ export function createGenerationController({
             const host = cardHost(st, d);
             if (!host) return;
             let c = st.cards[d.call_id];
-            if (!c) {
+            if (!c || !c.card) {
               const card = toolCardNode(d.call_id, d.tool);
               host.append(card);
-              c = st.cards[d.call_id] = { card, args: d.arguments || "" };
+              if (!c) c = st.cards[d.call_id] = { card, args: d.arguments || "", tool: d.tool };
+              else c.card = card;
             }
             attachApproval(c.card, st, d);
             maybeScroll(true);

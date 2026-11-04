@@ -25,7 +25,8 @@ func (s *Service) runModelRound(ctx context.Context, conn sink, model string,
 		return nil
 	}, func(event agent.ToolEvent) {
 		if event.Kind == "tool_start" {
-			_ = conn.Send(ToolStarted{CallID: event.CallID, MessageID: msgID, Tool: event.Tool})
+			_ = conn.Send(ToolStarted{CallID: event.CallID, MessageID: msgID, Tool: event.Tool,
+				StatusOnly: s.Tools.StatusOnly(event.Tool)})
 		} else {
 			_ = conn.Send(ToolArguments{CallID: event.CallID, MessageID: msgID, Text: event.Arguments})
 		}

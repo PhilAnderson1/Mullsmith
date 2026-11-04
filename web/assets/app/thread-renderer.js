@@ -350,7 +350,7 @@ export function createThreadRenderer({
     const incomplete = new Set(outcomes.filter((r) => r.status !== "complete").map((r) => r.message_id));
     for (const key of Object.keys(st.cards || {})) {
       const c = st.cards[key];
-      if (!c || !c.card.isConnected) continue;
+      if (!c || !c.card || !c.card.isConnected) continue;
       if (!c.card.classList.contains("st-running") &&
           !c.card.classList.contains("st-awaiting")) continue;
       // A failed model round never reached tool execution. Its streamed

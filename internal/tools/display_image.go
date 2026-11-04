@@ -23,7 +23,8 @@ type DisplayImage struct {
 	MaxImageBytes int64
 }
 
-func (DisplayImage) Name() string { return DisplayImageName }
+func (DisplayImage) Name() string      { return DisplayImageName }
+func (DisplayImage) HasRichCard() bool { return true }
 
 func (DisplayImage) Description() string {
 	return "Display a local image inline in the chat for the user. Use this when the " +

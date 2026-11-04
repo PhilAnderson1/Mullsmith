@@ -325,12 +325,30 @@ test("useful card mode removes the empty assistant shell live and after reload",
   const page = await ctx.newPage();
   try {
     await registerAndOpen(page, quietApp.base, `quiet${++userSeq}@example.io`);
+    await page.evaluate(() => {
+      window.__quietToolCardsAdded = 0;
+      window.__quietToolCardObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof Element)) continue;
+            if (node.matches(".tool-card")) window.__quietToolCardsAdded++;
+            window.__quietToolCardsAdded += node.querySelectorAll(".tool-card").length;
+          }
+        }
+      });
+      window.__quietToolCardObserver.observe(document.querySelector("#thread"), {
+        childList: true,
+        subtree: true,
+      });
+    });
     llm.queueScripts(
       toolScript("quiet_write", "fs_write", { path: "work/quiet.txt", content: "hello" }),
       textScript("Finished."),
     );
     await sendChat(page, "write a small file");
     await waitIdle(page);
+    assert.equal(await page.evaluate(() => window.__quietToolCardsAdded), 0,
+      "a successful status-only tool card appeared transiently");
     assert.equal(await page.locator(".from-assistant:visible").count(), 1,
       "the completed tool-only round left its role/timestamp shell visible");
     await page.reload({ waitUntil: "domcontentloaded" });

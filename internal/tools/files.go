@@ -352,7 +352,8 @@ func (FsDelete) Execute(ctx context.Context, inv Invocation) (Result, error) {
 
 type FilesShare struct{ Files *managed.Service }
 
-func (FilesShare) Name() string { return "files_share" }
+func (FilesShare) Name() string      { return "files_share" }
+func (FilesShare) HasRichCard() bool { return true }
 
 func (FilesShare) Description() string {
 	return "Present an existing scratchpad file to the user as a download card. Call this " +

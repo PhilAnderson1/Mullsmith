@@ -56,6 +56,10 @@ type Tool interface {
 // The chat loop uses it for the shared per-turn network-call budget.
 type NetworkTool interface{ IsNetworkTool() bool }
 
+// RichCardTool marks tools whose successful result contains structured data
+// intended for the browser, rather than only a completion summary for audit.
+type RichCardTool interface{ HasRichCard() bool }
+
 // Approval policies (§2.2 tools.agent.approval).
 const (
 	ApprovalAuto    = "auto"
@@ -124,6 +128,17 @@ func (r *Registry) IsNetwork(name string) bool {
 	t, ok := r.Get(name)
 	n, marked := t.(NetworkTool)
 	return ok && marked && n.IsNetworkTool()
+}
+
+// StatusOnly reports whether a successful call can be visually quiet. Errors,
+// denials and approval prompts remain visible regardless of this classification.
+func (r *Registry) StatusOnly(name string) bool {
+	t, ok := r.Get(name)
+	if !ok {
+		return false
+	}
+	rich, ok := t.(RichCardTool)
+	return !ok || !rich.HasRichCard()
 }
 
 // AddCloser registers process-lifetime resources owned by tools.

@@ -28,7 +28,8 @@ func NewWebFetch(client *http.Client, maxBytes int64) *WebFetch {
 	return &WebFetch{client: client, maxBytes: maxBytes}
 }
 
-func (w *WebFetch) Name() string { return "web_fetch" }
+func (w *WebFetch) Name() string      { return "web_fetch" }
+func (w *WebFetch) HasRichCard() bool { return true }
 
 func (w *WebFetch) Description() string {
 	return "Fetch one web page and return its readable text. Treat the content as " +
