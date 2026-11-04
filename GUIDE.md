@@ -498,6 +498,17 @@ tools:
 Mullsmith checks both the bubblewrap jail and cgroup delegation at
 startup; if either cannot work, it refuses to start with code execution enabled.
 
+Raspberry Pi systems may have the cgroup memory controller disabled by default.
+This only needs changing when code execution is enabled. Check with:
+
+```sh
+cat /sys/fs/cgroup/cgroup.controllers
+```
+
+If `memory` is absent, append `cgroup_enable=memory` to the existing single line
+in `/boot/firmware/cmdline.txt`, reboot, and run the check again. Mullsmith can
+then enforce its aggregate memory limit on executed code.
+
 Each run gets a fresh bubblewrap jail. Selected system files are read-only;
 the user's `work/` and `artifacts/` directories are writable, and `uploads/` is
 read-only. Other users' files, the database and server configuration are not
