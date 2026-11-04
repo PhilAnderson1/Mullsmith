@@ -194,6 +194,11 @@ func TestWebFetchStripsHTML(t *testing.T) {
 	defer srv.Close()
 
 	w := NewWebFetch(NewGuardedClient(5*time.Second), 1<<20)
+	reg := NewRegistry(nil)
+	reg.Register(w)
+	if !reg.StatusOnly("web_fetch") {
+		t.Fatal("web_fetch should be classified as status-only")
+	}
 	// The guarded client refuses loopback, so inject a permissive client
 	// for the functional test; the SSRF behaviour is covered in egress_test.
 	w.client = srv.Client()
@@ -210,6 +215,9 @@ func TestWebFetchStripsHTML(t *testing.T) {
 	}
 	if payload.Title != "Doc & More" {
 		t.Errorf("title = %q", payload.Title)
+	}
+	if res.Data != nil {
+		t.Errorf("web_fetch returned browser-only display data: %#v", res.Data)
 	}
 	for _, bad := range []string{"alert", "body{}", "<h1>", "<p>"} {
 		if strings.Contains(payload.Text, bad) {

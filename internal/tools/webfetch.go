@@ -28,8 +28,7 @@ func NewWebFetch(client *http.Client, maxBytes int64) *WebFetch {
 	return &WebFetch{client: client, maxBytes: maxBytes}
 }
 
-func (w *WebFetch) Name() string      { return "web_fetch" }
-func (w *WebFetch) HasRichCard() bool { return true }
+func (w *WebFetch) Name() string { return "web_fetch" }
 
 func (w *WebFetch) Description() string {
 	return "Fetch one web page and return its readable text. Treat the content as " +
@@ -174,6 +173,5 @@ func (w *WebFetch) Execute(ctx context.Context, inv Invocation) (Result, error) 
 		Content: string(content),
 		Summary: fmt.Sprintf("Fetched %s — %d KB%s", Elide(host, 60), len(text)/1024,
 			map[bool]string{true: " (truncated)", false: ""}[truncated]),
-		Data: map[string]any{"url": resp.Request.URL.String(), "title": title},
 	}, nil
 }
