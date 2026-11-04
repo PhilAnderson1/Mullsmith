@@ -389,6 +389,33 @@ test("denied call: 'denied' card with its verdict, live and after reload", { tim
   } finally { await ctx.close(); }
 });
 
+test("useful mode reveals a status-only tool when it requests approval", { timeout: 120_000 }, async () => {
+  const quietApp = await startApp(llm.url, {
+    repoRoot,
+    binPath,
+    toolCards: "useful",
+    approval: { web_fetch: "confirm" },
+  });
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  try {
+    await registerAndOpen(page, quietApp.base, `quietapproval${++userSeq}@example.io`);
+    llm.queueScripts(
+      toolScript("quiet_approval", "web_fetch", { url: "https://example.com" }),
+      textScript("The fetch was denied."),
+    );
+    await sendChat(page, "fetch example.com");
+    await page.locator(".approval-row button").first().waitFor({ state: "visible" });
+    assert.equal(await page.locator(".from-assistant:visible .tool-card.st-awaiting").count(), 1,
+      "the approval card remained inside a hidden assistant shell");
+    await page.click(".approval-row button:not(.primary)");
+    await waitIdle(page);
+  } finally {
+    await ctx.close();
+    await quietApp.stop();
+  }
+});
+
 test("ID before name and two calls to the same tool retain distinct coherent cards", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
   try {

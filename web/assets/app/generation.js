@@ -174,6 +174,8 @@ export function createGenerationController({
               else c.card = card;
             }
             attachApproval(c.card, st, d);
+            const round = st.byId.get(d.message_id);
+            if (round) syncAssistantVisibility(round.nodes.el);
             maybeScroll(true);
           },
           onError(d) {
