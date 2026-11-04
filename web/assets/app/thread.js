@@ -82,6 +82,21 @@ export function toolCardsHost(el) {
   return host;
 }
 
+// A tool-only assistant round still has the ordinary role/timestamp shell.
+// Collapse that shell once useful mode removes its last card, but retain it
+// whenever prose, a card, an artifact/image, or a terminal status is visible.
+export function syncAssistantVisibility(el) {
+  if (!el) return;
+  const body = el.querySelector(".msg-body");
+  const status = el.querySelector(".msg-status");
+  const visible = Boolean(body && !body.hidden) ||
+    Boolean(el.querySelector(".tool-card")) ||
+    Boolean(el.querySelector(".artifact-card")) ||
+    Boolean(el.querySelector(".display-image")) ||
+    Boolean(status && !status.hidden);
+  el.hidden = !visible;
+}
+
 export function setToolSummary(card, text) {
   if (!text) return;
   let p = card.querySelector(".tool-summary");

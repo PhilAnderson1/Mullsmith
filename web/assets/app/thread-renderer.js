@@ -2,7 +2,7 @@
 // lifecycle effects enter through explicit callbacks.
 import { renderMarkdown } from "/assets/app/markdown.js";
 import { humanSize, fileApiUrl } from "/assets/app/file-presenter.js";
-import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, displayedImageFor, roundStatusNote, formatToolArgs } from "/assets/app/thread.js";
+import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, displayedImageFor, roundStatusNote, formatToolArgs, syncAssistantVisibility } from "/assets/app/thread.js";
 export function createThreadRenderer({
   onRegenerate, onEarlier, onApproval, updateCtxMeter, recordActivity, toast, getMeta = () => ({})
 }) {
@@ -64,7 +64,10 @@ export function createThreadRenderer({
     const note = roundStatusNote(m.status, m.status_note);
     if (note) showStatusNote(el, note);
 
-    if (m.role === "assistant") attachRegen(el);
+    if (m.role === "assistant") {
+      attachRegen(el);
+      syncAssistantVisibility(el);
+    }
     return el;
   }
 
@@ -340,6 +343,7 @@ export function createThreadRenderer({
     if (text) showStatusNote(nodes.el, text);
     // Rate the prose only: a turn whose body is empty (tool card alone) shows nothing.
     if (r.raw.trim()) tpsNote(nodes.el, completion, durationMS);
+    syncAssistantVisibility(nodes.el);
   }
 
   function retireStrandedCards(st, outcomes) {
@@ -469,6 +473,7 @@ export function createThreadRenderer({
     earlierButtonNode, prependPage, msgNode, appendUserBubble, appendFileChips,
     stopSpinner, ensureThinking, attachApproval, artifactCard, displayImage, attachRegen,
     syncRoundBody, settleRound, retireStrandedCards, refreshLastAssistant,
+    syncAssistantVisibility,
     scrollThreadToBottom, maybeScroll, renderThread, initialEmptyState,
     openRound, cardHost,
   };

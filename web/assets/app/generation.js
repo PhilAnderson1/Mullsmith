@@ -9,7 +9,7 @@ export function createGenerationController({
   const $ = (selector) => document.querySelector(selector);
   let inflight = null;
   const {
-    openRound, cardHost, stopSpinner, syncRoundBody, ensureThinking, artifactCard, displayImage, attachApproval, retireStrandedCards, settleRound, attachRegen, refreshLastAssistant, maybeScroll
+    openRound, cardHost, stopSpinner, syncRoundBody, syncAssistantVisibility, ensureThinking, artifactCard, displayImage, attachApproval, retireStrandedCards, settleRound, attachRegen, refreshLastAssistant, maybeScroll
   } = view;
   async function startGeneration(url, body, rollback, onAccepted, onUncertain) {
     const controller = new AbortController();
@@ -122,6 +122,7 @@ export function createGenerationController({
             if (!live()) return;
             const c = st.cards[d.call_id];
             if (!c) return;
+            const round = st.byId.get(d.message_id);
             // The SAME projection a reload renders from tool_calls.display
             // (C7): one paintCallOutcome for both views.
             const view = callFromEvent(d);
@@ -138,6 +139,7 @@ export function createGenerationController({
               const figure = displayImage(image);
               if (host && figure) host.append(figure);
             }
+            if (round) syncAssistantVisibility(round.nodes.el);
             maybeScroll();
           },
           onAwaitingApproval(d) {

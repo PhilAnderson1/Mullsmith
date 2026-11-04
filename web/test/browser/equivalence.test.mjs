@@ -319,6 +319,30 @@ test("tool-only and whitespace rounds have no blank bubble while the answer stre
   } finally { await ctx.close(); }
 });
 
+test("useful card mode removes the empty assistant shell live and after reload", { timeout: 120_000 }, async () => {
+  const quietApp = await startApp(llm.url, { repoRoot, binPath, toolCards: "useful" });
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  try {
+    await registerAndOpen(page, quietApp.base, `quiet${++userSeq}@example.io`);
+    llm.queueScripts(
+      toolScript("quiet_write", "fs_write", { path: "work/quiet.txt", content: "hello" }),
+      textScript("Finished."),
+    );
+    await sendChat(page, "write a small file");
+    await waitIdle(page);
+    assert.equal(await page.locator(".from-assistant:visible").count(), 1,
+      "the completed tool-only round left its role/timestamp shell visible");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForConversation(page);
+    assert.equal(await page.locator(".from-assistant:visible").count(), 1,
+      "reload restored the empty role/timestamp shell");
+  } finally {
+    await ctx.close();
+    await quietApp.stop();
+  }
+});
+
 test("denied call: 'denied' card with its verdict, live and after reload", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
   try {

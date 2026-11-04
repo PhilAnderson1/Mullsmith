@@ -132,7 +132,7 @@ function freePort() {
 
 // startApp builds a config against the fake endpoint, boots the binary and
 // waits for the public auth config. `approval` overrides the per-tool policy map.
-export async function startApp(llmUrl, { repoRoot, binPath, approval } = {}) {
+export async function startApp(llmUrl, { repoRoot, binPath, approval, toolCards = "all" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "mullsmith-browser-"));
   const port = await freePort();
   const policy = {
@@ -158,7 +158,7 @@ tools:
   code_run: { enabled: false }
   agent:
     max_tool_rounds: 4
-    tool_cards: all
+    tool_cards: ${toolCards}
     approval: { ${Object.entries(policy).map(([k, v]) => `${k}: ${v}`).join(", ")} }
 `;
   const { writeFileSync } = await import("node:fs");

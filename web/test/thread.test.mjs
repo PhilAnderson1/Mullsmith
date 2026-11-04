@@ -74,7 +74,7 @@ globalThis.location = { origin: "https://app.example" };
 
 const {
   callFromEvent, callFromStored, buildCallCard, paintCallOutcome, toolCardNode,
-  sharedFileFor, displayedImageFor, roundStatusNote,
+  sharedFileFor, displayedImageFor, roundStatusNote, syncAssistantVisibility,
 } = await import("../assets/app/thread.js");
 
 // digest collapses a rendered card to everything a viewer can read:
@@ -133,24 +133,44 @@ test("a denial's stored verdict reads like the live denial card", () => {
 });
 
 test("useful mode hides successful status-only cards live and on reload", () => {
-	const event = {
-		call_id: "quiet-1", tool: "mcp_docs_search", status: "ok",
+  const event = {
+    call_id: "quiet-1", tool: "mcp_docs_search", status: "ok",
     summary: "Called Docs: search", data: null, status_only: true,
-	};
-	const host = new El("div");
-	const live = toolCardNode(event.call_id, event.tool);
-	host.append(live);
+  };
+  const host = new El("div");
+  const live = toolCardNode(event.call_id, event.tool);
+  host.append(live);
   paintCallOutcome(live, callFromEvent(event), "useful");
-	assert.equal(host.children.length, 0);
-	const stored = callFromStored({
-		id: "quiet-1", tool: event.tool, status: "ok",
+  assert.equal(host.children.length, 0);
+  const stored = callFromStored({
+    id: "quiet-1", tool: event.tool, status: "ok",
     display: JSON.stringify({ summary: event.summary, data: null, status_only: true }),
-	});
-	assert.equal(buildCallCard(stored, "{}", "useful"), null);
-	assert.equal(buildCallCard(stored, "{}", "all") !== null, true,
-		"all mode reveals status-only history");
-	assert.equal(buildCallCard({ ...stored, status: "error" }, "{}", "useful") !== null, true,
-		"errors remain visible in useful mode");
+  });
+  assert.equal(buildCallCard(stored, "{}", "useful"), null);
+  assert.equal(buildCallCard(stored, "{}", "all") !== null, true,
+    "all mode reveals status-only history");
+  assert.equal(buildCallCard({ ...stored, status: "error" }, "{}", "useful") !== null, true,
+    "errors remain visible in useful mode");
+});
+
+test("an assistant shell collapses when its final visible tool card disappears", () => {
+  const shell = new El("article");
+  const body = new El("div");
+  body.className = "msg-body";
+  body.hidden = true;
+  const status = new El("p");
+  status.className = "msg-status";
+  status.hidden = true;
+  const card = toolCardNode("quiet-2", "mcp_docs_search");
+  shell.append(body, status, card);
+  syncAssistantVisibility(shell);
+  assert.equal(shell.hidden, false);
+  card.remove();
+  syncAssistantVisibility(shell);
+  assert.equal(shell.hidden, true);
+  status.hidden = false;
+  syncAssistantVisibility(shell);
+  assert.equal(shell.hidden, false, "terminal status keeps the assistant shell visible");
 });
 
 test("an over-budget display drops data and keeps the summary — and still parses", () => {
