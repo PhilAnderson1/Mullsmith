@@ -31,6 +31,12 @@ function makeEl() {
     open: false,
     append(...es) { this.children.push(...es); },
     appendChild(e) { this.children.push(e); return e; },
+    insertBefore(e, before) {
+      const i = before ? this.children.indexOf(before) : -1;
+      if (i < 0) this.children.push(e);
+      else this.children.splice(i, 0, e);
+      return e;
+    },
     replaceChildren(...es) { this.children = es; },
     before() {},
     remove() {
@@ -69,6 +75,7 @@ globalThis.document = {
   querySelector: elFor,
   querySelectorAll: () => [],
   createElement: () => makeEl(),
+  createComment: () => makeEl(),
   createDocumentFragment: () => makeEl(),
   createTextNode: (t) => ({ nodeType: 3, data: t, textContent: t }),
   addEventListener() {}, removeEventListener() {},
