@@ -281,7 +281,7 @@ export function createThreadRenderer({
     link.append(img);
     const unavailable = document.createElement("div");
     unavailable.className = "display-image-unavailable muted";
-    unavailable.textContent = "Image no longer available";
+    unavailable.textContent = "Image unavailable";
     unavailable.hidden = true;
     figure.append(link, unavailable);
     if (image.caption) {
@@ -290,9 +290,8 @@ export function createThreadRenderer({
       figure.append(caption);
     }
 
-    // A busy per-user transfer slot is transient; retry twice before treating
-    // the artifact as expired. Cache-busting also prevents a cached 404/429
-    // from making the replacement attempt meaningless.
+    // Retry transient browser/network failures twice. Cache-busting prevents
+    // a cached failure from making the replacement attempt meaningless.
     let failures = 0;
     img.addEventListener("error", () => {
       if (failures < 2 && img.isConnected) {

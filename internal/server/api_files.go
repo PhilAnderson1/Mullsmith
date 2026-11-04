@@ -418,13 +418,6 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 // document, not merely image pixels.
 func (s *Server) handleFileImage(w http.ResponseWriter, r *http.Request) {
 	user := UserFrom(r.Context())
-	if !s.downloads.tryAcquire(user.ID) {
-		w.Header().Set("Retry-After", "2")
-		writeAPIError(w, r, http.StatusTooManyRequests, "too_many_downloads", "you already have the maximum number of downloads running; try again shortly")
-		return
-	}
-	defer s.downloads.release(user.ID)
-
 	rel, ok := fileRelFrom(w, r)
 	if !ok || !strings.HasPrefix(rel, "artifacts/") {
 		if ok {

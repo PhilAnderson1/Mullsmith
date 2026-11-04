@@ -79,6 +79,7 @@ func downloadFixture(t *testing.T, limit int) (*authTest, *Server, *config.Confi
 	a, s := pwTestApp(t, cfg)
 	signupAs(a, "downloads@example.test", "download-invite")
 	seedFile(t, cfg, meID(a), "uploads/test.txt", []byte("owner bytes"))
+	seedFile(t, cfg, meID(a), "artifacts/test.png", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...))
 	return a, s, cfg
 }
 
@@ -108,7 +109,9 @@ func TestDownloadLimitIsPerUserAcrossSessions(t *testing.T) {
 	for _, tc := range []struct {
 		client *authTest
 		path   string
-	}{{other, "/api/v1/files/download?path=uploads%2Ftest.txt"}, {other, "/api/v1/auth/me"}, {a, "/api/v1/auth/me"}, {other, "/healthz"}} {
+	}{{other, "/api/v1/files/download?path=uploads%2Ftest.txt"},
+		{a, "/api/v1/files/image?path=artifacts%2Ftest.png"},
+		{other, "/api/v1/auth/me"}, {a, "/api/v1/auth/me"}, {other, "/healthz"}} {
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, downloadRequest(tc.client, http.MethodGet, tc.path))
 		if w.Code != 200 {
