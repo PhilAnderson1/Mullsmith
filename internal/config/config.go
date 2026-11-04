@@ -117,6 +117,7 @@ type Config struct {
 	Scratchpad Scratchpad `yaml:"scratchpad"`
 	LLM        LLM        `yaml:"llm"`
 	Tools      Tools      `yaml:"tools"`
+	MCP        MCP        `yaml:"mcp"`
 	Auth       Auth       `yaml:"auth"`
 	Email      Email      `yaml:"email"`
 	RateLimit  RateLimit  `yaml:"rate_limit"` // retired; see Validate
@@ -396,7 +397,23 @@ type Agent struct {
 	MaxToolRounds          int               `yaml:"max_tool_rounds"`
 	MaxToolCallsPerTurn    int               `yaml:"max_tool_calls_per_turn"`
 	MaxNetworkCallsPerTurn int               `yaml:"max_network_tool_calls_per_turn"`
-	Approval               map[string]string `yaml:"approval"` // tool → auto | confirm
+	ToolCards              string            `yaml:"tool_cards"` // useful | all
+	Approval               map[string]string `yaml:"approval"`   // tool → auto | confirm
+}
+
+// MCP configures administrator-managed Model Context Protocol servers.
+// Stage 1 deliberately supports only unauthenticated Streamable HTTP servers;
+// credentials and user-managed servers require a separate security model.
+type MCP struct {
+	Servers []MCPServer `yaml:"servers"`
+}
+
+type MCPServer struct {
+	ID        string `yaml:"id"`
+	Name      string `yaml:"name"`
+	Transport string `yaml:"transport"`
+	URL       string `yaml:"url"`
+	Approval  string `yaml:"approval"`
 }
 
 // validApprovalTool keeps approval policy fail-fast: a misspelled tool name
@@ -882,6 +899,14 @@ func (c *Config) resolvePaths() {
 // --- defaults -------------------------------------------------------------
 
 func (c *Config) setDefaults() {
+	for i := range c.MCP.Servers {
+		if c.MCP.Servers[i].Name == "" {
+			c.MCP.Servers[i].Name = c.MCP.Servers[i].ID
+		}
+		if c.MCP.Servers[i].Approval == "" {
+			c.MCP.Servers[i].Approval = "confirm"
+		}
+	}
 	if c.Server.Listen == "" {
 		c.Server.Listen = "127.0.0.1:8080"
 	}
@@ -1060,6 +1085,9 @@ func (c *Config) setDefaults() {
 	if c.Tools.Agent.MaxToolCallsPerTurn == 0 {
 		c.Tools.Agent.MaxToolCallsPerTurn = 100
 	}
+	if c.Tools.Agent.ToolCards == "" {
+		c.Tools.Agent.ToolCards = "useful"
+	}
 	if c.Tools.Agent.MaxNetworkCallsPerTurn == 0 {
 		c.Tools.Agent.MaxNetworkCallsPerTurn = 10
 	}
@@ -1119,6 +1147,54 @@ func (f *failList) bad(format string, args ...any) {
 // network access — see CheckIO for that).
 func (c *Config) Validate() error {
 	var f failList
+	if len(c.MCP.Servers) > 8 {
+		f.bad("mcp.servers: at most 8 servers may be configured")
+	}
+	mcpIDs := map[string]bool{}
+	for i, server := range c.MCP.Servers {
+		prefix := fmt.Sprintf("mcp.servers[%d]", i)
+		if server.ID == "" || len(server.ID) > 24 {
+			f.bad("%s.id: required and must be at most 24 characters", prefix)
+		} else {
+			valid := true
+			for j, r := range server.ID {
+				if !((r >= 'a' && r <= 'z') || (j > 0 && r >= '0' && r <= '9') || (j > 0 && r == '_')) {
+					valid = false
+				}
+			}
+			if !valid {
+				f.bad("%s.id: use lowercase letters, numbers and underscores, starting with a letter", prefix)
+			}
+			if mcpIDs[server.ID] {
+				f.bad("mcp.servers: duplicate id %q", server.ID)
+			}
+			mcpIDs[server.ID] = true
+		}
+		if server.Transport != "streamable_http" {
+			f.bad("%s.transport: only streamable_http is supported", prefix)
+		}
+		if strings.TrimSpace(server.Name) == "" || len([]rune(server.Name)) > 80 {
+			f.bad("%s.name: required and must be at most 80 characters", prefix)
+		}
+		u, err := url.Parse(server.URL)
+		switch {
+		case server.URL == "":
+			f.bad("%s.url: required", prefix)
+		case err != nil:
+			f.bad("%s.url: %v", prefix, err)
+		case u.Scheme != "http" && u.Scheme != "https":
+			f.bad("%s.url: scheme must be http or https", prefix)
+		case u.Host == "":
+			f.bad("%s.url: host required", prefix)
+		case u.User != nil:
+			f.bad("%s.url: embedded credentials are not supported", prefix)
+		case u.Fragment != "":
+			f.bad("%s.url: fragments are not supported", prefix)
+		}
+		if server.Approval != "auto" && server.Approval != "confirm" {
+			f.bad("%s.approval: must be auto or confirm", prefix)
+		}
+	}
 
 	host, port, err := net.SplitHostPort(c.Server.Listen)
 	if err != nil {
@@ -1358,6 +1434,9 @@ func (c *Config) Validate() error {
 	if c.Tools.Agent.MaxNetworkCallsPerTurn <= 0 {
 		f.bad("tools.agent.max_network_tool_calls_per_turn: must be > 0")
 	}
+	if c.Tools.Agent.ToolCards != "useful" && c.Tools.Agent.ToolCards != "all" {
+		f.bad("tools.agent.tool_cards: must be useful or all")
+	}
 	for tool, mode := range c.Tools.Agent.Approval {
 		if !validApprovalTool(tool) {
 			f.bad("tools.agent.approval.%s: unknown tool", tool)
@@ -1438,6 +1517,12 @@ func (c *Config) Warnings() []string {
 	if c.Server.HSTSMaxAge > 0 && !c.Server.TLS.Enabled {
 		w = append(w, "server.hsts_max_age > 0 but TLS is disabled — HSTS headers will never be sent")
 	}
+	for _, server := range c.MCP.Servers {
+		u, err := url.Parse(server.URL)
+		if err == nil && u.Scheme == "http" && !privateOrLoopbackHost(u.Hostname()) {
+			w = append(w, fmt.Sprintf("mcp server %q uses plain HTTP to a non-private host — tool queries and results can be read or changed in transit", server.ID))
+		}
+	}
 	// I-4: a default-route entry makes every client a "trusted proxy", so
 	// X-Forwarded-For decides which per-IP bucket (login/register floods,
 	// the whole anonymous story) gets throttled — attacker-controlled.
@@ -1462,6 +1547,14 @@ func (c *Config) Warnings() []string {
 		w = append(w, "email.base_url is not https — password-reset and confirmation tokens would cross the network in the clear")
 	}
 	return w
+}
+
+func privateOrLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && (ip.IsLoopback() || ip.IsPrivate())
 }
 
 // --- runtime checks (used at startup and by -check-config) -----------------

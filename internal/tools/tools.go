@@ -6,6 +6,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,6 +31,9 @@ type Result struct {
 	// Data is structured payload for the UI card (e.g. search results);
 	// must be JSON-serializable; never contains secrets.
 	Data any
+	// Failed marks a tool-reported failure whose content should still be sent
+	// to the model (so it can self-correct) and persisted with error status.
+	Failed bool
 	// AttachPath, when non-empty, is a canonical uploads/-relative image
 	// path the chat loop turns into a persisted synthetic user message
 	// carrying the picture (view_image): the one way an image can reach
@@ -48,6 +52,10 @@ type Tool interface {
 	Execute(ctx context.Context, inv Invocation) (Result, error)
 }
 
+// NetworkTool marks tools whose execution makes an outbound network request.
+// The chat loop uses it for the shared per-turn network-call budget.
+type NetworkTool interface{ IsNetworkTool() bool }
+
 // Approval policies (§2.2 tools.agent.approval).
 const (
 	ApprovalAuto    = "auto"
@@ -60,6 +68,7 @@ type Registry struct {
 	order    []Tool
 	byName   map[string]Tool
 	policyFn func(name string) string
+	closers  []func() error
 }
 
 // NewRegistry builds an empty registry. policyFn maps a tool name to
@@ -104,6 +113,32 @@ func (r *Registry) Specs() []llm.ToolSpec {
 func (r *Registry) Get(name string) (Tool, bool) {
 	t, ok := r.byName[name]
 	return t, ok
+}
+
+// IsNetwork reports whether a registered tool consumes the network budget.
+func (r *Registry) IsNetwork(name string) bool {
+	switch name {
+	case "web_search", "web_fetch", "web_download":
+		return true
+	}
+	t, ok := r.Get(name)
+	n, marked := t.(NetworkTool)
+	return ok && marked && n.IsNetworkTool()
+}
+
+// AddCloser registers process-lifetime resources owned by tools.
+func (r *Registry) AddCloser(close func() error) { r.closers = append(r.closers, close) }
+
+// Close releases tool transports. It is safe to call during server shutdown.
+func (r *Registry) Close() error {
+	var errs []error
+	for i := len(r.closers) - 1; i >= 0; i-- {
+		if err := r.closers[i](); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	r.closers = nil
+	return errors.Join(errs...)
 }
 
 // Policy returns auto|confirm for a registered tool; unregistered or

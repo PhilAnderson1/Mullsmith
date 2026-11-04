@@ -43,6 +43,16 @@ func TestClampCardWithinBudgetKeepsEverything(t *testing.T) {
 	}
 }
 
+func TestClampCardPersistsStatusOnlyFlag(t *testing.T) {
+	c := ClampCard("completed", nil, true)
+	if !c.StatusOnly {
+		t.Fatal("status-only card lost its classification")
+	}
+	if got := mustParse(t, c.JSON()); !got.StatusOnly {
+		t.Fatalf("stored card = %+v", got)
+	}
+}
+
 func TestClampCardOverBudgetDropsDataKeepsSummary(t *testing.T) {
 	big := make([]string, 0, 4000)
 	for i := 0; i < 4000; i++ {

@@ -124,6 +124,7 @@ const renderer = createThreadRenderer({
   onEarlier: (cursor) => navigation.earlierButton(cursor),
   onApproval: (...args) => generation.resolveApproval(...args),
   updateCtxMeter, recordActivity: () => navigation.recordActivity(), toast,
+  getMeta: () => state.meta,
 });
 const navigation = createNavigationController({
   view: renderer, getGeneration: () => generation.current,

@@ -125,7 +125,7 @@ export function createGenerationController({
             // The SAME projection a reload renders from tool_calls.display
             // (C7): one paintCallOutcome for both views.
             const view = callFromEvent(d);
-            paintCallOutcome(c.card, view);
+            paintCallOutcome(c.card, view, getMeta()?.tool_cards);
             // files_share ⇒ a visible download card next to the card (§10.2).
             const file = sharedFileFor(view);
             if (file) {

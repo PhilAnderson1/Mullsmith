@@ -139,6 +139,7 @@ export function callFromEvent(d) {
     summary: d.summary || "",
     data: d.data ?? null,
     truncated: Boolean(d.truncated),
+    statusOnly: d.status_only === undefined ? d.data == null : Boolean(d.status_only),
   };
 }
 
@@ -151,24 +152,30 @@ export function callFromStored(c) {
     summary: display.summary || "",
     data: display.data ?? null,
     truncated: Boolean(display.truncated),
+    statusOnly: display.status_only === undefined ? display.data == null : Boolean(display.status_only),
   };
 }
 
 // paintCallOutcome renders a settled card — live tool_end and stored reload
 // arrive here through the same four lines, which is the whole point.
-export function paintCallOutcome(card, view) {
+export function paintCallOutcome(card, view, cardMode = "all") {
   card.classList.remove("st-running", "st-awaiting");
   card.classList.add("st-" + (view.status || "ok"));
   card.querySelector(".tool-state").textContent = toolStateLabel(view.status);
   const row = card.querySelector(".approval-row"); // answered: buttons expire
   if (row) row.remove();
+  if (cardMode === "useful" && view.statusOnly && view.status === "ok") {
+    card.remove();
+    return;
+  }
   const summary = [view.summary, view.truncated ? "Some tool details were omitted." : ""].filter(Boolean).join(" · ");
   if (summary) setToolSummary(card, summary);
   if (view.data) renderToolResults(card.querySelector(".tool-results"), view.data);
 }
 
 // buildCallCard is the reload path's whole card: node, args, outcome.
-export function buildCallCard(view, argsRaw) {
+export function buildCallCard(view, argsRaw, cardMode = "all") {
+  if (cardMode === "useful" && view.statusOnly && view.status === "ok") return null;
   const card = toolCardNode(view.id, view.tool);
   card.classList.remove("st-running");
   if (argsRaw) {
@@ -176,7 +183,7 @@ export function buildCallCard(view, argsRaw) {
     argsEl.textContent = formatToolArgs(argsRaw);
     argsEl.hidden = false;
   }
-  paintCallOutcome(card, view);
+  paintCallOutcome(card, view, cardMode);
   return card;
 }
 

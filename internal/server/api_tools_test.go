@@ -28,6 +28,7 @@ type fakeTool struct {
 	content  string
 	summary  string
 	data     any // card payload override; nil keeps the sample below
+	noData   bool
 	execErr  error
 	mu       sync.Mutex
 	calls    int
@@ -48,7 +49,7 @@ func (f *fakeTool) Execute(ctx context.Context, inv tools.Invocation) (tools.Res
 		return tools.Result{}, f.execErr
 	}
 	data := f.data
-	if data == nil {
+	if data == nil && !f.noData {
 		data = []string{"https://example.com/a"}
 	}
 	return tools.Result{Content: f.content, Summary: f.summary, Data: data}, nil
@@ -304,6 +305,41 @@ func TestChatToolLoopEndToEnd(t *testing.T) {
 	}
 	if hist[3].Content != "Kyoto is lovely." {
 		t.Errorf("final answer = %q", hist[3].Content)
+	}
+}
+
+func TestSuccessfulStatusOnlyCardVisibility(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+	}{{"useful"}, {"all"}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			quiet := &fakeTool{name: "fs_read", content: `{"ok":true}`, summary: "completed", noData: true}
+			reg := registryFor(map[string]string{"fs_read": "auto"}, quiet)
+			cfg := toolChatCfg(t, 2, map[string]string{"fs_read": "auto"})
+			cfg.Tools.Agent.ToolCards = tc.mode
+			a, _ := newToolServer(t, cfg, reg, [][]string{
+				{toolCallChunk(0, "quiet", "fs_read", `{}`), finishChunk("tool_calls")},
+				{answerChunk("done"), finishChunk("stop")},
+			})
+			conv := createConv(t, a, map[string]any{"title": "Quiet card"})
+			resp := sendChat(t, a, conv.ID, "run it")
+			defer resp.Body.Close()
+			events := drainSSE(t, newSSEReader(t, resp))
+			if got, _ := events.data["tool_end"]["status_only"].(bool); !got {
+				t.Fatalf("live status_only = %v: %+v", got, events.data["tool_end"])
+			}
+			history, err := a.db.ContextHistory(context.Background(), conv.ID, "")
+			if err != nil || len(history) < 2 || len(history[1].Calls) != 1 {
+				t.Fatalf("history = %+v, %v", history, err)
+			}
+			var card tools.Card
+			if err := json.Unmarshal([]byte(history[1].Calls[0].Display), &card); err != nil {
+				t.Fatal(err)
+			}
+			if !card.StatusOnly {
+				t.Fatalf("stored card was not classified status-only: %+v", card)
+			}
+		})
 	}
 }
 

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"mullsmith/internal/agent"
@@ -36,6 +37,9 @@ func (s *Service) runModelRound(ctx context.Context, conn sink, model string,
 // first; this is the outer backstop. Web tools similarly get their configured
 // client timeout plus a five-second margin, rather than the generic 30 seconds.
 func (s *Service) execTimeout(tool string) time.Duration {
+	if strings.HasPrefix(tool, "mcp_") {
+		return 90 * time.Second
+	}
 	switch tool {
 	case "web_fetch":
 		return s.cfg.Tools.WebFetch.Timeout.D() + 5*time.Second
@@ -190,9 +194,19 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		emitEnd("error", c)
 		return content, "", persistErr
 	}
+	if tres.Failed {
+		content := tools.TruncateMiddle(tres.Content, ToolResultBudgetRunes)
+		c := card(tres.Summary, tres.Data)
+		if ferr := s.finalizeToolCall(tc.ID, resultMsg.ID, "error", content, c.JSON(),
+			dur, callID); ferr != nil {
+			persistErr = ferr
+		}
+		emitEnd("error", c)
+		return content, tres.AttachPath, persistErr
+	}
 
 	content := tools.TruncateMiddle(tres.Content, ToolResultBudgetRunes)
-	c := card(tres.Summary, tres.Data)
+	c := card(tres.Summary, tres.Data, tres.Data == nil)
 	if ferr := s.finalizeToolCall(tc.ID, resultMsg.ID, "ok", content, c.JSON(),
 		dur, callID); ferr != nil {
 		persistErr = ferr

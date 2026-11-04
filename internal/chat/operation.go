@@ -10,15 +10,6 @@ import (
 	"mullsmith/internal/tools"
 )
 
-func isNetworkTool(name string) bool {
-	switch name {
-	case "web_search", "web_fetch", "web_download":
-		return true
-	default:
-		return false
-	}
-}
-
 func (op *Operation) Run(emit Emit) {
 	defer op.Close()
 	s := op.service
@@ -196,7 +187,7 @@ func (op *Operation) Run(emit Emit) {
 			// denied and already-over-limit calls, so no cheaper call class
 			// becomes an accounting bypass.
 			toolCallCount++
-			networkCall := isNetworkTool(call.Function.Name)
+			networkCall := s.Tools.IsNetwork(call.Function.Name)
 			if networkCall {
 				networkCallCount++
 			}

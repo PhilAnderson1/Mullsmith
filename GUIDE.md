@@ -427,11 +427,45 @@ explicitly allow its network access.
 Enable search under `tools.web_search` with `enabled: true`, `provider: "brave"`
 and your API key. No search key is required for direct web fetch/download.
 
+### MCP tool servers
+
+Mullsmith can expose tools from administrator-configured, unauthenticated MCP
+servers that use Streamable HTTP. MCP support is optional and no server is
+enabled by default. Add a server to the top-level `mcp` section:
+
+```yaml
+mcp:
+  servers:
+    - id: "deepwiki"
+      name: "DeepWiki"
+      transport: "streamable_http"
+      url: "https://mcp.deepwiki.com/mcp"
+      approval: "confirm"
+```
+
+Restart Mullsmith after changing the list. Its advertised tools appear to every
+Mullsmith account as names beginning `mcp_<server-id>_`. `approval` may be
+`confirm` or `auto`; confirmation is the default. Calls share the ordinary
+per-turn tool-call and network-call limits, and are recorded in conversation
+history like built-in tools.
+
+The supplied configuration contains commented examples for DeepWiki, Context7
+and Microsoft Learn. Add only servers you intend to use: their tool descriptions
+are sent with model requests, and tool arguments and results pass through the
+external server. An administrator-configured HTTP URL may deliberately point to
+a local service; MCP connections therefore do not use the public-address guard
+applied to `web_fetch` and `web_download`.
+
 ### Approvals and execution limits
 
 `tools.agent.approval` accepts `auto` (run immediately) or `confirm` (ask the user).
 An approval may be remembered for the current conversation. Use an optional tool's
 `enabled` setting to disable it; `confirm` is not a disable switch.
+
+`tools.agent.tool_cards` accepts `useful` (the default) or `all`. `useful` hides
+successful status-only cards while retaining approvals, failures, search results,
+downloads, images and other structured results. Calls remain in conversation
+history and are still supplied to the model; this setting changes presentation only.
 
 Keep deletion and code execution on `confirm` unless you deliberately want them
 to run unattended. Read the requested action: web pages and uploaded files can

@@ -41,6 +41,7 @@ import (
 	"mullsmith/internal/scratch"
 	"mullsmith/internal/server"
 	"mullsmith/internal/store"
+	"mullsmith/internal/tools"
 )
 
 // Set via -ldflags at build time.
@@ -722,6 +723,9 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 	}
 	fmt.Printf("config: %s\n", cfg.Path)
 	for _, c := range cfg.CheckIO() {
+		report(c)
+	}
+	for _, c := range tools.CheckMCPServers(context.Background(), cfg, logger) {
 		report(c)
 	}
 

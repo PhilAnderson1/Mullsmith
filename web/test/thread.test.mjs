@@ -47,7 +47,11 @@ class El {
     el._parent = p;
   }
   remove() {
-    /* noop */
+    const p = this._parent;
+    if (!p) return;
+    const i = p.children.indexOf(this);
+    if (i >= 0) p.children.splice(i, 1);
+    this._parent = null;
   }
   querySelector(sel) {
     const cls = sel.startsWith(".") ? sel.slice(1) : null;
@@ -126,6 +130,27 @@ test("a denial's stored verdict reads like the live denial card", () => {
   );
   assert.deepEqual(digest(stored), digest(live));
   assert.equal(digest(stored).state, "denied");
+});
+
+test("useful mode hides successful status-only cards live and on reload", () => {
+	const event = {
+		call_id: "quiet-1", tool: "mcp_docs_search", status: "ok",
+    summary: "Called Docs: search", data: null, status_only: true,
+	};
+	const host = new El("div");
+	const live = toolCardNode(event.call_id, event.tool);
+	host.append(live);
+  paintCallOutcome(live, callFromEvent(event), "useful");
+	assert.equal(host.children.length, 0);
+	const stored = callFromStored({
+		id: "quiet-1", tool: event.tool, status: "ok",
+    display: JSON.stringify({ summary: event.summary, data: null, status_only: true }),
+	});
+	assert.equal(buildCallCard(stored, "{}", "useful"), null);
+	assert.equal(buildCallCard(stored, "{}", "all") !== null, true,
+		"all mode reveals status-only history");
+	assert.equal(buildCallCard({ ...stored, status: "error" }, "{}", "useful") !== null, true,
+		"errors remain visible in useful mode");
 });
 
 test("an over-budget display drops data and keeps the summary — and still parses", () => {

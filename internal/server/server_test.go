@@ -178,10 +178,13 @@ func TestClientConfigIsAvailableAfterAuthentication(t *testing.T) {
 		t.Fatalf("client config = %d, want 200", resp.StatusCode)
 	}
 	meta := decodeBody(t, resp)
-	for _, key := range []string{"models", "default_model", "show_reasoning", "thinking", "files"} {
+	for _, key := range []string{"models", "default_model", "show_reasoning", "tool_cards", "thinking", "files"} {
 		if _, ok := meta[key]; !ok {
 			t.Errorf("client config is missing %q", key)
 		}
+	}
+	if meta["tool_cards"] != "useful" {
+		t.Errorf("client tool_cards = %v, want useful", meta["tool_cards"])
 	}
 	for _, key := range []string{"app", "version", "tools", "limits", "registration", "remember_login", "email_features"} {
 		if _, ok := meta[key]; ok {

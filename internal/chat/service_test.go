@@ -49,7 +49,7 @@ func TestToolTimeoutsHonorConfiguration(t *testing.T) {
 	s, _, _ := chatFixture(t)
 	s.cfg.Tools.WebFetch.Timeout = config.Duration(90 * time.Second)
 	s.cfg.Tools.WebDownload.Timeout = config.Duration(2 * time.Minute)
-	for name, want := range map[string]time.Duration{"web_fetch": 95 * time.Second, "web_download": 125 * time.Second, "fs_read": 30 * time.Second} {
+	for name, want := range map[string]time.Duration{"web_fetch": 95 * time.Second, "web_download": 125 * time.Second, "mcp_docs_search": 90 * time.Second, "fs_read": 30 * time.Second} {
 		if got := s.execTimeout(name); got != want {
 			t.Errorf("%s timeout %v, want %v", name, got, want)
 		}

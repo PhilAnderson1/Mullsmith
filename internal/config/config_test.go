@@ -97,6 +97,9 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.MaxNetworkCallsPerTurn != 10 {
 		t.Errorf("max_network_tool_calls_per_turn default = %d, want 10", cfg.Tools.Agent.MaxNetworkCallsPerTurn)
 	}
+	if cfg.Tools.Agent.ToolCards != "useful" {
+		t.Errorf("tool_cards default = %q, want useful", cfg.Tools.Agent.ToolCards)
+	}
 	if cfg.Tools.WebDownload.Enabled || cfg.Tools.WebDownload.MaxBytes != 1<<30 || cfg.Tools.WebDownload.Timeout != Duration(time.Minute) {
 		t.Errorf("web_download defaults = %+v", cfg.Tools.WebDownload)
 	}
@@ -123,6 +126,67 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	}
 	if len(cfg.LLM.Models) != 1 || cfg.LLM.Models[0].ID != "test-model" || !cfg.LLM.Models[0].Default {
 		t.Errorf("models default = %+v, want test-model marked default by the first-entry fallback", cfg.LLM.Models)
+	}
+}
+
+func TestMCPConfigDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeCfg(t, minimalYAML+`mcp:
+  servers:
+    - id: "docs"
+      transport: "streamable_http"
+      url: "https://example.org/mcp"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.MCP.Servers[0]; got.Name != "docs" || got.Approval != "confirm" {
+		t.Fatalf("MCP defaults = %+v", got)
+	}
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"duplicate id", `
+mcp:
+  servers:
+    - {id: "docs", transport: "streamable_http", url: "https://one.example/mcp"}
+    - {id: "docs", transport: "streamable_http", url: "https://two.example/mcp"}
+`, "duplicate id"},
+		{"bad id", `
+mcp:
+  servers:
+    - {id: "Bad ID", transport: "streamable_http", url: "https://example.org/mcp"}
+`, "use lowercase"},
+		{"credentials", `
+mcp:
+  servers:
+    - {id: "docs", transport: "streamable_http", url: "https://user:pass@example.org/mcp"}
+`, "embedded credentials"},
+		{"approval", `
+mcp:
+  servers:
+    - {id: "docs", transport: "streamable_http", url: "https://example.org/mcp", approval: "sometimes"}
+`, "must be auto or confirm"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeCfg(t, minimalYAML+tt.body))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestToolCardModeValidation(t *testing.T) {
+	_, err := Load(writeCfg(t, minimalYAML+`tools:
+  agent:
+    tool_cards: "sometimes"
+`))
+	if err == nil || !strings.Contains(err.Error(), "tools.agent.tool_cards: must be useful or all") {
+		t.Fatalf("Load error = %v", err)
 	}
 }
 

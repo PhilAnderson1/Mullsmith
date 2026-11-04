@@ -4,7 +4,7 @@ import { renderMarkdown } from "/assets/app/markdown.js";
 import { humanSize, fileApiUrl } from "/assets/app/file-presenter.js";
 import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, displayedImageFor, roundStatusNote, formatToolArgs } from "/assets/app/thread.js";
 export function createThreadRenderer({
-  onRegenerate, onEarlier, onApproval, updateCtxMeter, recordActivity, toast
+  onRegenerate, onEarlier, onApproval, updateCtxMeter, recordActivity, toast, getMeta = () => ({})
 }) {
   const $ = (selector) => document.querySelector(selector);
   const clone = (id) => $("#" + id).content.firstElementChild.cloneNode(true);
@@ -46,7 +46,8 @@ export function createThreadRenderer({
       const host = toolCardsHost(el);
       for (const c of m.tool_calls) {
         const view = callFromStored(c);
-        host.append(buildCallCard(view, c.arguments));
+        const card = buildCallCard(view, c.arguments, getMeta()?.tool_cards);
+        if (card) host.append(card);
         const file = sharedFileFor(view); // files_share ⇒ visible download card
         if (file) host.append(artifactCard(file));
         const image = displayedImageFor(view); // display_image ⇒ inline picture

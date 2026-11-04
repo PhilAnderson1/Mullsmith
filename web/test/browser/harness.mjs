@@ -158,6 +158,7 @@ tools:
   code_run: { enabled: false }
   agent:
     max_tool_rounds: 4
+    tool_cards: all
     approval: { ${Object.entries(policy).map(([k, v]) => `${k}: ${v}`).join(", ")} }
 `;
   const { writeFileSync } = await import("node:fs");

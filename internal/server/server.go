@@ -35,6 +35,7 @@ type Server struct {
 	signupBudget *auth.SignupBudget
 	locks        *auth.LoginLocks
 	chat         *chat.Service
+	tools        *tools.Registry
 	httpSrv      *http.Server
 	// hashGate bounds concurrent Argon2 work globally (audit finding 4).
 	hashGate *auth.HashGate
@@ -121,7 +122,8 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	if cfg.Auth.Registration == "open" {
 		s.signupBudget = auth.NewSignupBudget(cfg.Auth.SignupsPerHour())
 	}
-	s.chat = chat.New(cfg, db, logger, tools.BuildFor(cfg, logger, nil, code, s.files))
+	s.tools = tools.BuildFor(cfg, logger, nil, code, s.files)
+	s.chat = chat.New(cfg, db, logger, s.tools)
 	s.chat.Window = s.overflowLine
 
 	// Auto window (§2.2 llm.max_context_tokens: -1): the seam is set here;
@@ -215,7 +217,13 @@ func (s *Server) ServeTLS(ln net.Listener, certFile, keyFile string) error {
 	return s.httpSrv.ServeTLS(limitConnections(ln, s.cfg.Server.MaxConnections), certFile, keyFile)
 }
 
-func (s *Server) Shutdown(ctx context.Context) error { return s.httpSrv.Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) error {
+	err := s.httpSrv.Shutdown(ctx)
+	if closeErr := s.tools.Close(); closeErr != nil {
+		s.logger.Warn("tool transport shutdown failed", "error", closeErr)
+	}
+	return err
+}
 
 // AbortGenerations closes admission and cancels all live generations (SIGTERM path in main):
 // SSE handlers observe ctx.Done, persist partial answers like an abort and
@@ -256,6 +264,7 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 		// no explicit choice actually runs on.
 		"default_model":  s.cfg.LLM.DefaultModelID(),
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
+		"tool_cards":     s.cfg.Tools.Agent.ToolCards,
 		// Thinking selector: the choice list per picker model (a model's
 		// dropdown describes its model), or null when the feature is off —
 		// the SPA hides the selector on null and per-model rows on empty.

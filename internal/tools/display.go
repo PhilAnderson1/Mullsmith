@@ -19,20 +19,22 @@ const DisplayBudget = 8 * 1024
 // tool_calls.display, which is what makes the two views agree by
 // construction rather than by two implementations happening to match.
 type Card struct {
-	Summary   string `json:"summary"`
-	Data      any    `json:"data"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Summary    string `json:"summary"`
+	Data       any    `json:"data"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	StatusOnly bool   `json:"status_only,omitempty"`
 }
 
 // ClampCard bounds a card's payload: over budget the structured data is
 // dropped and flagged, keeping the summary; an absurdly long summary is then
 // rune-elided to fit. Anything that cannot be marshalled degrades to the
 // summary alone — a card with words beats a card with broken JSON.
-func ClampCard(summary string, data any) Card {
-	if b, err := json.Marshal(Card{Summary: summary, Data: data}); err == nil && len(b) <= DisplayBudget {
-		return Card{Summary: summary, Data: data}
+func ClampCard(summary string, data any, statusOnly ...bool) Card {
+	only := len(statusOnly) > 0 && statusOnly[0]
+	if b, err := json.Marshal(Card{Summary: summary, Data: data, StatusOnly: only}); err == nil && len(b) <= DisplayBudget {
+		return Card{Summary: summary, Data: data, StatusOnly: only}
 	}
-	c := Card{Summary: summary, Truncated: true}
+	c := Card{Summary: summary, Truncated: true, StatusOnly: only}
 	if b, err := json.Marshal(c); err == nil && len(b) <= DisplayBudget {
 		return c
 	}

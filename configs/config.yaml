@@ -206,6 +206,9 @@ tools:
     # Maximum network calls per turn.
     max_network_tool_calls_per_turn: 10
 
+    # Tool cards to display: "useful" hides successful status-only cards; "all" shows everything.
+    tool_cards: "useful"
+
     # Tool approval policy. "auto" runs the tool immediately; "confirm" asks
     # the user first. An approval can be remembered for the current conversation.
     approval:
@@ -220,6 +223,32 @@ tools:
       display_image: "auto"
       view_image: "auto"
       code_run: "confirm"
+
+
+# Administrator-managed Model Context Protocol servers. Remote tools use the
+# existing agent limits and default to asking for confirmation.
+mcp:
+  servers: []
+
+  # Unauthenticated Streamable HTTP examples (remove servers: [] before use):
+  # servers:
+  #   - id: "deepwiki"
+  #     name: "DeepWiki"
+  #     transport: "streamable_http"
+  #     url: "https://mcp.deepwiki.com/mcp"
+  #     approval: "confirm"
+  #
+  #   - id: "context7"
+  #     name: "Context7"
+  #     transport: "streamable_http"
+  #     url: "https://mcp.context7.com/mcp"
+  #     approval: "confirm"
+  #
+  #   - id: "microsoft_learn"
+  #     name: "Microsoft Learn"
+  #     transport: "streamable_http"
+  #     url: "https://learn.microsoft.com/api/mcp"
+  #     approval: "confirm"
 
 
 # Per-user files and code sandbox.

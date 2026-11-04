@@ -24,7 +24,11 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 	if files == nil {
 		files = managed.New(int64(cfg.Scratchpad.UserQuota), cfg.Scratchpad.MaxEntries)
 	}
+	mcpPolicies := map[string]string{}
 	reg := NewRegistry(func(name string) string {
+		if p, ok := mcpPolicies[name]; ok {
+			return p
+		}
 		if p, ok := cfg.Tools.Agent.Approval[name]; ok {
 			return p
 		}
@@ -90,6 +94,7 @@ func BuildFor(cfg *config.Config, logger *slog.Logger, searchClient *http.Client
 			AllowNetwork: cfg.Tools.CodeRun.AllowNetwork,
 		})
 	}
+	registerMCP(cfg, logger, reg, mcpPolicies)
 
 	if reg.Enabled() {
 		logger.Info("tools enabled", "names", reg.Names())
