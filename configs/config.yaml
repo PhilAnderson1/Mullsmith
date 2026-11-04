@@ -19,7 +19,7 @@ server:
   concurrent_requests: 32
 
   # Maximum non-upload request body.
-  max_body_bytes: 1MiB
+  max_body_bytes: "1MiB"
 
   tls:
     # Serve using SSL (HTTPS)
@@ -38,13 +38,13 @@ server:
   hsts_max_age: 31536000
 
   # Maximum request-read time.
-  read_timeout: 30s
+  read_timeout: "30s"
 
   # Maximum stalled response-write time.
-  write_timeout: 60s
+  write_timeout: "60s"
 
   # Graceful-shutdown deadline.
-  shutdown_grace: 15s
+  shutdown_grace: "15s"
 
 
 # Model endpoint and generation behavior.
@@ -94,10 +94,10 @@ llm:
   show_reasoning: false
 
   # Maximum wait for response headers.
-  upstream_header_timeout: 90s
+  upstream_header_timeout: "90s"
 
   # Maximum silence during streaming.
-  upstream_stall_timeout: 120s
+  upstream_stall_timeout: "120s"
 
   # Endpoint request-template catalogue. If your endpoint type is not listed
   # above, you may be able to define it in this file.
@@ -121,13 +121,13 @@ auth:
   remember_login: true
 
   # Standard session lifetime.
-  session_ttl: 24h
+  session_ttl: "24h"
 
   # Persistent session sliding lifetime.
-  remember_ttl: 720h
+  remember_ttl: "720h"
 
   # Persistent session maximum lifetime.
-  remember_absolute_ttl: 2160h
+  remember_absolute_ttl: "2160h"
 
   # Failed attempts before temporary lockout.
   max_failed_logins: 10
@@ -158,20 +158,20 @@ tools:
     enabled: true
 
     # Maximum fetched response size.
-    max_bytes: 512KiB
+    max_bytes: "512KiB"
 
     # Fetch request deadline.
-    timeout: 15s
+    timeout: "15s"
 
   web_download:
     # Offer web_download to models.
     enabled: true
 
     # Maximum downloaded file size.
-    max_bytes: 1GiB
+    max_bytes: "1GiB"
 
     # Download request deadline.
-    timeout: 60s
+    timeout: "60s"
 
   code_run:
     # Offer code_run to models.
@@ -185,13 +185,13 @@ tools:
       - { id: "sh", binary: "/bin/sh" }
 
     # Maximum runtime per execution.
-    timeout: 30s
+    timeout: "30s"
 
     # Maximum stdout and stderr size each.
-    max_output: 256KiB
+    max_output: "256KiB"
 
     # Maximum process-tree memory.
-    max_memory: 1GiB
+    max_memory: "1GiB"
 
     # Allow network access from code.
     allow_network: false
@@ -227,19 +227,19 @@ scratchpad:
   root: "/var/lib/mullsmith/scratchpad"
 
   # Maximum uploaded file size.
-  max_file_size: 25MiB
+  max_file_size: "25MiB"
 
   # Maximum stored bytes per user.
-  user_quota: 1GiB
+  user_quota: "1GiB"
 
   # Maximum filesystem entries per user.
   max_entries: 1000
 
   # Shared-artifact retention time.
-  artifact_ttl: 168h
+  artifact_ttl: "168h"
 
   # Temporary-work retention time.
-  work_ttl: 24h
+  work_ttl: "24h"
 
   # Upload extensions to reject.
   block_extensions: []
@@ -283,7 +283,7 @@ app_limits:
   max_attachments: 8
 
   # Maximum bytes per image shown to a model.
-  vision_max_image_bytes: 4MiB
+  vision_max_image_bytes: "4MiB"
 
   # Maximum images included in one conversation's model context.
   vision_max_images_per_conversation: 8

@@ -73,8 +73,9 @@ Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edi
 
 ## Models and thinking controls
 
-Mullsmith uses one configured OpenAI-compatible Chat Completions endpoint, which
-can offer multiple models. Set IDs exactly as your endpoint advertises them.
+Mullsmith works with a single configured OpenAI-compatible Chat Completions
+endpoint, which can offer multiple models. Set model ID names exactly as your
+endpoint advertises them.
 These example URLs must match the actual IP addresses and ports you chose for your model servers.
 
 | Server | Example `llm.endpoint` | `llm.endpoint_type` |
