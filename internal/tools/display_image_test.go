@@ -20,6 +20,9 @@ func TestDisplayImageSnapshotsRasterForInlinePresentation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("display_image: %v", err)
 	}
+	if !res.StatusOnly {
+		t.Fatal("display_image should hide its redundant generic success card")
+	}
 	data, _ := res.Data.(map[string]any)
 	image, _ := data["image"].(map[string]any)
 	if image["path"] != "artifacts/chart.png" ||

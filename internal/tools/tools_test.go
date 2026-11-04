@@ -99,6 +99,14 @@ func TestBraveSearchHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !res.StatusOnly {
+		t.Fatal("web_search should hide its generic success card in useful mode")
+	}
+	reg := NewRegistry(nil)
+	reg.Register(b)
+	if !reg.StatusOnly("web_search") {
+		t.Fatal("web_search tool start should be classified as status-only")
+	}
 	if gotToken != "secret-key-9" {
 		t.Errorf("X-Subscription-Token = %q", gotToken)
 	}

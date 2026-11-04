@@ -136,7 +136,7 @@ export async function startApp(llmUrl, { repoRoot, binPath, approval, toolCards 
   const dir = mkdtempSync(join(tmpdir(), "mullsmith-browser-"));
   const port = await freePort();
   const policy = {
-    fs_write: "auto", fs_list: "auto", fs_read: "auto", files_share: "auto",
+    fs_write: "auto", fs_list: "auto", fs_read: "auto", files_share: "auto", display_image: "auto",
     web_search: "auto", web_fetch: "auto", code_run: "confirm", ...(approval || {}),
   };
   const yaml = `

@@ -23,8 +23,7 @@ type DisplayImage struct {
 	MaxImageBytes int64
 }
 
-func (DisplayImage) Name() string      { return DisplayImageName }
-func (DisplayImage) HasRichCard() bool { return true }
+func (DisplayImage) Name() string { return DisplayImageName }
 
 func (DisplayImage) Description() string {
 	return "Display a local image inline in the chat for the user. Use this when the " +
@@ -104,8 +103,9 @@ func (d DisplayImage) Execute(ctx context.Context, inv Invocation) (Result, erro
 		"caption":   caption,
 	})
 	return Result{
-		Content: string(body),
-		Summary: fmt.Sprintf("Displayed %s in the chat", quoteShort(file.Name)),
+		Content:    string(body),
+		Summary:    fmt.Sprintf("Displayed %s in the chat", quoteShort(file.Name)),
+		StatusOnly: true,
 		Data: map[string]any{
 			"image": map[string]any{
 				"path": file.Path, "name": file.Name, "bytes": file.Bytes,

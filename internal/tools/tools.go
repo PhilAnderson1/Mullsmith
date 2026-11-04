@@ -34,6 +34,9 @@ type Result struct {
 	// Failed marks a tool-reported failure whose content should still be sent
 	// to the model (so it can self-correct) and persisted with error status.
 	Failed bool
+	// StatusOnly hides the generic success card in useful-card mode. Structured
+	// Data may still drive a dedicated presentation such as an inline image.
+	StatusOnly bool
 	// AttachPath, when non-empty, is a canonical uploads/-relative image
 	// path the chat loop turns into a persisted synthetic user message
 	// carrying the picture (view_image): the one way an image can reach

@@ -38,8 +38,7 @@ func NewBraveSearch(apiKey string, maxResults int, client *http.Client) *BraveSe
 	return &BraveSearch{apiKey: apiKey, maxResults: maxResults, http: client, endpoint: braveEndpoint}
 }
 
-func (b *BraveSearch) Name() string      { return "web_search" }
-func (b *BraveSearch) HasRichCard() bool { return true }
+func (b *BraveSearch) Name() string { return "web_search" }
 
 func (b *BraveSearch) Description() string {
 	return "Search the web for current information. Returns a JSON list of results " +
@@ -171,8 +170,9 @@ func (b *BraveSearch) Execute(ctx context.Context, inv Invocation) (Result, erro
 		links[i] = map[string]string{"title": result.Title, "url": result.URL}
 	}
 	return Result{
-		Content: string(content),
-		Summary: fmt.Sprintf("Searched the web for %q — %d result(s)", Elide(q, 80), len(results)),
-		Data:    links,
+		Content:    string(content),
+		Summary:    fmt.Sprintf("Searched the web for %q — %d result(s)", Elide(q, 80), len(results)),
+		Data:       links,
+		StatusOnly: true,
 	}, nil
 }

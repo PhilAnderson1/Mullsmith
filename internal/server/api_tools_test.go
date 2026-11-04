@@ -24,15 +24,16 @@ import (
 // fakeTool is a deterministic registered tool: fixed result (or error),
 // recording how often and with what arguments it ran.
 type fakeTool struct {
-	name     string
-	content  string
-	summary  string
-	data     any // card payload override; nil keeps the sample below
-	noData   bool
-	execErr  error
-	mu       sync.Mutex
-	calls    int
-	lastArgs string
+	name       string
+	content    string
+	summary    string
+	data       any // card payload override; nil keeps the sample below
+	noData     bool
+	statusOnly bool
+	execErr    error
+	mu         sync.Mutex
+	calls      int
+	lastArgs   string
 }
 
 func (f *fakeTool) Name() string        { return f.name }
@@ -52,7 +53,7 @@ func (f *fakeTool) Execute(ctx context.Context, inv tools.Invocation) (tools.Res
 	if data == nil && !f.noData {
 		data = []string{"https://example.com/a"}
 	}
-	return tools.Result{Content: f.content, Summary: f.summary, Data: data}, nil
+	return tools.Result{Content: f.content, Summary: f.summary, Data: data, StatusOnly: f.statusOnly}, nil
 }
 
 func (f *fakeTool) callCount() int {
@@ -313,7 +314,7 @@ func TestSuccessfulStatusOnlyCardVisibility(t *testing.T) {
 		mode string
 	}{{"useful"}, {"all"}} {
 		t.Run(tc.mode, func(t *testing.T) {
-			quiet := &fakeTool{name: "fs_read", content: `{"ok":true}`, summary: "completed", noData: true}
+			quiet := &fakeTool{name: "fs_read", content: `{"ok":true}`, summary: "completed", statusOnly: true}
 			reg := registryFor(map[string]string{"fs_read": "auto"}, quiet)
 			cfg := toolChatCfg(t, 2, map[string]string{"fs_read": "auto"})
 			cfg.Tools.Agent.ToolCards = tc.mode

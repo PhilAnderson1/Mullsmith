@@ -416,6 +416,44 @@ test("useful mode reveals a status-only tool when it requests approval", { timeo
   }
 });
 
+test("useful mode shows inline images without redundant display_image cards", { timeout: 120_000 }, async () => {
+  const quietApp = await startApp(llm.url, { repoRoot, binPath, toolCards: "useful" });
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const presentation = () => Array.from(document.querySelectorAll("#thread .from-assistant .tool-cards > *")).map((el) =>
+    el.classList.contains("tool-card")
+      ? `card:${el.querySelector(".tool-name")?.textContent || ""}`
+      : `image:${el.querySelector("figcaption")?.textContent || ""}`);
+  try {
+    await registerAndOpen(page, quietApp.base, `quietimages${++userSeq}@example.io`);
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=", "base64");
+    await page.locator("#attach-input").setInputFiles([
+      { name: "first.png", mimeType: "image/png", buffer: png },
+      { name: "second.png", mimeType: "image/png", buffer: png },
+    ]);
+    await page.waitForFunction(() => document.querySelectorAll(".attach-chip:not(.uploading)").length === 2);
+    llm.queueScripts(
+      [
+        { delta: { tool_calls: [
+          { index: 0, id: "display_first", type: "function", function: { name: "display_image", arguments: JSON.stringify({ path: "uploads/first.png", caption: "First" }) } },
+          { index: 1, id: "display_second", type: "function", function: { name: "display_image", arguments: JSON.stringify({ path: "uploads/second.png", caption: "Second" }) } },
+        ] } },
+        { delta: {}, finish: "tool_calls" },
+      ],
+      textScript("Here are the images."),
+    );
+    await sendChat(page, "show both images");
+    await waitIdle(page);
+    assert.deepEqual(await page.evaluate(presentation), ["image:First", "image:Second"]);
+    await reloadAndWait(page);
+    assert.deepEqual(await page.evaluate(presentation), ["image:First", "image:Second"],
+      "inline image presentation changed after reload");
+  } finally {
+    await ctx.close();
+    await quietApp.stop();
+  }
+});
+
 test("ID before name and two calls to the same tool retain distinct coherent cards", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession();
   try {

@@ -207,7 +207,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 	}
 
 	content := tools.TruncateMiddle(tres.Content, ToolResultBudgetRunes)
-	c := card(tres.Summary, tres.Data, tres.Data == nil)
+	c := card(tres.Summary, tres.Data, tres.StatusOnly || tres.Data == nil)
 	if ferr := s.finalizeToolCall(tc.ID, resultMsg.ID, "ok", content, c.JSON(),
 		dur, callID); ferr != nil {
 		persistErr = ferr
