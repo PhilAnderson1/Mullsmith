@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,10 @@ const (
 	mcpMaxSchemaDepth        = 32
 )
 
+type mcpToolCaller interface {
+	CallTool(context.Context, *mcpsdk.CallToolParams) (*mcpsdk.CallToolResult, error)
+}
+
 // mcpTool adapts a remotely advertised MCP tool to Mullsmith's ordinary tool
 // path. It therefore inherits approval, audit, cancellation, result clamping,
 // persistence and live tool-card behaviour without a parallel execution path.
@@ -36,7 +41,7 @@ type mcpTool struct {
 	serverName  string
 	description string
 	parameters  map[string]any
-	session     *mcpsdk.ClientSession
+	caller      mcpToolCaller
 	logger      *slog.Logger
 }
 
@@ -51,7 +56,7 @@ func (t *mcpTool) Execute(ctx context.Context, inv Invocation) (Result, error) {
 			return Result{}, fmt.Errorf("invalid tool arguments")
 		}
 	}
-	result, err := t.session.CallTool(ctx, &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args})
+	result, err := t.caller.CallTool(ctx, &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args})
 	if err != nil {
 		if t.logger != nil {
 			t.logger.Warn("MCP tool call failed", "server", t.serverName, "tool", t.remoteName, "error", err)
@@ -98,6 +103,12 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 			continue
 		}
 		session, remoteTools, closeSession := found.session, found.tools, found.close
+		var caller mcpToolCaller = session
+		if server.Transport == "stdio" {
+			restarting := newRestartingMCPClient(server, logger, session, closeSession)
+			caller = restarting
+			closeSession = restarting.Close
+		}
 
 		adapted := make([]*mcpTool, 0, len(remoteTools))
 		sort.Slice(remoteTools, func(i, j int) bool { return remoteTools[i].Name < remoteTools[j].Name })
@@ -127,7 +138,7 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 			}
 			desc = fmt.Sprintf("[%s MCP server] %s", server.Name, Elide(desc, 4096))
 			adapted = append(adapted, &mcpTool{name: name, remoteName: remote.Name,
-				serverName: server.Name, description: desc, parameters: params, session: session, logger: logger})
+				serverName: server.Name, description: desc, parameters: params, caller: caller, logger: logger})
 			seen[name] = true
 		}
 		if !valid {
@@ -144,6 +155,46 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 }
 
 func connectMCP(ctx context.Context, logger *slog.Logger, server config.MCPServer) (*mcpsdk.ClientSession, []*mcpsdk.Tool, func() error, error) {
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "mullsmith", Version: "1"}, &mcpsdk.ClientOptions{Logger: logger})
+	var (
+		transport mcpsdk.Transport
+		cleanup   func() error
+	)
+	switch server.Transport {
+	case "streamable_http":
+		transport, cleanup = mcpHTTPTransport(server)
+	case "stdio":
+		stdioTransport, err := newMCPStdioTransport(server)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		transport = stdioTransport
+		cleanup = stdioTransport.Close
+	default:
+		return nil, nil, nil, fmt.Errorf("unsupported MCP transport")
+	}
+
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		_ = cleanup()
+		return nil, nil, nil, err
+	}
+	closeSession := func() error {
+		err := session.Close()
+		if server.Transport == "streamable_http" {
+			err = errors.Join(err, cleanup())
+		}
+		return err
+	}
+	all, err := listMCPTools(ctx, session)
+	if err != nil {
+		_ = closeSession()
+		return nil, nil, nil, err
+	}
+	return session, all, closeSession, nil
+}
+
+func mcpHTTPTransport(server config.MCPServer) (mcpsdk.Transport, func() error) {
 	endpoint, _ := url.Parse(server.URL) // config validation has already succeeded
 	httpTransport := &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: mcpResponseHeaderTimeout}
 	httpClient := &http.Client{
@@ -155,34 +206,28 @@ func connectMCP(ctx context.Context, logger *slog.Logger, server config.MCPServe
 			return nil
 		},
 	}
-	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "mullsmith", Version: "1"}, &mcpsdk.ClientOptions{Logger: logger})
 	transport := &mcpsdk.StreamableClientTransport{Endpoint: server.URL, HTTPClient: httpClient,
 		MaxRetries: 3, DisableStandaloneSSE: true, MaxEventSize: mcpMaxEventBytes}
-	session, err := client.Connect(ctx, transport, nil)
-	if err != nil {
+	return transport, func() error {
 		httpTransport.CloseIdleConnections()
-		return nil, nil, nil, err
+		return nil
 	}
-	closeSession := func() error {
-		err := session.Close()
-		httpTransport.CloseIdleConnections()
-		return err
-	}
+}
+
+func listMCPTools(ctx context.Context, session *mcpsdk.ClientSession) ([]*mcpsdk.Tool, error) {
 	var all []*mcpsdk.Tool
 	cursor := ""
 	for {
 		result, err := session.ListTools(ctx, &mcpsdk.ListToolsParams{Cursor: cursor})
 		if err != nil {
-			_ = closeSession()
-			return nil, nil, nil, err
+			return nil, err
 		}
 		all = append(all, result.Tools...)
 		if len(all) > mcpMaxTools {
-			_ = closeSession()
-			return nil, nil, nil, fmt.Errorf("server advertises more than %d tools", mcpMaxTools)
+			return nil, fmt.Errorf("server advertises more than %d tools", mcpMaxTools)
 		}
 		if result.NextCursor == "" {
-			return session, all, closeSession, nil
+			return all, nil
 		}
 		cursor = result.NextCursor
 	}

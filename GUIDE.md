@@ -429,9 +429,10 @@ and your API key. No search key is required for direct web fetch/download.
 
 ### MCP tool servers
 
-Mullsmith can expose tools from administrator-configured, unauthenticated MCP
-servers that use Streamable HTTP. MCP support is optional and no server is
-enabled by default. Add a server to the top-level `mcp` section:
+Mullsmith can expose tools from administrator-configured MCP servers using
+Streamable HTTP or a local `stdio` process. MCP support is optional and no
+server is enabled by default. Add a remote, unauthenticated server to the
+top-level `mcp` section:
 
 ```yaml
 mcp:
@@ -446,15 +447,48 @@ mcp:
 Restart Mullsmith after changing the list. Its advertised tools appear to every
 Mullsmith account as names beginning `mcp_<server-id>_`. `approval` may be
 `confirm` or `auto`; confirmation is the default. Calls share the ordinary
-per-turn tool-call and network-call limits, and are recorded in conversation
-history like built-in tools.
+per-turn tool-call limit and are recorded in conversation history like built-in
+tools.
 
-The supplied configuration contains commented examples for DeepWiki, Context7
-and Microsoft Learn. Add only servers you intend to use: their tool descriptions
-are sent with model requests, and tool arguments and results pass through the
-external server. An administrator-configured HTTP URL may deliberately point to
-a local service; MCP connections therefore do not use the public-address guard
-applied to `web_fetch` and `web_download`.
+The supplied configuration contains commented examples for DeepWiki, Weather
+and Wikidata. Add only servers you intend to use: their tool descriptions are
+sent with model requests, and tool arguments and results pass through the
+external server. An administrator-configured HTTP URL may deliberately point
+to a local service; MCP connections therefore do not use the public-address
+guard applied to `web_fetch` and `web_download`. Remote MCP authentication is
+not currently supported.
+
+A local MCP server must already be installed by the administrator. Configure
+its absolute executable path and arguments; Mullsmith invokes it directly and
+never through a shell:
+
+```yaml
+mcp:
+  state_dir: "/var/lib/mullsmith/mcp"
+  servers:
+    - id: "local_tools"
+      name: "Local tools"
+      transport: "stdio"
+      command: "/usr/local/bin/local-mcp-server"
+      args: ["--stdio"]
+      environment:
+        EXAMPLE_API_KEY: "${MCP_EXAMPLE_API_KEY:-}"
+      approval: "confirm"
+```
+
+Each process receives a minimal environment and uses
+`mcp.state_dir/<server-id>` for its working directory, home, caches and
+persistent state. Only variables explicitly listed under `environment` are
+added; Mullsmith's LLM, email and other credentials are not inherited. The
+process runs as the `mullsmith` service account under the same systemd
+restrictions as the application. With the supplied unit it can write beneath
+`/var/lib/mullsmith`, its private temporary area and runtime directory, but can
+read files elsewhere when normal Unix permissions allow and make network
+connections available to the service; it does not use the web tools' public-
+address guard. A server needing another writable directory requires that exact
+directory in the unit's `ReadWritePaths`; do not disable
+`ProtectSystem=strict`. All configured stdio servers share the service account
+and should therefore be treated as trusted administrator-installed software.
 
 ### Approvals and execution limits
 

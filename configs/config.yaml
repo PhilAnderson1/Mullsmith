@@ -225,6 +225,9 @@ tools:
 # Administrator-managed Model Context Protocol servers. Remote tools use the
 # existing agent limits and default to asking for confirmation.
 mcp:
+  # Writable state and cache directory for locally executed stdio servers.
+  state_dir: "/var/lib/mullsmith/mcp"
+
   servers: []
 
   # Unauthenticated Streamable HTTP examples (remove servers: [] before use):
@@ -245,6 +248,18 @@ mcp:
   #     name: "Wikidata"
   #     transport: "streamable_http"
   #     url: "https://wd-mcp.wmcloud.org/mcp"
+  #     approval: "confirm"
+
+  # Local stdio servers are administrator-installed programs. Mullsmith runs
+  # the executable directly, without a shell, using its own state directory.
+  # servers:
+  #   - id: "local_tools"
+  #     name: "Local tools"
+  #     transport: "stdio"
+  #     command: "/usr/local/bin/local-mcp-server"
+  #     args: []
+  #     environment:
+  #       EXAMPLE_API_KEY: "${MCP_EXAMPLE_API_KEY:-}"
   #     approval: "confirm"
 
 

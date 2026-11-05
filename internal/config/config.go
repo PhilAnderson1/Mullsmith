@@ -401,18 +401,23 @@ type Agent struct {
 }
 
 // MCP configures administrator-managed Model Context Protocol servers.
-// Stage 1 deliberately supports only unauthenticated Streamable HTTP servers;
-// credentials and user-managed servers require a separate security model.
+// Remote authentication and user-managed servers require a separate security
+// model; stdio commands are deliberately administrator-only configuration.
 type MCP struct {
-	Servers []MCPServer `yaml:"servers"`
+	StateDir string      `yaml:"state_dir"`
+	Servers  []MCPServer `yaml:"servers"`
 }
 
 type MCPServer struct {
-	ID        string `yaml:"id"`
-	Name      string `yaml:"name"`
-	Transport string `yaml:"transport"`
-	URL       string `yaml:"url"`
-	Approval  string `yaml:"approval"`
+	ID          string            `yaml:"id"`
+	Name        string            `yaml:"name"`
+	Transport   string            `yaml:"transport"`
+	URL         string            `yaml:"url"`
+	Command     string            `yaml:"command"`
+	Args        []string          `yaml:"args"`
+	Environment map[string]string `yaml:"environment"`
+	Approval    string            `yaml:"approval"`
+	StateDir    string            `yaml:"-"`
 }
 
 // validApprovalTool keeps approval policy fail-fast: a misspelled tool name
@@ -630,6 +635,12 @@ type Logging struct {
 
 // envRe matches ${NAME} and ${NAME:-default}.
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+var reservedMCPEnv = map[string]bool{
+	"HOME": true, "LANG": true, "PATH": true, "TMPDIR": true,
+	"XDG_CACHE_HOME": true, "XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true,
+}
 
 // expandEnv substitutes ${VAR} (unset → error) and ${VAR:-fallback}.
 // Whole-line YAML comments (first non-space char '#') pass through
@@ -722,6 +733,11 @@ func (c *Config) Prepare() error {
 	}
 	if c.Path != "" {
 		c.resolvePaths()
+	}
+	for i := range c.MCP.Servers {
+		if c.MCP.Servers[i].Transport == "stdio" {
+			c.MCP.Servers[i].StateDir = filepath.Join(c.MCP.StateDir, c.MCP.Servers[i].ID)
+		}
 	}
 	rt, err := thinking.Build(thinking.Settings{
 		EndpointURL:  c.LLM.Endpoint,
@@ -890,6 +906,7 @@ func (c *Config) resolvePaths() {
 	resolve := func(p string) string { return resolveAgainst(base, p) }
 	c.Database.Dir = resolve(c.Database.Dir)
 	c.Scratchpad.Root = resolve(c.Scratchpad.Root)
+	c.MCP.StateDir = resolve(c.MCP.StateDir)
 	if c.Logging.File != "" {
 		c.Logging.File = resolve(c.Logging.File)
 	}
@@ -898,6 +915,9 @@ func (c *Config) resolvePaths() {
 // --- defaults -------------------------------------------------------------
 
 func (c *Config) setDefaults() {
+	if c.MCP.StateDir == "" && c.Scratchpad.Root != "" {
+		c.MCP.StateDir = filepath.Join(filepath.Dir(c.Scratchpad.Root), "mcp")
+	}
 	for i := range c.MCP.Servers {
 		if c.MCP.Servers[i].Name == "" {
 			c.MCP.Servers[i].Name = c.MCP.Servers[i].ID
@@ -1166,26 +1186,63 @@ func (c *Config) Validate() error {
 			}
 			mcpIDs[server.ID] = true
 		}
-		if server.Transport != "streamable_http" {
-			f.bad("%s.transport: only streamable_http is supported", prefix)
+		if server.Transport != "streamable_http" && server.Transport != "stdio" {
+			f.bad("%s.transport: must be streamable_http or stdio", prefix)
 		}
 		if strings.TrimSpace(server.Name) == "" || len([]rune(server.Name)) > 80 {
 			f.bad("%s.name: required and must be at most 80 characters", prefix)
 		}
-		u, err := url.Parse(server.URL)
-		switch {
-		case server.URL == "":
-			f.bad("%s.url: required", prefix)
-		case err != nil:
-			f.bad("%s.url: %v", prefix, err)
-		case u.Scheme != "http" && u.Scheme != "https":
-			f.bad("%s.url: scheme must be http or https", prefix)
-		case u.Host == "":
-			f.bad("%s.url: host required", prefix)
-		case u.User != nil:
-			f.bad("%s.url: embedded credentials are not supported", prefix)
-		case u.Fragment != "":
-			f.bad("%s.url: fragments are not supported", prefix)
+		switch server.Transport {
+		case "streamable_http":
+			u, err := url.Parse(server.URL)
+			switch {
+			case server.URL == "":
+				f.bad("%s.url: required for streamable_http", prefix)
+			case err != nil:
+				f.bad("%s.url: %v", prefix, err)
+			case u.Scheme != "http" && u.Scheme != "https":
+				f.bad("%s.url: scheme must be http or https", prefix)
+			case u.Host == "":
+				f.bad("%s.url: host required", prefix)
+			case u.User != nil:
+				f.bad("%s.url: embedded credentials are not supported", prefix)
+			case u.Fragment != "":
+				f.bad("%s.url: fragments are not supported", prefix)
+			}
+			if server.Command != "" || len(server.Args) != 0 || len(server.Environment) != 0 {
+				f.bad("%s: command, args and environment are only valid for stdio", prefix)
+			}
+		case "stdio":
+			if server.URL != "" {
+				f.bad("%s.url: not valid for stdio", prefix)
+			}
+			if server.Command == "" || !filepath.IsAbs(server.Command) {
+				f.bad("%s.command: an absolute executable path is required for stdio", prefix)
+			} else if strings.IndexByte(server.Command, 0) >= 0 || len(server.Command) > 4096 {
+				f.bad("%s.command: must not contain NUL and must be at most 4096 bytes", prefix)
+			}
+			if len(server.Args) > 64 {
+				f.bad("%s.args: at most 64 arguments may be configured", prefix)
+			}
+			for j, arg := range server.Args {
+				if strings.IndexByte(arg, 0) >= 0 || len(arg) > 8192 {
+					f.bad("%s.args[%d]: must not contain NUL and must be at most 8192 bytes", prefix, j)
+				}
+			}
+			if len(server.Environment) > 32 {
+				f.bad("%s.environment: at most 32 variables may be configured", prefix)
+			}
+			for key, value := range server.Environment {
+				if !envNameRe.MatchString(key) {
+					f.bad("%s.environment: invalid variable name %q", prefix, key)
+				}
+				if reservedMCPEnv[key] {
+					f.bad("%s.environment: %s is managed by Mullsmith", prefix, key)
+				}
+				if strings.IndexByte(value, 0) >= 0 || len(value) > 65536 {
+					f.bad("%s.environment.%s: must not contain NUL and must be at most 65536 bytes", prefix, key)
+				}
+			}
 		}
 		if server.Approval != "auto" && server.Approval != "confirm" {
 			f.bad("%s.approval: must be auto or confirm", prefix)
@@ -1313,6 +1370,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Scratchpad.Root == "" {
 		f.bad("scratchpad.root: required")
+	}
+	if c.MCP.StateDir == "" {
+		f.bad("mcp.state_dir: required")
 	}
 	if c.Scratchpad.MaxEntries < 3 || c.Scratchpad.MaxEntries == int(^uint(0)>>1) {
 		f.bad("scratchpad.max_entries: must be at least 3 and below the maximum integer (layout directories count)")
@@ -1511,6 +1571,9 @@ func (c *Config) Warnings() []string {
 		w = append(w, "server.hsts_max_age > 0 but TLS is disabled — HSTS headers will never be sent")
 	}
 	for _, server := range c.MCP.Servers {
+		if server.Transport != "streamable_http" {
+			continue
+		}
 		u, err := url.Parse(server.URL)
 		if err == nil && u.Scheme == "http" && !privateOrLoopbackHost(u.Hostname()) {
 			w = append(w, fmt.Sprintf("mcp server %q uses plain HTTP to a non-private host — tool queries and results can be read or changed in transit", server.ID))
@@ -1559,9 +1622,22 @@ type Check struct {
 	OK     bool
 }
 
-// EnsureDirs creates the database and scratchpad roots.
+func (c *Config) hasStdioMCP() bool {
+	for _, server := range c.MCP.Servers {
+		if server.Transport == "stdio" {
+			return true
+		}
+	}
+	return false
+}
+
+// EnsureDirs creates the database, scratchpad and configured MCP state roots.
 func (c *Config) EnsureDirs() error {
-	for _, d := range []string{c.Database.Dir, c.Scratchpad.Root} {
+	dirs := []string{c.Database.Dir, c.Scratchpad.Root}
+	if c.hasStdioMCP() {
+		dirs = append(dirs, c.MCP.StateDir)
+	}
+	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("create %s: %w", d, err)
 		}
@@ -1572,10 +1648,14 @@ func (c *Config) EnsureDirs() error {
 // CheckIO validates writable roots and TLS files; no network access.
 func (c *Config) CheckIO() []Check {
 	var out []Check
-	for _, d := range []struct{ name, path string }{
+	dirs := []struct{ name, path string }{
 		{"database.dir", c.Database.Dir},
 		{"scratchpad.root", c.Scratchpad.Root},
-	} {
+	}
+	if c.hasStdioMCP() {
+		dirs = append(dirs, struct{ name, path string }{"mcp.state_dir", c.MCP.StateDir})
+	}
+	for _, d := range dirs {
 		ch := Check{Name: d.name, Detail: d.path}
 		if err := os.MkdirAll(d.path, 0o700); err != nil {
 			ch.Detail = err.Error()

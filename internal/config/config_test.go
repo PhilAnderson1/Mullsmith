@@ -139,6 +139,25 @@ func TestMCPConfigDefaultsAndValidation(t *testing.T) {
 	if got := cfg.MCP.Servers[0]; got.Name != "docs" || got.Approval != "confirm" {
 		t.Fatalf("MCP defaults = %+v", got)
 	}
+	if got, want := cfg.MCP.StateDir, filepath.Join(filepath.Dir(cfg.Scratchpad.Root), "mcp"); got != want {
+		t.Fatalf("MCP state_dir = %q, want %q", got, want)
+	}
+
+	stdio, err := Load(writeCfg(t, minimalYAML+`mcp:
+  servers:
+    - id: "local"
+      transport: "stdio"
+      command: "/usr/local/bin/local-mcp-server"
+      args: ["--stdio"]
+      environment:
+        EXAMPLE_TOKEN: "value"
+`))
+	if err != nil {
+		t.Fatalf("Load stdio: %v", err)
+	}
+	if got := stdio.MCP.Servers[0]; got.StateDir != filepath.Join(stdio.MCP.StateDir, "local") {
+		t.Fatalf("stdio StateDir = %q, root %q", got.StateDir, stdio.MCP.StateDir)
+	}
 
 	tests := []struct {
 		name string
@@ -166,6 +185,29 @@ mcp:
   servers:
     - {id: "docs", transport: "streamable_http", url: "https://example.org/mcp", approval: "sometimes"}
 `, "must be auto or confirm"},
+		{"relative stdio command", `
+mcp:
+  servers:
+    - {id: "local", transport: "stdio", command: "local-mcp-server"}
+`, "absolute executable path"},
+		{"stdio url", `
+mcp:
+  servers:
+    - {id: "local", transport: "stdio", command: "/usr/bin/local-mcp-server", url: "https://example.org/mcp"}
+`, "not valid for stdio"},
+		{"http command", `
+mcp:
+  servers:
+    - {id: "docs", transport: "streamable_http", url: "https://example.org/mcp", command: "/bin/true"}
+`, "only valid for stdio"},
+		{"reserved stdio environment", `
+mcp:
+  servers:
+    - id: "local"
+      transport: "stdio"
+      command: "/usr/bin/local-mcp-server"
+      environment: {HOME: "/tmp"}
+`, "HOME is managed by Mullsmith"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -16,7 +16,7 @@ it stays honest across platforms even though release builds are linux/amd64.
 
 | Module | Version | Licence | Role in Mullsmith |
 |---|---|---|---|
-| `github.com/modelcontextprotocol/go-sdk` | v1.8.0 | Apache-2.0 and MIT (licensing transition; see its `LICENSE`) | MCP protocol client and Streamable HTTP transport |
+| `github.com/modelcontextprotocol/go-sdk` | v1.8.0 | Apache-2.0 and MIT (licensing transition; see its `LICENSE`) | MCP protocol client and Streamable HTTP/stdio transports |
 | `github.com/google/jsonschema-go` | v0.4.3 | MIT | JSON Schema handling used by the MCP SDK |
 | `github.com/segmentio/asm` | v1.1.3 | MIT | optimized JSON support used by the MCP SDK |
 | `github.com/segmentio/encoding` | v0.5.4 | MIT | bounded JSON decoding used by the MCP SDK |
