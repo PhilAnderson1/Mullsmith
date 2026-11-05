@@ -345,20 +345,14 @@ export function createThreadRenderer({
     syncAssistantVisibility(nodes.el);
   }
 
-  function retireStrandedCards(st, outcomes) {
-    const incomplete = new Set(outcomes.filter((r) => r.status !== "complete").map((r) => r.message_id));
+  function retireStrandedCards(st) {
     for (const key of Object.keys(st.cards || {})) {
       const c = st.cards[key];
       if (!c || !c.card || !c.card.isConnected) continue;
       if (!c.card.classList.contains("st-running") &&
           !c.card.classList.contains("st-awaiting")) continue;
-      // A failed model round never reached tool execution. Its streamed
-      // proposals have no audit rows and must not survive as phantom cards.
-      const round = st.rounds.find((r) => r.nodes.el.contains(c.card));
-      if (round && incomplete.has(round.id)) {
-        c.card.remove();
-        continue;
-      }
+      // Complete calls are announced only when execution reaches them. A
+      // card still running here was interrupted during approval/execution.
       c.card.classList.remove("st-running", "st-awaiting");
       c.card.classList.add("st-lost");
       const state = c.card.querySelector(".tool-state");

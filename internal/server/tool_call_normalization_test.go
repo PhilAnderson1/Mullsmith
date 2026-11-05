@@ -29,10 +29,9 @@ func fragmentChunk(idx int, id, name, args string) string {
 	return string(b)
 }
 
-// phantomExchange drives a fs_read round whose fragments look like `round`,
-// then a closing answer, and returns the drained stream plus the stored
-// protocol rows.
-func phantomExchange(t *testing.T, round []string) (eventStream, []struct {
+// fragmentedToolExchange drives a fragmented fs_read round, then a closing
+// answer, and returns the drained stream plus the stored protocol rows.
+func fragmentedToolExchange(t *testing.T, round []string) (eventStream, []struct {
 	LLMCallID string `json:"llm_call_id"`
 }, *authTest) {
 	t.Helper()
@@ -43,7 +42,7 @@ func phantomExchange(t *testing.T, round []string) (eventStream, []struct {
 		round,
 		{answerChunk("read it"), finishChunk("stop")},
 	})
-	c := createConv(t, a, map[string]any{"title": "Phantom"})
+	c := createConv(t, a, map[string]any{"title": "Fragmented tool call"})
 	resp := sendChat(t, a, c.ID, "read p.txt")
 	defer resp.Body.Close()
 	es := drainSSE(t, newSSEReader(t, resp))
@@ -87,12 +86,12 @@ func TestLateToolCallIDEmitsOneStartMatchingStoredRow(t *testing.T) {
 		fragmentChunk(0, "", "", `"p.txt"}`),        // args continue
 		finishChunk("tool_calls"),
 	}
-	es, stored, _ := phantomExchange(t, round)
+	es, stored, _ := fragmentedToolExchange(t, round)
 	if len(stored) != 1 {
 		t.Fatalf("stored tool rows = %d, want 1", len(stored))
 	}
 	if n := countEvent(es, "tool_start"); n != 1 {
-		t.Fatalf("tool_start count = %d, want exactly 1 — phantom card regression", n)
+		t.Fatalf("tool_start count = %d, want exactly 1 normalized call", n)
 	}
 	if got := stringOf(es.data["tool_start"]["call_id"]); got != stored[0].LLMCallID {
 		t.Fatalf("card id %q != stored protocol id %q: live card and history diverge", got, stored[0].LLMCallID)
@@ -112,12 +111,12 @@ func TestEmptyUpstreamToolIDEmitsOneStartMatchingStoredRow(t *testing.T) {
 		fragmentChunk(0, "", "fs_read", `{"path":"p.txt"}`),
 		finishChunk("tool_calls"),
 	}
-	es, stored, _ := phantomExchange(t, round)
+	es, stored, _ := fragmentedToolExchange(t, round)
 	if len(stored) != 1 {
 		t.Fatalf("stored tool rows = %d, want 1", len(stored))
 	}
 	if n := countEvent(es, "tool_start"); n != 1 {
-		t.Fatalf("tool_start count = %d, want exactly 1 — phantom card regression", n)
+		t.Fatalf("tool_start count = %d, want exactly 1 normalized call", n)
 	}
 	if stringOf(es.data["tool_start"]["call_id"]) != stored[0].LLMCallID {
 		t.Fatalf("card id %q != stored protocol id %q: live card and history diverge",
@@ -139,7 +138,7 @@ func countEvent(es eventStream, name string) int {
 }
 
 func TestToolIDBeforeNamePublishesCoherentStart(t *testing.T) {
-	es, stored, _ := phantomExchange(t, []string{
+	es, stored, _ := fragmentedToolExchange(t, []string{
 		fragmentChunk(0, "call_first", "", ""),
 		fragmentChunk(0, "", "", `{"path":`),
 		fragmentChunk(0, "", "fs_read", `"work/input.csv"}`), finishChunk("tool_calls"),

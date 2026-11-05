@@ -253,7 +253,7 @@ export function createGenerationController({
 
   function finishGeneration(st, done) {
     stopSpinner(st); // every exit path must end the animation
-    retireStrandedCards(st, done.rounds || []);
+    retireStrandedCards(st);
     if (inflight !== st) return; // abandoned mid-flight; bubble is gone
     inflight = null;
     navigation.recordActivity(); // the finished answer outranks any history on the wire

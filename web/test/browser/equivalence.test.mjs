@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   startFakeLLM, startApp, registerAndOpen, waitForConversation, newConversation, threadDigest, sendChat, waitIdle,
-  textScript, toolScript, phantomScript,
+  textScript, toolScript, fragmentedToolScript,
 } from "./harness.mjs";
 
 // Playwright is dev-only: resolve from this folder's node_modules (npm ci)
@@ -233,7 +233,7 @@ test("tool turn with a late call ID: live DOM equals reloaded DOM", { timeout: 1
   const { ctx, page } = await newSession();
   try {
     llm.queueScripts(
-      phantomScript("fs_write", { path: "work/note.md", content: "# note\nhello browser\n" }, "call_w1"),
+      fragmentedToolScript("fs_write", { path: "work/note.md", content: "# note\nhello browser\n" }, "call_w1"),
       textScript("Kyoto in autumn."),
     );
     await sendChat(page, "write a note, then answer");

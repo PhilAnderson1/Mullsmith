@@ -103,12 +103,11 @@ export function toolScript(id, name, args) {
   ];
 }
 
-// phantomScript reproduces the fragmentation seen from real endpoints: the
-// NAME arrives with no id, the arguments stream without one, and the id
-// appears only on the final fragment. The live card announcement and the
-// audit row's terminal event may then carry different ids — the client
-// must still settle ONE card.
-export function phantomScript(name, args, lateId) {
+// fragmentedToolScript reproduces fragmentation seen from real endpoints:
+// the name arrives without an id, arguments follow, and the endpoint id
+// appears only on the final fragment. Go must normalize this into one
+// complete application-owned call before announcing it to the browser.
+export function fragmentedToolScript(name, args, lateId) {
   return [
     { delta: { tool_calls: [{ index: 0, function: { name, arguments: "" } }] } },
     { delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] } },
