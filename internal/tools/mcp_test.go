@@ -60,13 +60,21 @@ func TestRegisterMCPDiscoversHTTPToolsAndPolicy(t *testing.T) {
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, any, error) {
 			return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}}}, nil, nil
 		})
-	httpServer := httptest.NewServer(mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
+	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
 		return server
-	}, &mcpsdk.StreamableHTTPOptions{JSONResponse: true}))
+	}, &mcpsdk.StreamableHTTPOptions{JSONResponse: true})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer bearer-secret" || r.Header.Get("X-API-Key") != "header-secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	}))
 	defer httpServer.Close()
 
 	cfg := &config.Config{MCP: config.MCP{Servers: []config.MCPServer{{
-		ID: "docs", Name: "Documentation", Transport: "streamable_http", URL: httpServer.URL, Approval: ApprovalAuto,
+		ID: "docs", Name: "Documentation", Transport: "streamable_http", URL: httpServer.URL,
+		BearerToken: "bearer-secret", Headers: map[string]string{"X-API-Key": "header-secret"}, Approval: ApprovalAuto,
 	}}}}
 	policies := map[string]string{}
 	reg := NewRegistry(func(name string) string { return policies[name] })

@@ -250,6 +250,19 @@ mcp:
   #     url: "https://wd-mcp.wmcloud.org/mcp"
   #     approval: "confirm"
 
+  # Remote servers may use a shared bearer token or custom API-key headers.
+  # Keep secrets in the service environment rather than writing them here.
+  # servers:
+  #   - id: "authenticated_service"
+  #     name: "Authenticated service"
+  #     transport: "streamable_http"
+  #     url: "https://mcp.example.org/mcp"
+  #     bearer_token: "${MCP_SERVICE_TOKEN}"
+  #     # Alternatively, for services using an API-key header:
+  #     # headers:
+  #     #   X-API-Key: "${MCP_SERVICE_API_KEY}"
+  #     approval: "confirm"
+
   # Local stdio servers are administrator-installed programs. Mullsmith runs
   # the executable directly, without a shell, using its own state directory.
   # servers:

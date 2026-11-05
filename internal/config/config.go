@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -401,8 +402,9 @@ type Agent struct {
 }
 
 // MCP configures administrator-managed Model Context Protocol servers.
-// Remote authentication and user-managed servers require a separate security
-// model; stdio commands are deliberately administrator-only configuration.
+// Remote credentials are administrator-managed and shared by all users;
+// user-managed servers require a separate security model. Stdio commands are
+// deliberately administrator-only configuration.
 type MCP struct {
 	StateDir string      `yaml:"state_dir"`
 	Servers  []MCPServer `yaml:"servers"`
@@ -413,6 +415,8 @@ type MCPServer struct {
 	Name        string            `yaml:"name"`
 	Transport   string            `yaml:"transport"`
 	URL         string            `yaml:"url"`
+	BearerToken string            `yaml:"bearer_token"`
+	Headers     map[string]string `yaml:"headers"`
 	Command     string            `yaml:"command"`
 	Args        []string          `yaml:"args"`
 	Environment map[string]string `yaml:"environment"`
@@ -640,6 +644,16 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var reservedMCPEnv = map[string]bool{
 	"HOME": true, "LANG": true, "PATH": true, "TMPDIR": true,
 	"XDG_CACHE_HOME": true, "XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true,
+}
+
+var forbiddenMCPHeaders = map[string]bool{
+	"Accept": true, "Authorization": true, "Connection": true,
+	"Content-Length": true, "Content-Type": true, "Cookie": true,
+	"Forwarded": true, "Host": true, "Keep-Alive": true,
+	"Last-Event-Id": true, "Mcp-Protocol-Version": true,
+	"Mcp-Session-Id": true, "Origin": true, "Proxy-Authorization": true,
+	"Proxy-Connection": true, "Te": true, "Trailer": true,
+	"Transfer-Encoding": true, "Upgrade": true, "Via": true, "X-Real-Ip": true,
 }
 
 // expandEnv substitutes ${VAR} (unset → error) and ${VAR:-fallback}.
@@ -1159,6 +1173,36 @@ func (f *failList) bad(format string, args ...any) {
 	f.errs = append(f.errs, fmt.Errorf(format, args...))
 }
 
+func validMCPHeaderValue(value string) bool {
+	if len(value) == 0 || len(value) > 65536 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if (value[i] < 0x20 && value[i] != '\t') || value[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validMCPHeaderName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		switch c {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // Validate checks every field for coherence; it is pure (no filesystem or
 // network access — see CheckIO for that).
 func (c *Config) Validate() error {
@@ -1212,9 +1256,36 @@ func (c *Config) Validate() error {
 			if server.Command != "" || len(server.Args) != 0 || len(server.Environment) != 0 {
 				f.bad("%s: command, args and environment are only valid for stdio", prefix)
 			}
+			if server.BearerToken != "" {
+				if strings.TrimSpace(server.BearerToken) != server.BearerToken || !validMCPHeaderValue(server.BearerToken) || strings.ContainsAny(server.BearerToken, " \t") {
+					f.bad("%s.bearer_token: must be a non-empty token without whitespace or control characters", prefix)
+				}
+			}
+			if len(server.Headers) > 16 {
+				f.bad("%s.headers: at most 16 headers may be configured", prefix)
+			}
+			seenHeaders := map[string]bool{}
+			for name, value := range server.Headers {
+				canonical := textproto.CanonicalMIMEHeaderKey(name)
+				switch {
+				case !validMCPHeaderName(name):
+					f.bad("%s.headers: invalid header name %q", prefix, name)
+				case seenHeaders[canonical]:
+					f.bad("%s.headers: duplicate header %q after case normalization", prefix, name)
+				case forbiddenMCPHeaders[canonical] || strings.HasPrefix(canonical, "X-Forwarded-"):
+					f.bad("%s.headers: %s is controlled by Mullsmith or unsafe to override", prefix, name)
+				}
+				seenHeaders[canonical] = true
+				if !validMCPHeaderValue(value) {
+					f.bad("%s.headers.%s: must be non-empty, at most 65536 bytes, and contain no control characters", prefix, name)
+				}
+			}
 		case "stdio":
 			if server.URL != "" {
 				f.bad("%s.url: not valid for stdio", prefix)
+			}
+			if server.BearerToken != "" || len(server.Headers) != 0 {
+				f.bad("%s: bearer_token and headers are only valid for streamable_http; use environment for stdio", prefix)
 			}
 			if server.Command == "" || !filepath.IsAbs(server.Command) {
 				f.bad("%s.command: an absolute executable path is required for stdio", prefix)

@@ -44,6 +44,7 @@ type mcpTool struct {
 	parameters  map[string]any
 	caller      mcpToolCaller
 	logger      *slog.Logger
+	secrets     []string
 }
 
 func (t *mcpTool) Name() string               { return t.name }
@@ -60,7 +61,8 @@ func (t *mcpTool) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	result, err := t.caller.CallTool(ctx, &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args})
 	if err != nil {
 		if t.logger != nil {
-			t.logger.Warn("MCP tool call failed", "server", t.serverName, "tool", t.remoteName, "error", err)
+			t.logger.Warn("MCP tool call failed", "server", t.serverName, "tool", t.remoteName,
+				"error", redactMCPError(err, t.secrets))
 		}
 		return Result{}, fmt.Errorf("MCP tool call failed")
 	}
@@ -100,7 +102,8 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 	for i, server := range cfg.MCP.Servers {
 		found := discovered[i]
 		if found.err != nil {
-			logger.Warn("MCP server unavailable; tools skipped", "server", server.ID, "error", found.err)
+			logger.Warn("MCP server unavailable; tools skipped", "server", server.ID,
+				"error", redactMCPError(found.err, mcpSecretValues(server)))
 			continue
 		}
 		session, remoteTools, closeSession := found.session, found.tools, found.close
@@ -112,6 +115,7 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 		}
 
 		adapted := make([]*mcpTool, 0, len(remoteTools))
+		secrets := mcpSecretValues(server)
 		sort.Slice(remoteTools, func(i, j int) bool { return remoteTools[i].Name < remoteTools[j].Name })
 		seen := map[string]bool{}
 		valid := true
@@ -139,7 +143,8 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 			}
 			desc = fmt.Sprintf("[%s MCP server] %s", server.Name, Elide(desc, 4096))
 			adapted = append(adapted, &mcpTool{name: name, remoteName: remote.Name,
-				serverName: server.Name, description: desc, parameters: params, caller: caller, logger: logger})
+				serverName: server.Name, description: desc, parameters: params, caller: caller,
+				logger: logger, secrets: secrets})
 			seen[name] = true
 		}
 		if !valid {
@@ -156,7 +161,8 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 }
 
 func connectMCP(ctx context.Context, logger *slog.Logger, server config.MCPServer) (*mcpsdk.ClientSession, []*mcpsdk.Tool, func() error, error) {
-	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "mullsmith", Version: "1"}, &mcpsdk.ClientOptions{Logger: logger})
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "mullsmith", Version: "1"},
+		&mcpsdk.ClientOptions{Logger: mcpSafeLogger(logger, server)})
 	var (
 		transport mcpsdk.Transport
 		cleanup   func() error
@@ -198,10 +204,11 @@ func connectMCP(ctx context.Context, logger *slog.Logger, server config.MCPServe
 func mcpHTTPTransport(server config.MCPServer) (mcpsdk.Transport, func() error) {
 	endpoint, _ := url.Parse(server.URL) // config validation has already succeeded
 	httpTransport := &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: mcpResponseHeaderTimeout}
+	authTransport := &mcpAuthTransport{base: httpTransport, headers: mcpAuthHeaders(server)}
 	httpClient := &http.Client{
-		Transport: httpTransport,
+		Transport: authTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 || !strings.EqualFold(req.URL.Host, endpoint.Host) {
+			if len(via) >= 3 || !sameMCPOrigin(req.URL, endpoint) {
 				return http.ErrUseLastResponse
 			}
 			return nil
@@ -261,7 +268,10 @@ func CheckMCPServers(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		}
 		check := config.Check{Name: "mcp." + server.ID, OK: err == nil}
 		if err != nil {
-			check.Detail = "unreachable or invalid: " + err.Error()
+			// The remote error can contain an arbitrary response body. Keep the
+			// operator-facing check useful without reflecting untrusted content or
+			// credentials supplied by a badly behaved server.
+			check.Detail = "connection, authentication or protocol negotiation failed"
 		} else {
 			check.Detail = fmt.Sprintf("connected; %d tool(s) advertised", len(advertised))
 		}

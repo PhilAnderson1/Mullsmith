@@ -431,8 +431,8 @@ and your API key. No search key is required for direct web fetch/download.
 
 Mullsmith can expose tools from administrator-configured MCP servers using
 Streamable HTTP or a local `stdio` process. MCP support is optional and no
-server is enabled by default. Add a remote, unauthenticated server to the
-top-level `mcp` section:
+server is enabled by default. Add a remote server to the top-level `mcp`
+section:
 
 ```yaml
 mcp:
@@ -456,7 +456,29 @@ sent with model requests, and tool arguments and results pass through the
 external server. An administrator-configured HTTP URL may deliberately point
 to a local service; MCP connections therefore do not use the public-address
 guard applied to `web_fetch` and `web_download`. Remote MCP authentication is
-not currently supported.
+optional. For a bearer token, add:
+
+```yaml
+      bearer_token: "${MCP_SERVICE_TOKEN}"
+```
+
+For a service using an API-key header instead, add:
+
+```yaml
+      headers:
+        X-API-Key: "${MCP_SERVICE_API_KEY}"
+```
+
+Use environment variables without an empty fallback so a missing secret stops
+startup rather than silently making unauthenticated requests. Mullsmith redacts
+configured MCP credential values from its logs and diagnostics, refuses headers
+that could interfere with HTTP or MCP routing, and never forwards credentials
+across an origin-changing redirect. `-check-config` connects with the configured
+credential, so an authentication failure is reported without exposing it.
+
+These credentials define one system-wide external identity. Every Mullsmith
+account offered that server's tools can act through the same identity; use
+per-user OAuth instead when the external service must distinguish users.
 
 A local MCP server must already be installed by the administrator. Configure
 its absolute executable path and arguments; Mullsmith invokes it directly and

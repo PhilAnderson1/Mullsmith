@@ -143,6 +143,23 @@ func TestMCPConfigDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("MCP state_dir = %q, want %q", got, want)
 	}
 
+	t.Setenv("MCP_TEST_TOKEN", "bearer-secret")
+	authenticated, err := Load(writeCfg(t, minimalYAML+`mcp:
+  servers:
+    - id: "private"
+      transport: "streamable_http"
+      url: "https://example.org/mcp"
+      bearer_token: "${MCP_TEST_TOKEN}"
+      headers:
+        X-API-Key: "header-secret"
+`))
+	if err != nil {
+		t.Fatalf("Load authenticated HTTP: %v", err)
+	}
+	if got := authenticated.MCP.Servers[0]; got.BearerToken != "bearer-secret" || got.Headers["X-API-Key"] != "header-secret" {
+		t.Fatalf("authenticated MCP config = %+v", got)
+	}
+
 	stdio, err := Load(writeCfg(t, minimalYAML+`mcp:
   servers:
     - id: "local"
@@ -208,6 +225,60 @@ mcp:
       command: "/usr/bin/local-mcp-server"
       environment: {HOME: "/tmp"}
 `, "HOME is managed by Mullsmith"},
+		{"stdio HTTP credentials", `
+mcp:
+  servers:
+    - id: "local"
+      transport: "stdio"
+      command: "/usr/bin/local-mcp-server"
+      bearer_token: "secret"
+`, "only valid for streamable_http"},
+		{"bearer whitespace", `
+mcp:
+  servers:
+    - {id: "docs", transport: "streamable_http", url: "https://example.org/mcp", bearer_token: "bad token"}
+`, "without whitespace"},
+		{"invalid header name", `
+mcp:
+  servers:
+    - id: "docs"
+      transport: "streamable_http"
+      url: "https://example.org/mcp"
+      headers: {"Bad Header": "secret"}
+`, "invalid header name"},
+		{"unsafe header", `
+mcp:
+  servers:
+    - id: "docs"
+      transport: "streamable_http"
+      url: "https://example.org/mcp"
+      headers: {X-Forwarded-For: "127.0.0.1"}
+`, "unsafe to override"},
+		{"authorization header", `
+mcp:
+  servers:
+    - id: "docs"
+      transport: "streamable_http"
+      url: "https://example.org/mcp"
+      headers: {authorization: "Basic secret"}
+`, "controlled by Mullsmith"},
+		{"duplicate normalized header", `
+mcp:
+  servers:
+    - id: "docs"
+      transport: "streamable_http"
+      url: "https://example.org/mcp"
+      headers: {X-API-Key: "one", x-api-key: "two"}
+`, "duplicate header"},
+		{"header newline", `
+mcp:
+  servers:
+    - id: "docs"
+      transport: "streamable_http"
+      url: "https://example.org/mcp"
+      headers:
+        X-API-Key: "line1\nline2"
+`, "control characters"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
