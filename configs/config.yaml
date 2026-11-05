@@ -258,12 +258,6 @@ mcp:
   #     transport: "streamable_http"
   #     url: "https://wd-mcp.wmcloud.org/mcp"
   #     approval: "confirm"
-  #
-  #   - id: "humaps"
-  #     name: "Humaps"
-  #     transport: "streamable_http"
-  #     url: "https://api.humaps.org/mcp"
-  #     approval: "confirm"
 
 
 # Per-user files and code sandbox.
