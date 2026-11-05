@@ -235,18 +235,6 @@ mcp:
   #     url: "https://mcp.deepwiki.com/mcp"
   #     approval: "confirm"
   #
-  #   - id: "context7"
-  #     name: "Context7"
-  #     transport: "streamable_http"
-  #     url: "https://mcp.context7.com/mcp"
-  #     approval: "confirm"
-  #
-  #   - id: "microsoft_learn"
-  #     name: "Microsoft Learn"
-  #     transport: "streamable_http"
-  #     url: "https://learn.microsoft.com/api/mcp"
-  #     approval: "confirm"
-  #
   #   - id: "weather"
   #     name: "Weather"
   #     transport: "streamable_http"
