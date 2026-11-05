@@ -72,6 +72,13 @@ type Registry struct {
 	byName   map[string]Tool
 	policyFn func(name string) string
 	closers  []func() error
+	users    UserToolProvider
+}
+
+type UserToolProvider interface {
+	Specs(userID string) []llm.ToolSpec
+	Get(userID, name string) (Tool, bool)
+	Policy(userID, name string) string
 }
 
 // NewRegistry builds an empty registry. policyFn maps a tool name to
@@ -112,16 +119,55 @@ func (r *Registry) Specs() []llm.ToolSpec {
 	return out
 }
 
+func (r *Registry) SpecsFor(userID string) []llm.ToolSpec {
+	out := r.Specs()
+	if r.users != nil {
+		out = append(out, r.users.Specs(userID)...)
+	}
+	return out
+}
+
 // Get looks a tool up by name.
 func (r *Registry) Get(name string) (Tool, bool) {
 	t, ok := r.byName[name]
 	return t, ok
 }
 
+func (r *Registry) GetFor(userID, name string) (Tool, bool) {
+	if t, ok := r.Get(name); ok {
+		return t, true
+	}
+	if r.users != nil {
+		return r.users.Get(userID, name)
+	}
+	return nil, false
+}
+
+func (r *Registry) SetUserToolProvider(p UserToolProvider) { r.users = p }
+
+func (r *Registry) PolicyFor(userID, name string) string {
+	if _, ok := r.Get(name); ok {
+		return r.Policy(name)
+	}
+	if r.users != nil && r.users.Policy(userID, name) == ApprovalAuto {
+		return ApprovalAuto
+	}
+	return ApprovalConfirm
+}
+
 // StatusOnly reports whether a successful call can be visually quiet. Errors,
 // denials and approval prompts remain visible regardless of this classification.
 func (r *Registry) StatusOnly(name string) bool {
 	t, ok := r.Get(name)
+	if !ok {
+		return false
+	}
+	rich, ok := t.(RichCardTool)
+	return !ok || !rich.HasRichCard()
+}
+
+func (r *Registry) StatusOnlyFor(userID, name string) bool {
+	t, ok := r.GetFor(userID, name)
 	if !ok {
 		return false
 	}

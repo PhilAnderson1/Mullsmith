@@ -537,7 +537,7 @@ func adminMailReset(ctx context.Context, cfg *config.Config, db *store.DB, u *st
 		fmt.Fprintln(os.Stderr, "mullsmith: reset token:", err, "— falling back to password prompt")
 		return false
 	}
-	subject, body := mail.ResetMail(cfg.Email.BaseURL, raw)
+	subject, body := mail.ResetMail(cfg.Origin(), raw)
 	if err := mail.NewSMTP(cfg.Email.SMTP).Deliver(ctx, u.Email, subject, body); err != nil {
 		fmt.Fprintf(os.Stderr, "mullsmith: mail failed (%v) — falling back to password prompt\n", err)
 		return false

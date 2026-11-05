@@ -61,7 +61,7 @@ func (s *Server) sendConfirmMail(ctx context.Context, userID, email string) {
 	if raw == "" {
 		return
 	}
-	subject, body := mail.ConfirmationMail(s.cfg.Email.BaseURL, raw)
+	subject, body := mail.ConfirmationMail(s.cfg.Origin(), raw)
 	s.mailer.Send(email, subject, body)
 }
 
@@ -126,7 +126,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 			mailQueued(w)
 			return
 		}
-		subject, msg := mail.ResetMail(s.cfg.Email.BaseURL, raw)
+		subject, msg := mail.ResetMail(s.cfg.Origin(), raw)
 		s.mailer.Send(user.Email, subject, msg)
 		s.logger.Info("password reset mail queued", "user", user.ID, "ip", ip)
 	}

@@ -114,6 +114,9 @@ export const api = {
   updateMe: (patch) => request("PATCH", "/api/v1/auth/me", patch),
   changePassword: (current, next) =>
     request("POST", "/api/v1/auth/password", { current, new: next }),
+  mcpConnections: () => request("GET", "/api/v1/mcp/connections"),
+  connectMCP: (id) => request("POST", `/api/v1/mcp/connections/${encodeURIComponent(id)}/connect`, {}),
+  disconnectMCP: (id) => request("DELETE", `/api/v1/mcp/connections/${encodeURIComponent(id)}`),
   // kind is the plural directory name: uploads | artifacts | work ("" = all).
   listFiles: (kind, cursor) => {
     const p = new URLSearchParams();

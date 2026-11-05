@@ -179,7 +179,7 @@ func (op *Operation) Run(emit Emit) {
 			// The model round has finished, so this call's name and arguments
 			// are complete. Announce it only now, immediately before its own
 			// approval/execution lifecycle; calls and outputs remain adjacent.
-			s.announceToolCall(conn, am.ID, call)
+			s.announceToolCall(conn, userID, am.ID, call)
 			// Rounds bound model continuations; calls bound the aggregate
 			// filesystem/network/database work one accepted user turn can
 			// induce. Count every proposal, including unknown, malformed,

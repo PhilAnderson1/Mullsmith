@@ -131,7 +131,7 @@ function freePort() {
 
 // startApp builds a config against the fake endpoint, boots the binary and
 // waits for the public auth config. `approval` overrides the per-tool policy map.
-export async function startApp(llmUrl, { repoRoot, binPath, approval, toolCards = "all" } = {}) {
+export async function startApp(llmUrl, { repoRoot, binPath, approval, toolCards = "all", oauth = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "mullsmith-browser-"));
   const port = await freePort();
   const policy = {
@@ -139,7 +139,7 @@ export async function startApp(llmUrl, { repoRoot, binPath, approval, toolCards 
     web_search: "auto", web_fetch: "auto", code_run: "confirm", ...(approval || {}),
   };
   const yaml = `
-server: { listen: "127.0.0.1:${port}", tls: { enabled: false }, shutdown_grace: "3s" }
+server: { listen: "127.0.0.1:${port}", ${oauth ? `host: "127.0.0.1:${port}",` : ""} tls: { enabled: false }, shutdown_grace: "3s" }
 database: { dir: "${dir}/db" }
 # Rate limits are exercised separately; scenarios share one test account.
 app_limits: { requests_per_minute: -1, chat_messages_per_hour: -1 }
@@ -159,6 +159,17 @@ tools:
     max_tool_rounds: 4
     tool_cards: ${toolCards}
     approval: { ${Object.entries(policy).map(([k, v]) => `${k}: ${v}`).join(", ")} }
+${oauth ? `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - id: "test_service"
+      name: "Test service"
+      transport: "streamable_http"
+      url: "https://mcp.example.org/mcp"
+      oauth: { client_id: "test-client", issuer: "https://login.example.org" }
+      approval: "confirm"
+` : ""}
 `;
   const { writeFileSync } = await import("node:fs");
   const cfgPath = join(dir, "config.yaml");

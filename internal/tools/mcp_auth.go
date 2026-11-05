@@ -57,6 +57,9 @@ func mcpSecretValues(server config.MCPServer) []string {
 			values = append(values, value)
 		}
 	}
+	if server.OAuth != nil && server.OAuth.ClientSecret != "" {
+		values = append(values, server.OAuth.ClientSecret)
+	}
 	// Replace longer overlapping values first.
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	return values

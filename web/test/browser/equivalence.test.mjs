@@ -72,7 +72,7 @@ before(async () => {
   llm = await startFakeLLM();
   // web_fetch needs confirm so the denial scenario has a prompt to deny;
   // everything the other scenarios call is auto.
-  app = await startApp(llm.url, { repoRoot, binPath, approval: { web_fetch: "confirm" } });
+  app = await startApp(llm.url, { repoRoot, binPath, approval: { web_fetch: "confirm" }, oauth: true });
   browser = await launchChromium();
 });
 
@@ -226,6 +226,20 @@ test("account deletion cannot proceed without confirmation", async () => {
     await page.waitForSelector("#settings-panel[hidden]", { state: "attached" });
     assert.equal(await page.locator("#topbar-title").isVisible(), true,
       "closing Settings should restore the conversation title");
+  } finally { await ctx.close(); }
+});
+
+test("Settings lists administrator-defined per-user connections", async () => {
+  const { ctx, page } = await newSession();
+  try {
+    await page.click("#btn-settings");
+    await page.waitForSelector("#settings-tabs:not([hidden])");
+    await page.click("#settings-tab-connections");
+    await page.waitForSelector("#settings-connections-page:not([hidden]) .mcp-connection-row");
+    assert.equal(await page.locator("#mcp-connections-list .f-name").textContent(), "Test service");
+    assert.equal(await page.locator("#mcp-connections-list .muted").textContent(), "Not connected");
+    assert.equal(await page.locator("#settings-account-page").isVisible(), false);
+    assert.equal(await page.locator("#settings-tab-connections").getAttribute("aria-selected"), "true");
   } finally { await ctx.close(); }
 });
 

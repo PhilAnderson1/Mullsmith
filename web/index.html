@@ -255,6 +255,11 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
           </button>
         </div>
+        <div id="settings-tabs" class="files-filters settings-tabs" role="tablist" hidden>
+          <button id="settings-tab-account" class="files-filter active" type="button" role="tab" aria-selected="true" aria-controls="settings-account-page">Account</button>
+          <button id="settings-tab-connections" class="files-filter" type="button" role="tab" aria-selected="false" aria-controls="settings-connections-page">Connections</button>
+        </div>
+        <div id="settings-account-page" role="tabpanel" aria-labelledby="settings-tab-account">
         <form id="form-profile" class="settings-form" novalidate>
           <label for="settings-name">Name</label>
           <input id="settings-name" type="text" autocomplete="name" maxlength="120" required>
@@ -292,6 +297,11 @@
           <p class="auth-mode">Deleting your account erases your login, every chat and all
             your files immediately. There is no undo.</p>
           <button id="btn-delete-account" class="btn danger" type="button">Delete account</button>
+        </div>
+        </div>
+        <div id="settings-connections-page" role="tabpanel" aria-labelledby="settings-tab-connections" hidden>
+          <p class="auth-mode">Connect your own account to services configured by the Mullsmith administrator.</p>
+          <ul id="mcp-connections-list" class="files-list"></ul>
         </div>
         </div>
       </section>

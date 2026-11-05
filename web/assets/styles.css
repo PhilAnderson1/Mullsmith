@@ -1284,6 +1284,9 @@ body.settings-open .topbar-title { display: none; }
   padding-bottom: env(safe-area-inset-bottom);
 }
 .settings-panel .panel-body { gap: 0.6rem; }
+.settings-tabs { justify-content: flex-start; margin-top: 0.2rem; }
+#settings-connections-page { max-width: 42rem; margin-top: 0.6rem; }
+.mcp-connection-row .btn { flex: none; }
 body.settings-open .thread,
 body.settings-open .composer-stack { display: none; }
 .settings-form {

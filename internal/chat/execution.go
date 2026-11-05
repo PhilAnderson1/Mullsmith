@@ -28,10 +28,10 @@ func (s *Service) runModelRound(ctx context.Context, conn sink, model string,
 
 // announceToolCall exposes one complete, normalized call when sequential
 // execution reaches it. Endpoint argument fragments never cross this boundary.
-func (s *Service) announceToolCall(conn sink, messageID string, call llm.ChatToolCall) {
+func (s *Service) announceToolCall(conn sink, userID, messageID string, call llm.ChatToolCall) {
 	_ = conn.Send(ToolStarted{
 		CallID: call.ID, MessageID: messageID, Tool: call.Function.Name,
-		Arguments: call.Function.Arguments, StatusOnly: s.Tools.StatusOnly(call.Function.Name),
+		Arguments: call.Function.Arguments, StatusOnly: s.Tools.StatusOnlyFor(userID, call.Function.Name),
 	})
 }
 
@@ -85,7 +85,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		_ = conn.Send(ToolFinished{CallID: callID, MessageID: assistantMsgID, Tool: name, Status: status, Card: c})
 	}
 
-	tool, known := s.Tools.Get(name)
+	tool, known := s.Tools.GetFor(userID, name)
 	if !known {
 		content, err := s.rejectToolCall(ctx, conn, userID, convID, assistantMsgID, g.ID, call, "unknown tool: "+name)
 		return content, "", err
@@ -101,7 +101,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 	status := "running"
 	// code_run defaults to confirm; a remembered "always allow in this
 	// conversation" (§9.9) skips the prompt for the rest of the chat.
-	needApproval := s.Tools.Policy(name) == tools.ApprovalConfirm &&
+	needApproval := s.Tools.PolicyFor(userID, name) == tools.ApprovalConfirm &&
 		!s.Approvals.Remembered(convID, name)
 	if needApproval {
 		status = "pending_approval"

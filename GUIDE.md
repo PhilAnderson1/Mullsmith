@@ -204,6 +204,7 @@ Mullsmith will only be available on this machine.
 ```yaml
 server:
   listen: ":3210"
+  host: "YOUR.HOSTNAME:3210"
   tls:
     enabled: false
 auth:
@@ -444,11 +445,11 @@ mcp:
       approval: "confirm"
 ```
 
-Restart Mullsmith after changing the list. Its advertised tools appear to every
-Mullsmith account as names beginning `mcp_<server-id>_`. `approval` may be
-`confirm` or `auto`; confirmation is the default. Calls share the ordinary
-per-turn tool-call limit and are recorded in conversation history like built-in
-tools.
+Restart Mullsmith after changing the list. Tools from servers without an
+`oauth` block appear to every Mullsmith account as names beginning
+`mcp_<server-id>_`. `approval` may be `confirm` or `auto`; confirmation is the
+default. Calls share the ordinary per-turn tool-call limit and are recorded in
+conversation history like built-in tools.
 
 The supplied configuration contains commented examples for DeepWiki, Weather
 and Wikidata. Add only servers you intend to use: their tool descriptions are
@@ -479,6 +480,66 @@ credential, so an authentication failure is reported without exposing it.
 These credentials define one system-wide external identity. Every Mullsmith
 account offered that server's tools can act through the same identity; use
 per-user OAuth instead when the external service must distinguish users.
+
+For per-user OAuth, first register Mullsmith as an OAuth application with the
+service provider. Give the provider this exact callback URL:
+
+```text
+https://mullsmith.example.org:3210/api/v1/mcp/oauth/callback
+```
+
+The provider supplies a client ID and, where required, a client secret. It also
+documents its issuer URL. Generate Mullsmith's token-encryption key once:
+
+```sh
+openssl rand -base64 32
+```
+
+Then configure the public host, encryption key and integration:
+
+```yaml
+server:
+  host: "mullsmith.example.org:3210"
+
+mcp:
+  enable_oauth: true
+  token_encryption_key: "paste-the-generated-value-here"
+  servers:
+    - id: "service"
+      name: "Service"
+      transport: "streamable_http"
+      url: "https://mcp.example.org/mcp"
+      oauth:
+        client_id: "provider-supplied-client-id"
+        client_secret: "provider-supplied-client-secret"
+        issuer: "https://login.example.org"
+        scopes: ["provider-scope"]
+        authorization_params:
+          access_type: "offline"
+      approval: "confirm"
+```
+
+Omit `client_secret` when the provider registers Mullsmith as a public client.
+The optional `scopes` list limits the permissions requested initially. The
+optional `authorization_params` map supplies provider-specific OAuth options;
+Mullsmith rejects parameters that would override its callback, state or PKCE
+protection.
+
+For a server supporting OAuth dynamic client registration, omit `client_id`
+and `client_secret` and set `dynamic_client_registration: true`. Mullsmith
+registers separately for each user and stores the issued client credentials
+with that user's encrypted tokens.
+The callback scheme comes from `server.tls.enabled`; the port in `server.host`
+overrides the listener port. Run `-check-config` to see the resulting callback
+URL, and register that same URL with the provider.
+
+After restart, each user opens **Settings → Connections** and selects
+**Connect**. Mullsmith uses Authorization Code with PKCE and stores the resulting
+tokens encrypted under that user's account. Only that user receives the
+connected tools. Disconnect removes the stored tokens locally; changing or
+losing `token_encryption_key` requires users to reconnect. Keep that key stable
+and back it up with the database. OAuth discovery and token requests must use
+public HTTPS endpoints and are protected by Mullsmith's private-network guard.
 
 A local MCP server must already be installed by the administrator. Configure
 its absolute executable path and arguments; Mullsmith invokes it directly and
@@ -640,9 +701,11 @@ Email is optional and disabled by default. Enable it to offer password-reset
 links, confirm new signups before login and confirm email-address changes.
 
 ```yaml
+server:
+  host: "mullsmith.example.org:3210"
+
 email:
   enabled: true
-  base_url: "https://mullsmith.example.org:3210"
   smtp:
     host: "smtp.example.org"
     port: 587
@@ -652,10 +715,11 @@ email:
     from: "mullsmith@example.org"
 ```
 
-Set `base_url` to the URL used to access Mullsmith, including any nonstandard
-port. Port 587 uses STARTTLS; port 465 uses implicit TLS. For a trusted LAN relay
-that needs no login, set `authenticated_smtp: false` and its actual host/port.
-Authenticated SMTP requires TLS.
+`server.host` is the browser-visible hostname and optional port used in email
+links; their HTTP/HTTPS scheme follows `server.tls.enabled`. Port 587 uses
+STARTTLS; port 465 uses implicit TLS. For a trusted LAN relay that needs no
+login, set `authenticated_smtp: false` and its actual host/port. Authenticated
+SMTP requires TLS.
 
 Put the SMTP secret in the service environment as below. Check logs and perform
 a real test signup/reset. Mail is queued and retried; a successful HTTP response

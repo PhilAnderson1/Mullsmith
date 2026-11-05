@@ -6,6 +6,7 @@ package config
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -142,6 +143,7 @@ type Config struct {
 
 type Server struct {
 	Listen       string `yaml:"listen"`
+	Host         string `yaml:"host"`
 	TLS          TLS    `yaml:"tls"`
 	MaxBodyBytes Size   `yaml:"max_body_bytes"`
 	// Admission caps take positive values, or -1 to disable; omission uses defaults.
@@ -406,8 +408,19 @@ type Agent struct {
 // user-managed servers require a separate security model. Stdio commands are
 // deliberately administrator-only configuration.
 type MCP struct {
-	StateDir string      `yaml:"state_dir"`
-	Servers  []MCPServer `yaml:"servers"`
+	StateDir           string      `yaml:"state_dir"`
+	EnableOAuth        bool        `yaml:"enable_oauth"`
+	TokenEncryptionKey string      `yaml:"token_encryption_key"`
+	Servers            []MCPServer `yaml:"servers"`
+}
+
+type MCPOAuth struct {
+	ClientID                  string            `yaml:"client_id"`
+	ClientSecret              string            `yaml:"client_secret"`
+	DynamicClientRegistration bool              `yaml:"dynamic_client_registration"`
+	Issuer                    string            `yaml:"issuer"`
+	Scopes                    []string          `yaml:"scopes"`
+	AuthorizationParams       map[string]string `yaml:"authorization_params"`
 }
 
 type MCPServer struct {
@@ -417,6 +430,7 @@ type MCPServer struct {
 	URL         string            `yaml:"url"`
 	BearerToken string            `yaml:"bearer_token"`
 	Headers     map[string]string `yaml:"headers"`
+	OAuth       *MCPOAuth         `yaml:"oauth"`
 	Command     string            `yaml:"command"`
 	Args        []string          `yaml:"args"`
 	Environment map[string]string `yaml:"environment"`
@@ -485,11 +499,7 @@ type Argon2 struct {
 // enabled enter the confirm-before-login flow.
 type Email struct {
 	Enabled bool `yaml:"enabled"`
-	// BaseURL is the absolute origin reset/confirm links are built from,
-	// e.g. https://host.example:3210. Required when enabled: links must
-	// come from operator config, never from a (spoofable) Host header.
-	BaseURL string `yaml:"base_url"`
-	SMTP    SMTP   `yaml:"smtp"`
+	SMTP    SMTP `yaml:"smtp"`
 }
 
 type SMTP struct {
@@ -506,6 +516,35 @@ type SMTP struct {
 
 // Addr is host:port for dialing.
 func (s SMTP) Addr() string { return net.JoinHostPort(s.Host, strconv.Itoa(s.Port)) }
+
+// Origin is the operator-declared browser-visible origin. It is never derived
+// from an HTTP Host header. An explicit port in server.host overrides the
+// listener port; otherwise the listener port is used.
+func (c *Config) Origin() string {
+	host, explicitPort, _ := parseServerHost(c.Server.Host)
+	if explicitPort != "" {
+		host = net.JoinHostPort(host, explicitPort)
+	} else {
+		_, port, _ := net.SplitHostPort(c.Server.Listen)
+		if port != "" && !((c.Server.TLS.Enabled && port == "443") || (!c.Server.TLS.Enabled && port == "80")) {
+			host = net.JoinHostPort(host, port)
+		} else if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
+	}
+	scheme := "http"
+	if c.Server.TLS.Enabled {
+		scheme = "https"
+	}
+	return scheme + "://" + host
+}
+
+func (c *Config) MCPOAuthCallbackURL() string { return c.Origin() + "/api/v1/mcp/oauth/callback" }
+
+func (s Server) Hostname() string {
+	host, _, _ := parseServerHost(s.Host)
+	return host
+}
 
 // RateLimit is retired: its two knobs moved into limits (§9.11). The type
 // exists only so Validate can name the move to operators of old configs
@@ -1154,9 +1193,6 @@ func (c *Config) setDefaults() {
 	if c.Email.SMTP.Port == 0 {
 		c.Email.SMTP.Port = 587
 	}
-	// Links are BaseURL + "/#reset?t=…": a trailing slash here would
-	// produce "//#" in every mail, so normalize once at load time.
-	c.Email.BaseURL = strings.TrimRight(c.Email.BaseURL, "/")
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
@@ -1256,6 +1292,51 @@ func (c *Config) Validate() error {
 			if server.Command != "" || len(server.Args) != 0 || len(server.Environment) != 0 {
 				f.bad("%s: command, args and environment are only valid for stdio", prefix)
 			}
+			if server.OAuth != nil {
+				if !c.MCP.EnableOAuth {
+					f.bad("%s.oauth: requires mcp.enable_oauth", prefix)
+				}
+				if server.OAuth.ClientID == "" && !server.OAuth.DynamicClientRegistration {
+					f.bad("%s.oauth: requires client_id or dynamic_client_registration", prefix)
+				}
+				if server.OAuth.ClientID != "" && server.OAuth.DynamicClientRegistration {
+					f.bad("%s.oauth: client_id and dynamic_client_registration are mutually exclusive", prefix)
+				}
+				if server.OAuth.ClientSecret != "" && server.OAuth.ClientID == "" {
+					f.bad("%s.oauth.client_secret: requires client_id", prefix)
+				}
+				if server.OAuth.Issuer == "" {
+					f.bad("%s.oauth.issuer: required to pin the authorization server", prefix)
+				}
+				if server.BearerToken != "" || len(server.Headers) != 0 {
+					f.bad("%s: oauth cannot be combined with bearer_token or headers", prefix)
+				}
+				if server.OAuth.Issuer != "" && validOAuthIssuer(server.OAuth.Issuer) != nil {
+					f.bad("%s.oauth.issuer: must be an HTTPS issuer URL without credentials, query or fragment", prefix)
+				}
+				if len(server.OAuth.Scopes) > 32 {
+					f.bad("%s.oauth.scopes: at most 32 scopes may be configured", prefix)
+				}
+				for _, scope := range server.OAuth.Scopes {
+					if strings.TrimSpace(scope) == "" || scope != strings.TrimSpace(scope) || len(scope) > 512 || strings.ContainsAny(scope, "\x00\r\n\t ") {
+						f.bad("%s.oauth.scopes: each scope must be a non-empty value without whitespace", prefix)
+					}
+				}
+				if len(server.OAuth.AuthorizationParams) > 8 {
+					f.bad("%s.oauth.authorization_params: at most 8 parameters may be configured", prefix)
+				}
+				reservedOAuthParams := map[string]bool{"client_id": true, "redirect_uri": true, "response_type": true, "state": true, "scope": true, "code_challenge": true, "code_challenge_method": true, "resource": true}
+				for name, value := range server.OAuth.AuthorizationParams {
+					if name == "" || name != strings.TrimSpace(name) || len(name) > 64 || !validOAuthParamName(name) {
+						f.bad("%s.oauth.authorization_params: invalid parameter name %q", prefix, name)
+					} else if reservedOAuthParams[strings.ToLower(name)] {
+						f.bad("%s.oauth.authorization_params: %q is managed by Mullsmith", prefix, name)
+					}
+					if value == "" || len(value) > 1024 || strings.ContainsAny(value, "\x00\r\n") {
+						f.bad("%s.oauth.authorization_params.%s: must be non-empty and at most 1024 characters", prefix, name)
+					}
+				}
+			}
 			if server.BearerToken != "" {
 				if strings.TrimSpace(server.BearerToken) != server.BearerToken || !validMCPHeaderValue(server.BearerToken) || strings.ContainsAny(server.BearerToken, " \t") {
 					f.bad("%s.bearer_token: must be a non-empty token without whitespace or control characters", prefix)
@@ -1284,8 +1365,8 @@ func (c *Config) Validate() error {
 			if server.URL != "" {
 				f.bad("%s.url: not valid for stdio", prefix)
 			}
-			if server.BearerToken != "" || len(server.Headers) != 0 {
-				f.bad("%s: bearer_token and headers are only valid for streamable_http; use environment for stdio", prefix)
+			if server.BearerToken != "" || len(server.Headers) != 0 || server.OAuth != nil {
+				f.bad("%s: bearer_token, headers and oauth are only valid for streamable_http; use environment for stdio", prefix)
 			}
 			if server.Command == "" || !filepath.IsAbs(server.Command) {
 				f.bad("%s.command: an absolute executable path is required for stdio", prefix)
@@ -1319,6 +1400,12 @@ func (c *Config) Validate() error {
 			f.bad("%s.approval: must be auto or confirm", prefix)
 		}
 	}
+	if c.MCP.EnableOAuth {
+		key, err := base64.StdEncoding.DecodeString(c.MCP.TokenEncryptionKey)
+		if err != nil || len(key) != 32 {
+			f.bad("mcp.token_encryption_key: must be a base64-encoded 32-byte key when OAuth is enabled")
+		}
+	}
 
 	host, port, err := net.SplitHostPort(c.Server.Listen)
 	if err != nil {
@@ -1327,6 +1414,19 @@ func (c *Config) Validate() error {
 		_ = host
 		if p, e := strconv.Atoi(port); e != nil || p < 0 || p > 65535 {
 			f.bad("server.listen: invalid port %q", port)
+		}
+	}
+	if c.Server.Host != "" {
+		if err := validServerHost(c.Server.Host); err != nil {
+			f.bad("server.host: %v", err)
+		}
+	}
+	if (c.Email.Enabled || c.MCP.EnableOAuth) && c.Server.Host == "" {
+		f.bad("server.host: required when email or MCP OAuth is enabled")
+	} else if (c.Email.Enabled || c.MCP.EnableOAuth) && port == "0" {
+		_, publicPort, _ := parseServerHost(c.Server.Host)
+		if publicPort == "" {
+			f.bad("server.host: an explicit public port is required when server.listen uses port 0")
 		}
 	}
 
@@ -1611,11 +1711,6 @@ func (c *Config) Validate() error {
 				f.bad("email.smtp: authenticated_smtp on port 25 is refused — credentials must not cross a cleartext connection (use 587 with STARTTLS or 465)")
 			}
 		}
-		if c.Email.BaseURL == "" {
-			f.bad("email.base_url: required when email.enabled is true (links must come from operator config, never from the request's Host header)")
-		} else if err := validOrigin(c.Email.BaseURL); err != nil {
-			f.bad("email.base_url: %v", err)
-		}
 	}
 
 	switch c.Logging.Level {
@@ -1670,8 +1765,8 @@ func (c *Config) Warnings() []string {
 	if c.Auth.Registration == "open" && !c.Email.Enabled {
 		w = append(w, "registration is open while email addresses are unverified — enable email.enabled or use invite-only (spec §9.12)")
 	}
-	if c.Email.Enabled && !strings.HasPrefix(c.Email.BaseURL, "https://") {
-		w = append(w, "email.base_url is not https — password-reset and confirmation tokens would cross the network in the clear")
+	if (c.Email.Enabled || c.MCP.EnableOAuth) && !c.Server.TLS.Enabled && !isLoopbackHost(c.Server.Hostname()) {
+		w = append(w, "server.host is not served with TLS — email or OAuth credentials would cross the network in the clear")
 	}
 	return w
 }
@@ -1800,24 +1895,50 @@ func (c *Config) ProbeSMTP(ctx context.Context) error {
 	return nil
 }
 
-// validOrigin accepts http(s)://host[:port] with nothing below the authority:
-// mail links are built by string-append onto this value, so a path, query or
-// fragment here is always a typo.
-func validOrigin(s string) error {
+func validServerHost(s string) error {
+	if strings.TrimSpace(s) != s || s == "" {
+		return fmt.Errorf("must be a non-empty host with no surrounding whitespace")
+	}
+	_, _, err := parseServerHost(s)
+	return err
+}
+
+func validOAuthIssuer(s string) error {
 	u, err := url.Parse(s)
-	switch {
-	case err != nil:
-		return err
-	case u.Scheme != "http" && u.Scheme != "https":
-		return fmt.Errorf("scheme must be http or https")
-	case u.Host == "":
-		return fmt.Errorf("host required")
-	case u.Path != "":
-		return fmt.Errorf("must not contain a path (links are appended to the origin)")
-	case u.RawQuery != "" || u.Fragment != "":
-		return fmt.Errorf("must not contain a query or fragment")
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("invalid OAuth issuer")
 	}
 	return nil
+}
+
+func validOAuthParamName(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+func parseServerHost(s string) (host, port string, err error) {
+	if ip := net.ParseIP(s); ip != nil {
+		return s, "", nil
+	}
+	u, err := url.Parse("//" + s)
+	if err != nil {
+		return "", "", err
+	}
+	if u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", "", fmt.Errorf("must contain only a hostname or IP address and optional port")
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return "", "", fmt.Errorf("invalid port %q", p)
+		}
+	}
+	return u.Hostname(), u.Port(), nil
 }
 
 func parseProxy(p string) (netip.Prefix, error) {

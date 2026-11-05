@@ -27,7 +27,7 @@ func (s *Service) BuildRequest(conv *store.Conversation, userID string, hist []s
 	// and a hallucinated call to a tool that was never offered is answered
 	// as an error, not executed.
 	visionOn := s.cfg.LLM.VisionFor(s.Model(conv.Model))
-	toolSpecs := s.Tools.Specs()
+	toolSpecs := s.Tools.SpecsFor(userID)
 	if !visionOn {
 		filtered := toolSpecs[:0:0]
 		for _, sp := range toolSpecs {

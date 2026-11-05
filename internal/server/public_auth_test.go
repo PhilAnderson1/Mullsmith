@@ -85,7 +85,11 @@ func signupPayload(email string) map[string]any {
 
 func publicEmailConfig(t *testing.T) *config.Config {
 	cfg := authCfg(t)
-	cfg.Email = config.Email{Enabled: true, BaseURL: "https://app.test", SMTP: config.SMTP{Host: "mail.test", Port: 587, From: "app@example.test"}}
+	cfg.Server.Host = "app.test:3210"
+	cfg.Server.TLS.Enabled = true
+	cfg.Server.TLS.CertFile = "test-cert.pem"
+	cfg.Server.TLS.KeyFile = "test-key.pem"
+	cfg.Email = config.Email{Enabled: true, SMTP: config.SMTP{Host: "mail.test", Port: 587, From: "app@example.test"}}
 	return cfg
 }
 

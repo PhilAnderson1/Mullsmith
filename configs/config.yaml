@@ -12,6 +12,10 @@ server:
   # Use "127.0.0.1:3210" for localhost only.
   listen: ":3210"
 
+  # Browser-visible host used for email and OAuth links; an optional port
+  # overrides the listener port, e.g. "mullsmith.example.org:3210".
+  host: ""
+
   # Maximum open TCP connections.
   max_connections: 128
 
@@ -228,6 +232,14 @@ mcp:
   # Writable state and cache directory for locally executed stdio servers.
   state_dir: "/var/lib/mullsmith/mcp"
 
+  # Allow users to connect their own accounts to configured OAuth servers.
+  enable_oauth: false
+
+  # Base64-encoded 32-byte key used to encrypt OAuth tokens in the database.
+  token_encryption_key: ""
+  # To keep this secret in a separate environment file, use the following environment variable:
+  # token_encryption_key: "${MULLSMITH_MCP_TOKEN_KEY:-}"
+
   servers: []
 
   # Unauthenticated Streamable HTTP examples (remove servers: [] before use):
@@ -236,6 +248,32 @@ mcp:
   #     name: "DeepWiki"
   #     transport: "streamable_http"
   #     url: "https://mcp.deepwiki.com/mcp"
+  #     approval: "confirm"
+
+  # Per-user OAuth example. Register the callback URL shown by -check-config
+  # with the provider, then supply its client credentials.
+  # servers:
+  #   - id: "github"
+  #     name: "GitHub"
+  #     transport: "streamable_http"
+  #     url: "https://api.githubcopilot.com/mcp/"
+  #     oauth:
+  #       client_id: "${GITHUB_OAUTH_CLIENT_ID}"
+  #       client_secret: "${GITHUB_OAUTH_CLIENT_SECRET}"
+  #       issuer: "https://github.com"
+  #     approval: "confirm"
+  #
+  # Servers that support dynamic client registration need no administrator-
+  # supplied client ID or secret:
+  #
+  #   - id: "todoist"
+  #     name: "Todoist"
+  #     transport: "streamable_http"
+  #     url: "https://ai.todoist.net/mcp"
+  #     oauth:
+  #       dynamic_client_registration: true
+  #       issuer: "https://todoist.com"
+  #       scopes: ["data:read_write"]
   #     approval: "confirm"
   #
   #   - id: "weather"
@@ -303,9 +341,6 @@ scratchpad:
 email:
   # Enable email-based account flows.
   enabled: false
-
-  # Public origin used in email links, e.g. "https://mullsmith.mydomain.org/".
-  base_url: ""
 
   smtp:
     # SMTP server hostname.

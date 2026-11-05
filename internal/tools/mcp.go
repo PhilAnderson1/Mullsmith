@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"mullsmith/internal/config"
@@ -45,6 +47,8 @@ type mcpTool struct {
 	caller      mcpToolCaller
 	logger      *slog.Logger
 	secrets     []string
+	hideErrors  bool
+	onError     func()
 }
 
 func (t *mcpTool) Name() string               { return t.name }
@@ -60,9 +64,16 @@ func (t *mcpTool) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	}
 	result, err := t.caller.CallTool(ctx, &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args})
 	if err != nil {
+		if t.onError != nil && errors.Is(err, ErrMCPAuthorizationRequired) {
+			t.onError()
+		}
 		if t.logger != nil {
-			t.logger.Warn("MCP tool call failed", "server", t.serverName, "tool", t.remoteName,
-				"error", redactMCPError(err, t.secrets))
+			if t.hideErrors {
+				t.logger.Warn("MCP tool call failed", "server", t.serverName, "tool", t.remoteName)
+			} else {
+				t.logger.Warn("MCP tool call failed", "server", t.serverName, "tool", t.remoteName,
+					"error", redactMCPError(err, t.secrets))
+			}
 		}
 		return Result{}, fmt.Errorf("MCP tool call failed")
 	}
@@ -87,6 +98,9 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 	discovered := make([]discovery, len(cfg.MCP.Servers))
 	var wg sync.WaitGroup
 	for i, server := range cfg.MCP.Servers {
+		if server.OAuth != nil {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -100,6 +114,9 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 	// Registration remains in config order even though discovery is parallel,
 	// keeping model tool specifications stable between restarts.
 	for i, server := range cfg.MCP.Servers {
+		if server.OAuth != nil {
+			continue
+		}
 		found := discovered[i]
 		if found.err != nil {
 			logger.Warn("MCP server unavailable; tools skipped", "server", server.ID,
@@ -161,15 +178,26 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 }
 
 func connectMCP(ctx context.Context, logger *slog.Logger, server config.MCPServer) (*mcpsdk.ClientSession, []*mcpsdk.Tool, func() error, error) {
+	return connectMCPWithOAuth(ctx, logger, server, nil)
+}
+
+func connectMCPWithOAuth(ctx context.Context, logger *slog.Logger, server config.MCPServer, oauth mcpauth.OAuthHandler) (*mcpsdk.ClientSession, []*mcpsdk.Tool, func() error, error) {
+	sdkLogger := mcpSafeLogger(logger, server)
+	if server.OAuth != nil {
+		// OAuth access and refresh tokens are learned at runtime, so they cannot
+		// be value-redacted like administrator-configured static credentials.
+		// Keep the SDK silent and emit only Mullsmith's generic lifecycle logs.
+		sdkLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "mullsmith", Version: "1"},
-		&mcpsdk.ClientOptions{Logger: mcpSafeLogger(logger, server)})
+		&mcpsdk.ClientOptions{Logger: sdkLogger})
 	var (
 		transport mcpsdk.Transport
 		cleanup   func() error
 	)
 	switch server.Transport {
 	case "streamable_http":
-		transport, cleanup = mcpHTTPTransport(server)
+		transport, cleanup = mcpHTTPTransport(server, oauth)
 	case "stdio":
 		stdioTransport, err := newMCPStdioTransport(server)
 		if err != nil {
@@ -201,7 +229,7 @@ func connectMCP(ctx context.Context, logger *slog.Logger, server config.MCPServe
 	return session, all, closeSession, nil
 }
 
-func mcpHTTPTransport(server config.MCPServer) (mcpsdk.Transport, func() error) {
+func mcpHTTPTransport(server config.MCPServer, oauth mcpauth.OAuthHandler) (mcpsdk.Transport, func() error) {
 	endpoint, _ := url.Parse(server.URL) // config validation has already succeeded
 	httpTransport := &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: mcpResponseHeaderTimeout}
 	authTransport := &mcpAuthTransport{base: httpTransport, headers: mcpAuthHeaders(server)}
@@ -215,7 +243,7 @@ func mcpHTTPTransport(server config.MCPServer) (mcpsdk.Transport, func() error) 
 		},
 	}
 	transport := &mcpsdk.StreamableClientTransport{Endpoint: server.URL, HTTPClient: httpClient,
-		MaxRetries: 3, DisableStandaloneSSE: true, MaxEventSize: mcpMaxEventBytes}
+		MaxRetries: 3, DisableStandaloneSSE: true, MaxEventSize: mcpMaxEventBytes, OAuthHandler: oauth}
 	return transport, func() error {
 		httpTransport.CloseIdleConnections()
 		return nil
@@ -246,6 +274,11 @@ func listMCPTools(ctx context.Context, session *mcpsdk.ClientSession) ([]*mcpsdk
 func CheckMCPServers(ctx context.Context, cfg *config.Config, logger *slog.Logger) []config.Check {
 	checks := make([]config.Check, 0, len(cfg.MCP.Servers))
 	for _, server := range cfg.MCP.Servers {
+		if server.OAuth != nil {
+			checks = append(checks, config.Check{Name: "mcp." + server.ID, OK: true,
+				Detail: "OAuth configured; callback " + cfg.MCPOAuthCallbackURL()})
+			continue
+		}
 		probeServer := server
 		var removeProbeState func()
 		if server.Transport == "stdio" {

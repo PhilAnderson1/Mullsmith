@@ -176,6 +176,26 @@ func TestMCPConfigDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("stdio StateDir = %q, root %q", got.StateDir, stdio.MCP.StateDir)
 	}
 
+	oauthBase := strings.Replace(minimalYAML, `  listen: "127.0.0.1:8090"`, "  listen: \"127.0.0.1:8090\"\n  host: \"mullsmith.example\"", 1)
+	oauth, err := Load(writeCfg(t, oauthBase+`mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - id: "private"
+      transport: "streamable_http"
+      url: "https://mcp.example.org/mcp"
+      oauth:
+        client_id: "mullsmith-client"
+        client_secret: "secret"
+        issuer: "https://login.example.org/tenant/v2.0"
+`))
+	if err != nil {
+		t.Fatalf("Load OAuth HTTP: %v", err)
+	}
+	if got := oauth.MCPOAuthCallbackURL(); got != "http://mullsmith.example:8090/api/v1/mcp/oauth/callback" {
+		t.Fatalf("OAuth callback = %q", got)
+	}
+
 	tests := []struct {
 		name string
 		body string
@@ -285,6 +305,90 @@ mcp:
 			_, err := Load(writeCfg(t, minimalYAML+tt.body))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Load error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+
+	oauthCases := []struct {
+		name, block, want string
+	}{
+		{"missing host", `mcp: {enable_oauth: true, token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`, "server.host"},
+		{"bad key", `mcp: {enable_oauth: true, token_encryption_key: "short"}`, "base64-encoded 32-byte key"},
+		{"oauth disabled", `mcp:
+  servers:
+    - {id: private, transport: streamable_http, url: "https://mcp.example/mcp", oauth: {client_id: client}}`, "requires mcp.enable_oauth"},
+		{"missing client registration", `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - {id: private, transport: streamable_http, url: "https://mcp.example/mcp", oauth: {issuer: "https://login.example"}}`, "requires client_id or dynamic_client_registration"},
+		{"conflicting client registration", `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - {id: private, transport: streamable_http, url: "https://mcp.example/mcp", oauth: {client_id: client, dynamic_client_registration: true, issuer: "https://login.example"}}`, "mutually exclusive"},
+		{"missing issuer", `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - {id: private, transport: streamable_http, url: "https://mcp.example/mcp", oauth: {client_id: client}}`, "oauth.issuer"},
+		{"insecure issuer", `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - {id: private, transport: streamable_http, url: "https://mcp.example/mcp", oauth: {client_id: client, issuer: "http://login.example"}}`, "HTTPS issuer"},
+		{"static and OAuth auth", `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - {id: private, transport: streamable_http, url: "https://mcp.example/mcp", bearer_token: token, oauth: {client_id: client, issuer: "https://login.example"}}`, "cannot be combined"},
+		{"reserved authorization parameter", `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - id: private
+      transport: streamable_http
+      url: "https://mcp.example/mcp"
+      oauth:
+        client_id: client
+        issuer: "https://login.example"
+        authorization_params: {redirect_uri: "https://attacker.example"}`, "managed by Mullsmith"},
+		{"OAuth over stdio", `mcp:
+  enable_oauth: true
+  token_encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  servers:
+    - {id: private, transport: stdio, command: "/bin/true", oauth: {client_id: client, issuer: "https://login.example"}}`, "only valid for streamable_http"},
+	}
+	for _, tt := range oauthCases {
+		t.Run(tt.name, func(t *testing.T) {
+			body := minimalYAML + tt.block + "\n"
+			if tt.name != "missing host" && strings.Contains(tt.block, "enable_oauth: true") {
+				body = strings.Replace(body, `  listen: "127.0.0.1:8090"`, "  listen: \"127.0.0.1:8090\"\n  host: \"mullsmith.example\"", 1)
+			}
+			_, err := Load(writeCfg(t, body))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestPublicOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		server Server
+		want   string
+	}{
+		{"listener port", Server{Listen: ":3210", Host: "mullsmith.example"}, "http://mullsmith.example:3210"},
+		{"explicit port", Server{Listen: ":3210", Host: "mullsmith.example:8443", TLS: TLS{Enabled: true}}, "https://mullsmith.example:8443"},
+		{"standard TLS port", Server{Listen: ":443", Host: "mullsmith.example", TLS: TLS{Enabled: true}}, "https://mullsmith.example"},
+		{"IPv6", Server{Listen: "[::]:3210", Host: "2001:db8::1"}, "http://[2001:db8::1]:3210"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Server: tt.server}
+			if got := cfg.Origin(); got != tt.want {
+				t.Fatalf("Origin() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -861,9 +965,20 @@ llm: {endpoint: "http://x/v1", models: [{id: m}]}
 func TestEmailValidation(t *testing.T) {
 	// A disabled (or absent) email section needs nothing else — the
 	// minimalYAML in this file has no email: block and must keep loading.
-	const base = minimalYAML + `email:
+	const base = `
+server:
+  listen: "127.0.0.1:8090"
+  host: "mullsmith.example:3210"
+database:
+  dir: "./data/db"
+scratchpad:
+  root: "./data/scratchpad"
+llm:
+  endpoint: "http://127.0.0.1:8081/v1"
+  models:
+    - id: "test-model"
+email:
   enabled: true
-  base_url: "https://mullsmith.example:3210"
   smtp:
     host: "mail.example"
     authenticated_smtp: true
@@ -879,11 +994,12 @@ func TestEmailValidation(t *testing.T) {
 		nw      string
 		wantErr string
 	}{
-		{"needs host", `host: "mail.example"`, `host: ""`, "email.smtp.host"},
+		{"needs SMTP host", `host: "mail.example"`, `host: ""`, "email.smtp.host"},
 		{"needs from", `from: "mullsmith@example"`, `from: "mullsmith"`, "email.smtp.from"},
-		{"needs base_url", `  base_url: "https://mullsmith.example:3210"`, "", "email.base_url"},
-		{"base_url path", `https://mullsmith.example:3210"`, `https://x.example/app"`, "email.base_url"},
-		{"base_url scheme", `https://mullsmith.example:3210"`, `ftp://x.example"`, "email.base_url"},
+		{"needs public host", `  host: "mullsmith.example:3210"`, `  host: ""`, "server.host"},
+		{"host path", `mullsmith.example:3210"`, `x.example/app"`, "server.host"},
+		{"host scheme", `mullsmith.example:3210"`, `https://x.example"`, "server.host"},
+		{"host port", `mullsmith.example:3210"`, `x.example:70000"`, "server.host"},
 		{"auth needs username", `username: "mullsmith"`, `username: ""`, "email.smtp.username"},
 		{"auth on port 25", `host: "mail.example"`, "host: \"mail.example\"\n    port: 25", "port 25"},
 	}
@@ -902,9 +1018,17 @@ func TestEmailValidation(t *testing.T) {
 			}
 		})
 	}
+	t.Run("ephemeral listener needs public port", func(t *testing.T) {
+		body := strings.Replace(base, `listen: "127.0.0.1:8090"`, `listen: "127.0.0.1:0"`, 1)
+		body = strings.Replace(body, `host: "mullsmith.example:3210"`, `host: "mullsmith.example"`, 1)
+		_, err := Load(writeCfg(t, body))
+		if err == nil || !strings.Contains(err.Error(), "explicit public port") {
+			t.Fatalf("Load error = %v", err)
+		}
+	})
 
-	// Defaults + normalization: port fills to 587, trailing slash in
-	// base_url is stripped (link building appends "/#reset?t=…").
+	// Defaults: SMTP port fills to 587 and the public origin is derived from
+	// the configured host and TLS mode.
 	cfg, err := Load(writeCfg(t, base))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -912,14 +1036,8 @@ func TestEmailValidation(t *testing.T) {
 	if cfg.Email.SMTP.Port != 587 {
 		t.Errorf("smtp port default = %d, want 587", cfg.Email.SMTP.Port)
 	}
-	cfg, err = Load(writeCfg(t, strings.Replace(base,
-		"base_url: \"https://mullsmith.example:3210\"",
-		"base_url: \"https://mullsmith.example:3210/\"", 1)))
-	if err != nil {
-		t.Fatalf("trailing-slash base_url: %v", err)
-	}
-	if cfg.Email.BaseURL != "https://mullsmith.example:3210" {
-		t.Errorf("base_url = %q, want trailing slash stripped", cfg.Email.BaseURL)
+	if cfg.Origin() != "http://mullsmith.example:3210" {
+		t.Errorf("origin = %q", cfg.Origin())
 	}
 
 	// Unauthenticated port 25 (LAN relay) stays legal.

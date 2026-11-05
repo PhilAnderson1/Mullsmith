@@ -450,6 +450,12 @@ func (s *Server) handleFileImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Disposition", mineDisposition("inline", name))
 	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	// Chat images are user-specific, so permit the browser's private cache but
+	// never a shared proxy cache. Do not mark them immutable: an artifact may be
+	// replaced at the same path and a reload should eventually see the change.
+	const imageCacheLifetime = 30 * 24 * time.Hour
+	w.Header().Set("Cache-Control", "private, max-age=2592000")
+	w.Header().Set("Expires", time.Now().Add(imageCacheLifetime).UTC().Format(http.TimeFormat))
 	if r.Method == http.MethodHead {
 		return
 	}

@@ -169,7 +169,7 @@ async function enterChat(user) {
   state.me = user;
   show($("#view-auth"), false);
   show($("#view-chat"), true);
-  if (location.hash && !location.hash.startsWith("#/c/") && location.hash !== "#/files") {
+  if (location.hash && !location.hash.startsWith("#/c/") && location.hash !== "#/files" && !location.hash.startsWith("#/settings")) {
     location.hash = ""; // drop #login/#register leftovers
   }
   if (location.hash.startsWith("#/c/")) {
@@ -1067,8 +1067,78 @@ function openSettingsView() {
   state.settingsOpen = true;
   document.body.classList.add("settings-open");
   fillSettingsForm();
+  show($("#settings-tabs"), !!state.meta?.mcp_oauth);
   show($("#settings-panel"), true);
   if (isPhone()) closeDrawer();
+}
+
+function showSettingsPage(page) {
+  const connections = page === "connections" && !!state.meta?.mcp_oauth;
+  show($("#settings-account-page"), !connections);
+  show($("#settings-connections-page"), connections);
+  $("#settings-tab-account").classList.toggle("active", !connections);
+  $("#settings-tab-connections").classList.toggle("active", connections);
+  $("#settings-tab-account").setAttribute("aria-selected", String(!connections));
+  $("#settings-tab-connections").setAttribute("aria-selected", String(connections));
+  if (connections) loadMCPConnections().catch((e) => handleErr(e, "MCP connections"));
+}
+
+let mcpReloadTimer = 0;
+
+async function loadMCPConnections() {
+  const data = await api.mcpConnections();
+  const list = $("#mcp-connections-list");
+  list.replaceChildren();
+  let connecting = false;
+  for (const item of data.items || []) {
+    const row = document.createElement("li");
+    row.className = "file-row mcp-connection-row";
+    const main = document.createElement("div");
+    main.className = "f-main";
+    const name = document.createElement("div");
+    name.className = "f-name";
+    name.textContent = item.name;
+    const status = document.createElement("div");
+    status.className = "muted";
+    status.textContent = item.status === "connected" ? "Connected" :
+      item.status === "connecting" ? "Connecting…" :
+      item.status === "reconnect_required" ? "Reconnect required" : "Not connected";
+    main.append(name, status);
+    const button = document.createElement("button");
+    button.className = item.status === "connected" ? "btn ghost" : "btn primary";
+    button.type = "button";
+    button.textContent = item.status === "connected" ? "Disconnect" :
+      item.status === "connecting" ? "Restart" :
+      item.status === "reconnect_required" ? "Reconnect" : "Connect";
+    connecting ||= item.status === "connecting";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        if (item.status === "connected") {
+          await api.disconnectMCP(item.id);
+          await loadMCPConnections();
+        } else {
+          const result = await api.connectMCP(item.id);
+          location.assign(result.authorization_url);
+        }
+      } catch (err) {
+        handleErr(err, "MCP connection");
+        button.disabled = false;
+      }
+    });
+    row.append(main, button);
+    list.append(row);
+  }
+  if (!list.children.length) {
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "No OAuth services are configured.";
+    list.append(empty);
+  }
+  clearTimeout(mcpReloadTimer);
+  if (connecting && location.hash.startsWith("#/settings/connections")) {
+    mcpReloadTimer = setTimeout(() => loadMCPConnections().catch((e) => handleErr(e, "MCP connection")), 1500);
+  }
 }
 
 function closeSettingsView() {
@@ -1546,8 +1616,15 @@ function onHashChange() {
     openFilesView();
     return;
   }
-  if (location.hash === "#/settings") {
+  if (location.hash.startsWith("#/settings")) {
+    const oauthReturned = location.hash.includes("oauth=returned");
+    const oauthDenied = location.hash.includes("oauth=denied");
+    if (oauthReturned || oauthDenied) history.replaceState(null, "", "#/settings/connections");
     openSettingsView();
+    const connections = location.hash.startsWith("#/settings/connections");
+    showSettingsPage(connections ? "connections" : "account");
+    if (oauthReturned) toast("Authorization returned; completing the connection…", false);
+    if (oauthDenied) toast("Authorization was cancelled or denied.", true);
     return;
   }
   if (state.filesOpen) closeFilesView();
@@ -1695,6 +1772,8 @@ async function boot() {
   $("#btn-settings-close").addEventListener("click", () => {
     location.hash = navigation.currentId ? `#/c/${navigation.currentId}` : "";
   });
+  $("#settings-tab-account").addEventListener("click", () => { location.hash = "#/settings"; });
+  $("#settings-tab-connections").addEventListener("click", () => { location.hash = "#/settings/connections"; });
   $("#form-profile").addEventListener("submit", onSettingsSave);
   $("#settings-email").addEventListener("input", syncEmailVerification);
   $("#form-password").addEventListener("submit", onPasswordSave);

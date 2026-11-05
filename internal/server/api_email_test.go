@@ -70,9 +70,12 @@ func emailTestApp(t *testing.T) (*authTest, *fakeMailer) {
 	t.Helper()
 	cfg := authCfg(t)
 	cfg.Auth.Registration = "open"
+	cfg.Server.Host = "gk.test:3210"
+	cfg.Server.TLS.Enabled = true
+	cfg.Server.TLS.CertFile = "test-cert.pem"
+	cfg.Server.TLS.KeyFile = "test-key.pem"
 	cfg.Email = config.Email{
 		Enabled: true,
-		BaseURL: "https://gk.test:3210",
 		SMTP:    config.SMTP{Host: "mail.test", Port: 587, From: "mullsmith@test"},
 	}
 	fm := &fakeMailer{ch: make(chan mail.Job, 64)}
@@ -92,7 +95,7 @@ func emailOffApp(t *testing.T) *authTest {
 }
 
 // tokenFromJob pulls the raw URL token out of a built message body, which
-// carries "<BaseURL>/#confirm?t=…" or "/#reset?t=…" on its own line.
+// carries "<public origin>/#confirm?t=…" or "/#reset?t=…" on its own line.
 func tokenFromJob(t *testing.T, j mail.Job, frag string) string {
 	t.Helper()
 	i := strings.Index(j.Body, frag)

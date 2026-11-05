@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -36,6 +37,7 @@ type Server struct {
 	locks        *auth.LoginLocks
 	chat         *chat.Service
 	tools        *tools.Registry
+	mcpOAuth     *tools.MCPOAuthManager
 	httpSrv      *http.Server
 	// hashGate bounds concurrent Argon2 work globally (audit finding 4).
 	hashGate *auth.HashGate
@@ -123,6 +125,16 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		s.signupBudget = auth.NewSignupBudget(cfg.Auth.SignupsPerHour())
 	}
 	s.tools = tools.BuildFor(cfg, logger, nil, code, s.files)
+	oauthManager, err := tools.NewMCPOAuthManager(cfg, db, logger)
+	if err != nil {
+		return nil, err
+	}
+	s.mcpOAuth = oauthManager
+	if s.mcpOAuth != nil {
+		s.mcpOAuth.SetReservedToolNames(s.tools.Names())
+		s.tools.SetUserToolProvider(s.mcpOAuth)
+		s.mcpOAuth.StartRestore()
+	}
 	s.chat = chat.New(cfg, db, logger, s.tools)
 	s.chat.Window = s.overflowLine
 
@@ -152,6 +164,10 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 	// Self-service account deletion: always available (not an email-feature),
 	// CSRF-guarded like every mutation; the UI adds a confirmation dialog.
 	mux.Handle("POST /api/v1/auth/me/delete", s.authRequired(s.handleDeleteAccount))
+	mux.Handle("GET /api/v1/mcp/connections", s.authRequired(s.handleMCPConnections))
+	mux.Handle("POST /api/v1/mcp/connections/{id}/connect", s.authRequired(s.handleMCPConnect))
+	mux.Handle("DELETE /api/v1/mcp/connections/{id}", s.authRequired(s.handleMCPDisconnect))
+	mux.HandleFunc("GET /api/v1/mcp/oauth/callback", s.handleMCPOAuthCallback)
 	mux.Handle("GET /api/v1/conversations", s.authRequired(s.handleConversationsList))
 	mux.Handle("POST /api/v1/conversations", s.authRequired(s.handleConversationCreate))
 	// Bulk housekeeping ("Delete older than…") on the collection itself,
@@ -222,6 +238,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if closeErr := s.tools.Close(); closeErr != nil {
 		s.logger.Warn("tool transport shutdown failed", "error", closeErr)
 	}
+	if s.mcpOAuth != nil {
+		err = errors.Join(err, s.mcpOAuth.Close())
+	}
 	return err
 }
 
@@ -265,6 +284,7 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 		"default_model":  s.cfg.LLM.DefaultModelID(),
 		"show_reasoning": s.cfg.LLM.ShowReasoning,
 		"tool_cards":     s.cfg.Tools.Agent.ToolCards,
+		"mcp_oauth":      s.cfg.MCP.EnableOAuth,
 		// Thinking selector: the choice list per picker model (a model's
 		// dropdown describes its model), or null when the feature is off —
 		// the SPA hides the selector on null and per-model rows on empty.

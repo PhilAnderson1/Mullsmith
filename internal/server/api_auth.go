@@ -491,7 +491,7 @@ func (s *Server) handleMeUpdate(w http.ResponseWriter, r *http.Request) {
 			name, email, prompt, expiry, now)
 		if updateErr == nil && token != "" {
 			pendingAddr = email
-			subject, message := mail.ConfirmationMailChange(s.cfg.Email.BaseURL, token)
+			subject, message := mail.ConfirmationMailChange(s.cfg.Origin(), token)
 			s.mailer.Send(email, subject, message)
 			subject, message = mail.AddressChangedMail()
 			s.mailer.Send(user.Email, subject, message)
@@ -622,6 +622,9 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// execution is still running when its owner's storage is removed, and
 	// a final write racing the delete reads as cancellation, not success.
 	s.chat.Generations.AbortUser(user.ID)
+	if s.mcpOAuth != nil {
+		s.mcpOAuth.CloseUser(user.ID)
+	}
 	deleted, err := s.store.DeleteUser(r.Context(), user.ID)
 	if err != nil {
 		s.logger.Error("account deletion failed", "error", err, "user", user.ID,

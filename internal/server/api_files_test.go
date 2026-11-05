@@ -441,6 +441,13 @@ func TestInlineImageEndpointServesOnlyRasterArtifacts(t *testing.T) {
 	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
 		t.Errorf("Content-Disposition = %q, want inline", cd)
 	}
+	if cache := resp.Header.Get("Cache-Control"); cache != "private, max-age=2592000" {
+		t.Errorf("Cache-Control = %q, want one-month private cache", cache)
+	}
+	expires, err := http.ParseTime(resp.Header.Get("Expires"))
+	if err != nil || time.Until(expires) < 29*24*time.Hour || time.Until(expires) > 31*24*time.Hour {
+		t.Errorf("Expires = %q (%v), want about one month", resp.Header.Get("Expires"), err)
+	}
 
 	for _, rel := range []string{"artifacts%2Fvector.svg", "work%2Fdraft.png", "artifacts%2Fmissing.png"} {
 		resp := a.do(http.MethodGet, "/api/v1/files/image?path="+rel, nil)
