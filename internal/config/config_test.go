@@ -964,6 +964,28 @@ func TestCheckIOWritable(t *testing.T) {
 	}
 }
 
+func TestCheckIODoesNotCreateStdioStateAsCLIUser(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "mcp-state")
+	cfg, err := Load(writeCfg(t, minimalYAML+fmt.Sprintf(`mcp:
+  state_dir: %q
+  servers:
+    - id: "local"
+      transport: "stdio"
+      command: "/usr/local/bin/local-mcp-server"
+`, stateDir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range cfg.CheckIO() {
+		if !check.OK {
+			t.Fatalf("check %s failed: %s", check.Name, check.Detail)
+		}
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("CheckIO created stdio state as the CLI user: %v", err)
+	}
+}
+
 func TestLoadModelsDefaultAndValidation(t *testing.T) {
 	// Unmarked list ⇒ the first entry is the default.
 	cfg, err := Load(writeCfg(t, minimalBase+modelsYAML(

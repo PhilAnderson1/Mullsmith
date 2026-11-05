@@ -1645,15 +1645,16 @@ func (c *Config) EnsureDirs() error {
 	return nil
 }
 
-// CheckIO validates writable roots and TLS files; no network access.
+// CheckIO validates application-owned writable roots and TLS files; no network
+// access. MCP stdio state is intentionally not created here: -check-config is
+// commonly run as root while the service runs unprivileged, and creating a new
+// state tree here would give it the wrong owner. The service creates that tree
+// through EnsureDirs, and MCP connectivity checks use disposable state.
 func (c *Config) CheckIO() []Check {
 	var out []Check
 	dirs := []struct{ name, path string }{
 		{"database.dir", c.Database.Dir},
 		{"scratchpad.root", c.Scratchpad.Root},
-	}
-	if c.hasStdioMCP() {
-		dirs = append(dirs, struct{ name, path string }{"mcp.state_dir", c.MCP.StateDir})
 	}
 	for _, d := range dirs {
 		ch := Check{Name: d.name, Detail: d.path}

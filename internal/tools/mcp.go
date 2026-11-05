@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -238,11 +239,25 @@ func listMCPTools(ctx context.Context, session *mcpsdk.ClientSession) ([]*mcpsdk
 func CheckMCPServers(ctx context.Context, cfg *config.Config, logger *slog.Logger) []config.Check {
 	checks := make([]config.Check, 0, len(cfg.MCP.Servers))
 	for _, server := range cfg.MCP.Servers {
+		probeServer := server
+		var removeProbeState func()
+		if server.Transport == "stdio" {
+			tempState, err := os.MkdirTemp("", "mullsmith-mcp-check-"+server.ID+"-")
+			if err != nil {
+				checks = append(checks, config.Check{Name: "mcp." + server.ID, Detail: "create temporary state: " + err.Error()})
+				continue
+			}
+			probeServer.StateDir = tempState
+			removeProbeState = func() { _ = os.RemoveAll(tempState) }
+		}
 		probeCtx, cancel := context.WithTimeout(ctx, mcpStartupTimeout)
-		session, advertised, closeSession, err := connectMCP(probeCtx, logger, server)
+		session, advertised, closeSession, err := connectMCP(probeCtx, logger, probeServer)
 		cancel()
 		if session != nil {
 			_ = closeSession()
+		}
+		if removeProbeState != nil {
+			removeProbeState()
 		}
 		check := config.Check{Name: "mcp." + server.ID, OK: err == nil}
 		if err != nil {

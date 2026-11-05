@@ -214,6 +214,27 @@ func TestUnavailableStdioMCPDoesNotPreventRegistryBuild(t *testing.T) {
 	}
 }
 
+func TestCheckMCPServersUsesDisposableStdioState(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistentState := filepath.Join(t.TempDir(), "persistent-state")
+	cfg := &config.Config{MCP: config.MCP{Servers: []config.MCPServer{{
+		ID: "local", Name: "Local", Transport: "stdio", Command: exe,
+		Args:        []string{"-test.run=^TestMCPStdioHelperProcess$"},
+		Environment: map[string]string{"MULLSMITH_MCP_TEST_HELPER": "1"},
+		StateDir:    persistentState, Approval: ApprovalConfirm,
+	}}}}
+	checks := CheckMCPServers(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if len(checks) != 1 || !checks[0].OK {
+		t.Fatalf("stdio MCP check = %+v", checks)
+	}
+	if _, err := os.Stat(persistentState); !os.IsNotExist(err) {
+		t.Fatalf("check created persistent state: %v", err)
+	}
+}
+
 func TestMCPToolNamesAndSchemasAreBounded(t *testing.T) {
 	if got := mcpToolName("docs", "Search Docs"); got != "mcp_docs_search_docs" {
 		t.Fatalf("name = %q", got)
