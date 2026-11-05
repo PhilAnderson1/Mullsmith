@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 // disabled by kernel policy — same question ProbeBwrap asks at startup).
 func requireBwrap(t *testing.T) {
 	t.Helper()
-	if err := runner.ProbeBwrap(); err != nil {
+	if err := runner.ProbeBwrap(false); err != nil {
 		t.Skipf("bubblewrap unavailable: %v", err)
 	}
 }
@@ -678,8 +678,10 @@ func TestProbeBwrapSucceedsWhereAvailable(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		t.Skip("bubblewrap not installed here")
 	}
-	if err := runner.ProbeBwrap(); err != nil {
-		t.Errorf("probe failed on an installed bwrap: %v", err)
+	for _, networkOpen := range []bool{false, true} {
+		if err := runner.ProbeBwrap(networkOpen); err != nil {
+			t.Errorf("probe (network open=%t) failed on an installed bwrap: %v", networkOpen, err)
+		}
 	}
 }
 

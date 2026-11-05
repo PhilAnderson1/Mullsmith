@@ -793,7 +793,7 @@ func checkConfig(cfg *config.Config, logger *slog.Logger) int {
 		}
 	}
 	if cfg.Tools.CodeRun.Enabled {
-		if err := runner.ProbeBwrap(); err != nil {
+		if err := runner.ProbeBwrap(cfg.Tools.CodeRun.AllowNetwork); err != nil {
 			ok = false
 			fmt.Printf("[FAIL] tools.code_run        %v\n", err)
 		} else {

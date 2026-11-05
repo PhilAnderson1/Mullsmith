@@ -78,7 +78,7 @@ func TestLauncherArgvIsProgramNameFirst(t *testing.T) {
 // launcher path needs no cgroup placement, so this runs wherever user
 // namespaces do.
 func TestDieWithParentKillsTheJail(t *testing.T) {
-	if err := ProbeBwrap(); err != nil {
+	if err := ProbeBwrap(false); err != nil {
 		t.Skipf("bubblewrap unavailable: %v", err)
 	}
 	if _, err := exec.LookPath("pgrep"); err != nil {

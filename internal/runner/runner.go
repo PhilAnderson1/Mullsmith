@@ -107,7 +107,7 @@ func NewForConfig(cfg *config.Config) (Runner, error) {
 	if !ce.Enabled {
 		return nil, nil
 	}
-	if err := ProbeBwrap(); err != nil {
+	if err := ProbeBwrap(ce.AllowNetwork); err != nil {
 		return nil, err
 	}
 	timeout := ce.Timeout.D()

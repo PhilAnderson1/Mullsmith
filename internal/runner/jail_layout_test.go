@@ -53,7 +53,7 @@ func TestVerifyJailLayout(t *testing.T) {
 // The refusal must reach callers through Run, not just the helper: a
 // symlinked scratch dir never gets a jail built around it.
 func TestRunRefusesSymlinkedScratchDir(t *testing.T) {
-	if err := ProbeBwrap(); err != nil {
+	if err := ProbeBwrap(false); err != nil {
 		t.Skipf("bubblewrap unavailable: %v", err)
 	}
 	bin, err := exec.LookPath("bwrap")

@@ -56,30 +56,38 @@ type Options struct {
 	CgroupRoot   string // per-run cgroup parent override (tests); "" → discovered
 }
 
-// ProbeBwrap proves the binary exists AND that an actual jail works here
-// (user namespaces can be disabled by kernel policy). It mirrors a real
-// payload: same unsharing, same mount set, command /usr/bin/true.
-func ProbeBwrap() error {
+// ProbeBwrap proves the binary exists AND that the complete production jail
+// works here (user namespaces can be disabled by kernel policy). A disposable
+// scratchpad lets the probe use bwrapArgs itself, so a missing/changed bwrap
+// option fails at startup rather than on the first code_run.
+func ProbeBwrap(networkOpen bool) error {
 	bin, err := exec.LookPath("bwrap")
 	if err != nil {
 		return errors.New("bwrap not found in PATH — install the bubblewrap package " +
 			"or set tools.code_run.enabled: false (spec §9.9)")
 	}
+	scratchDir, err := os.MkdirTemp("", "mullsmith-bwrap-probe-")
+	if err != nil {
+		return fmt.Errorf("create bubblewrap probe scratchpad: %w", err)
+	}
+	defer os.RemoveAll(scratchDir)
+	workDir := filepath.Join(scratchDir, "work")
+	for _, dir := range []string{workDir, filepath.Join(scratchDir, "uploads"), filepath.Join(scratchDir, "artifacts")} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return fmt.Errorf("create bubblewrap probe directory: %w", err)
+		}
+	}
+	target, err := filepath.EvalSymlinks("/usr/bin/true")
+	if err != nil {
+		return fmt.Errorf("resolve bubblewrap probe command: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// #nosec G204 — bin is LookPath output; every argument is a literal.
-	// Mirrors bwrapArgs' mount set so the probe answers the real question.
-	cmd := exec.CommandContext(ctx, bin,
-		"--die-with-parent", "--unshare-all",
-		"--ro-bind", "/usr", "/usr",
-		"--symlink", "usr/bin", "/bin",
-		"--symlink", "usr/lib", "/lib",
-		"--symlink", "usr/lib64", "/lib64",
-		"--symlink", "usr/sbin", "/sbin",
-		"--dev", "/dev", "--proc", "/proc",
-		"/usr/bin/true")
+	// #nosec G204 — bin is LookPath output and bwrapArgs constructs the same
+	// fixed option shape used for production runs.
+	cmd := exec.CommandContext(ctx, bin, bwrapArgs(scratchDir, workDir, target, networkOpen)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("bubblewrap probe failed (are unprivileged user namespaces enabled?): %w: %s",
+		return fmt.Errorf("bubblewrap production-jail probe failed: %w: %s",
 			err, strings.TrimSpace(string(out)))
 	}
 	return nil
