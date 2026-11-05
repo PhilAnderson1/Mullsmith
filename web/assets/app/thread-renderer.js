@@ -9,6 +9,29 @@ export function createThreadRenderer({
   const $ = (selector) => document.querySelector(selector);
   const clone = (id) => $("#" + id).content.firstElementChild.cloneNode(true);
   const show = (el, on = true) => { el.hidden = !on; };
+
+  const imageViewer = $("#image-viewer-dialog");
+  const viewerImage = imageViewer?.querySelector(".image-viewer-image");
+  const viewerCaption = imageViewer?.querySelector(".image-viewer-caption");
+  if (typeof imageViewer?.addEventListener === "function") {
+    imageViewer.addEventListener("click", (ev) => {
+      if (ev.target === imageViewer) imageViewer.close();
+    });
+    imageViewer.addEventListener("close", () => {
+      viewerImage?.removeAttribute("src");
+    });
+  }
+
+  function openImageViewer(href, image) {
+    if (!imageViewer || !viewerImage || !viewerCaption) return false;
+    viewerImage.src = href;
+    viewerImage.alt = image.caption || image.name || "Displayed image";
+    viewerCaption.textContent = image.caption || image.name || "";
+    viewerCaption.hidden = !viewerCaption.textContent;
+    imageViewer.showModal();
+    return true;
+  }
+
   function msgNode(m) {
     const el = clone("tpl-message");
     el.classList.add(m.role === "user" ? "from-user" : "from-assistant");
@@ -271,9 +294,10 @@ export function createThreadRenderer({
     const link = document.createElement("a");
     link.className = "display-image-link";
     link.href = href;
-    link.target = "_blank";
-    link.rel = "noopener";
     link.setAttribute("aria-label", `Open ${image.name || "image"} at full size`);
+    link.addEventListener("click", (ev) => {
+      if (openImageViewer(href, image)) ev.preventDefault();
+    });
     const img = document.createElement("img");
     img.alt = image.caption || image.name || "Displayed image";
     img.loading = "lazy";

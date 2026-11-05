@@ -677,12 +677,73 @@ dialog::backdrop { background: rgba(10, 12, 16, 0.45); }
   margin-top: 1rem;
 }
 
+dialog.image-viewer-dialog {
+  box-sizing: border-box;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: max(3.5rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: hidden;
+}
+dialog.image-viewer-dialog[open] {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  place-items: center;
+  gap: 0.65rem;
+}
+dialog.image-viewer-dialog::backdrop { background: rgba(7, 9, 12, 0.92); }
+.image-viewer-dialog form { position: absolute; inset: 0; pointer-events: none; }
+.image-viewer-close {
+  position: absolute;
+  top: max(0.65rem, env(safe-area-inset-top));
+  right: max(0.65rem, env(safe-area-inset-right));
+  z-index: 1;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(15, 18, 24, 0.82);
+  font: 400 2rem/1 sans-serif;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.image-viewer-close:hover { background: rgba(45, 50, 60, 0.95); }
+.image-viewer-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+  object-fit: contain;
+  border-radius: var(--radius);
+}
+.image-viewer-caption {
+  max-width: min(90vw, 70rem);
+  margin: 0;
+  color: #fff;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
 /* modals become bottom sheets on short viewports */
 @media (max-height: 500px) {
   dialog {
     margin: auto auto 0 auto;
     width: 100vw;
     border-radius: var(--radius) var(--radius) 0 0;
+  }
+  dialog.image-viewer-dialog {
+    width: 100vw;
+    height: 100dvh;
+    margin: 0;
+    border-radius: 0;
   }
 }
 
@@ -1063,6 +1124,18 @@ details.tool-card summary::-webkit-details-marker { display: none; }
   cursor: pointer;
 }
 .approval-remember input { width: 1rem; height: 1rem; }
+
+@media (max-width: 639px) {
+  .approval-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .approval-label,
+  .approval-remember { grid-column: 1 / -1; }
+  .approval-row .btn { width: 100%; }
+  .approval-row .btn.ghost { grid-column: 1; grid-row: 2; }
+  .approval-row .btn.primary { grid-column: 2; grid-row: 2; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .tool-card summary { transition: none; }

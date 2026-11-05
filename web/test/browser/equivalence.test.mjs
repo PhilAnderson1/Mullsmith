@@ -410,7 +410,7 @@ test("useful mode reveals a status-only tool when it requests approval", { timeo
     toolCards: "useful",
     approval: { web_fetch: "confirm" },
   });
-  const ctx = await browser.newContext();
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await ctx.newPage();
   try {
     await registerAndOpen(page, quietApp.base, `quietapproval${++userSeq}@example.io`);
@@ -422,6 +422,16 @@ test("useful mode reveals a status-only tool when it requests approval", { timeo
     await page.locator(".approval-row button").first().waitFor({ state: "visible" });
     assert.equal(await page.locator(".from-assistant:visible .tool-card.st-awaiting").count(), 1,
       "the approval card remained inside a hidden assistant shell");
+    const approvalLayout = await page.locator(".approval-row").evaluate((row) => {
+      const deny = row.querySelector(".btn.ghost").getBoundingClientRect();
+      const allow = row.querySelector(".btn.primary").getBoundingClientRect();
+      const label = row.querySelector(".approval-label").getBoundingClientRect();
+      return { denyTop: deny.top, allowTop: allow.top, denyLeft: deny.left, allowLeft: allow.left, labelBottom: label.bottom };
+    });
+    assert.ok(Math.abs(approvalLayout.denyTop - approvalLayout.allowTop) < 1,
+      "mobile approval buttons are not on the same row");
+    assert.ok(approvalLayout.denyLeft < approvalLayout.allowLeft && approvalLayout.labelBottom <= approvalLayout.denyTop,
+      "mobile approval controls are not ordered label, Deny, Allow");
     await page.click(".approval-row button:not(.primary)");
     await waitIdle(page);
   } finally {
@@ -459,6 +469,15 @@ test("useful mode shows inline images without redundant display_image cards", { 
     await sendChat(page, "show both images");
     await waitIdle(page);
     assert.deepEqual(await page.evaluate(presentation), ["image:First", "image:Second"]);
+    await page.locator(".display-image-link").first().click();
+    await page.waitForSelector("#image-viewer-dialog[open]");
+    assert.match(await page.locator(".image-viewer-image").getAttribute("src"), /\/api\/v1\/files\/image\?/);
+    assert.equal(await page.locator(".image-viewer-caption").textContent(), "First");
+    await page.locator(".image-viewer-close").click();
+    await page.locator("#image-viewer-dialog[open]").waitFor({ state: "hidden" });
+    await page.locator(".display-image-link").first().click();
+    await page.keyboard.press("Escape");
+    await page.locator("#image-viewer-dialog[open]").waitFor({ state: "hidden" });
     await reloadAndWait(page);
     assert.deepEqual(await page.evaluate(presentation), ["image:First", "image:Second"],
       "inline image presentation changed after reload");

@@ -319,6 +319,16 @@
     </form>
   </dialog>
 
+  <!-- Inline pictures stay inside the installed web app. Native dialog
+       cancellation makes Escape and Android's Back action dismiss it. -->
+  <dialog id="image-viewer-dialog" class="image-viewer-dialog" aria-label="Image viewer">
+    <form method="dialog">
+      <button class="image-viewer-close" value="close" aria-label="Close image" title="Close">&times;</button>
+    </form>
+    <img class="image-viewer-image" alt="">
+    <p class="image-viewer-caption" hidden></p>
+  </dialog>
+
   <!-- One conversation row in the sidebar list. The row's actions hide
        behind a "…" that appears on hover; a right-click or mobile long
        press opens the same menu via contextmenu. -->
