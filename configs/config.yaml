@@ -246,6 +246,24 @@ mcp:
   #     transport: "streamable_http"
   #     url: "https://learn.microsoft.com/api/mcp"
   #     approval: "confirm"
+  #
+  #   - id: "weather"
+  #     name: "Weather"
+  #     transport: "streamable_http"
+  #     url: "https://weatherthatdoesntsuck.com/api/mcp"
+  #     approval: "confirm"
+  #
+  #   - id: "wikidata"
+  #     name: "Wikidata"
+  #     transport: "streamable_http"
+  #     url: "https://wd-mcp.wmcloud.org/mcp"
+  #     approval: "confirm"
+  #
+  #   - id: "humaps"
+  #     name: "Humaps"
+  #     transport: "streamable_http"
+  #     url: "https://api.humaps.org/mcp"
+  #     approval: "confirm"
 
 
 # Per-user files and code sandbox.
