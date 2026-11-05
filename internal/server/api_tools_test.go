@@ -241,7 +241,7 @@ func TestChatToolLoopEndToEnd(t *testing.T) {
 	// `round` between the tool round and the answer is the C7 identity
 	// contract: the server creates a fresh assistant row per model round, and
 	// now says so, so the client's bubbles match the rows a reload shows.
-	want := []string{"start", "tool_start", "tool_args", "tool_args", "tool_end",
+	want := []string{"start", "tool_start", "tool_end",
 		"round", "token", "token", "done"}
 	if strings.Join(es.events, ",") != strings.Join(want, ",") {
 		t.Fatalf("events = %v, want %v", es.events, want)
@@ -249,6 +249,9 @@ func TestChatToolLoopEndToEnd(t *testing.T) {
 	canonicalID := es.data["tool_start"]["call_id"].(string)
 	if es.data["tool_start"]["tool"] != "web_search" || canonicalID == "" || canonicalID == "call_9" {
 		t.Errorf("tool_start = %v", es.data["tool_start"])
+	}
+	if es.data["tool_start"]["arguments"] != `{"query":"kyoto"}` {
+		t.Errorf("tool_start arguments = %v", es.data["tool_start"])
 	}
 	if es.data["tool_end"]["status"] != "ok" || es.data["tool_end"]["summary"] != "Searched — 3 result(s)" {
 		t.Errorf("tool_end = %v", es.data["tool_end"])
@@ -387,7 +390,7 @@ func startApprovalFlow(t *testing.T, risky *fakeTool) *approvalCase {
 				t.Fatalf("approval tool = %v", d["tool"])
 			}
 			return ac
-		case "title", "tool_start", "tool_args":
+		case "title", "tool_start":
 			continue
 		default:
 			t.Fatalf("unexpected event %q before awaiting_approval", ev)

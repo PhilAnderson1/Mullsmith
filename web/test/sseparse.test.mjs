@@ -17,7 +17,6 @@ function recorder() {
     onToken: push("token"),
     onReasoning: push("reasoning"),
     onToolStart: push("tool_start"),
-    onToolArgs: push("tool_args"),
     onToolEnd: push("tool_end"),
     onAwaitingApproval: push("awaiting_approval"),
     onError: push("error"),
@@ -34,9 +33,7 @@ test("a multi-round tool stream dispatches every event in order", () => {
     frame("reasoning", { t: "think " }),
     frame("reasoning", { t: "hard" }),
     frame("token", { t: "Let me check." }),
-    frame("tool_start", { call_id: "c1", tool: "web_search" }),
-    frame("tool_args", { call_id: "c1", t: '{"q"' }),
-    frame("tool_args", { call_id: "c1", t: ':"go"}' }),
+    frame("tool_start", { call_id: "c1", tool: "web_search", arguments: '{"q":"go"}' }),
     frame("awaiting_approval", { approval_id: "a1", call_id: "c2", tool: "code_run" }),
     frame("tool_end", { call_id: "c1", status: "ok", summary: "3 results" }),
     frame("token", { t: "Done." }),
@@ -46,12 +43,11 @@ test("a multi-round tool stream dispatches every event in order", () => {
   for (const f of transcript) assert.equal(handleFrame(f, h), true, f);
   assert.deepEqual(seen.map(([k]) => k), [
     "start", "reasoning", "reasoning", "token",
-    "tool_start", "tool_args", "tool_args",
+    "tool_start",
     "awaiting_approval", "tool_end", "token", "title", "done",
   ]);
-  // The two arg deltas arrive verbatim: the UI concatenates them itself.
-  assert.equal(seen[5][1].t, '{"q"');
-  assert.equal(seen[6][1].t, ':"go"}');
+  // Endpoint fragments are normalized by Go; the UI receives one complete call.
+  assert.equal(seen[4][1].arguments, '{"q":"go"}');
 });
 
 test("malformed frames are skipped without ending the stream (spec §6.2 leniency)", () => {

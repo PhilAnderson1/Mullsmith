@@ -13,7 +13,7 @@ import (
 )
 
 func (s *Service) runModelRound(ctx context.Context, conn sink, model string,
-	msgs []llm.ChatMessage, toolSpecs []llm.ToolSpec, thinking map[string]any, msgID string,
+	msgs []llm.ChatMessage, toolSpecs []llm.ToolSpec, thinking map[string]any,
 ) agent.Result {
 	return s.generator.Round(ctx, model, msgs, toolSpecs, thinking, func(kind, text string) error {
 		if kind == agent.EventReasoning && !s.cfg.LLM.ShowReasoning {
@@ -23,13 +23,15 @@ func (s *Service) runModelRound(ctx context.Context, conn sink, model string,
 			return agent.ErrClientGone
 		}
 		return nil
-	}, func(event agent.ToolEvent) {
-		if event.Kind == "tool_start" {
-			_ = conn.Send(ToolStarted{CallID: event.CallID, MessageID: msgID, Tool: event.Tool,
-				StatusOnly: s.Tools.StatusOnly(event.Tool)})
-		} else {
-			_ = conn.Send(ToolArguments{CallID: event.CallID, MessageID: msgID, Text: event.Arguments})
-		}
+	})
+}
+
+// announceToolCall exposes one complete, normalized call when sequential
+// execution reaches it. Endpoint argument fragments never cross this boundary.
+func (s *Service) announceToolCall(conn sink, messageID string, call llm.ChatToolCall) {
+	_ = conn.Send(ToolStarted{
+		CallID: call.ID, MessageID: messageID, Tool: call.Function.Name,
+		Arguments: call.Function.Arguments, StatusOnly: s.Tools.StatusOnly(call.Function.Name),
 	})
 }
 

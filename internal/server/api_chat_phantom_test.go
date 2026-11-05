@@ -1,10 +1,8 @@
 package server
 
-// Phantom-card regressions (prod, 2026-11-01): an endpoint that publishes a
-// tool call's NAME before its ID (or never an ID at all) made the live card
-// freeze a minted id while the protocol row was stored under a different
-// mint. The live view then carried a second card — never settled, empty —
-// and the reload, which keys on the stored row, showed the truth: one card.
+// Tool-call normalization regressions: endpoint IDs and arguments can arrive
+// in arbitrary fragments. The browser must receive exactly one complete call,
+// under the same application-owned ID used for persistence and protocol replay.
 //
 // The invariant: exactly ONE tool_start per completed call, and its call_id
 // equals the id the protocol row is stored under, whatever the endpoint's
@@ -102,6 +100,9 @@ func TestLateToolCallIDEmitsOneStartMatchingStoredRow(t *testing.T) {
 	if stringOf(es.data["tool_end"]["call_id"]) != stored[0].LLMCallID {
 		t.Errorf("tool_end did not land on the announced card")
 	}
+	if es.data["tool_start"]["arguments"] != `{"path":"p.txt"}` {
+		t.Fatalf("complete arguments not announced: %v", es.data["tool_start"])
+	}
 }
 
 // No id at all from the endpoint (Gufo style): the card's mint and the
@@ -149,7 +150,7 @@ func TestToolIDBeforeNamePublishesCoherentStart(t *testing.T) {
 	if len(stored) != 1 || es.data["tool_start"]["call_id"] != stored[0].LLMCallID {
 		t.Fatalf("ID mismatch: %v %v", es.data["tool_start"], stored)
 	}
-	if es.data["tool_args"]["t"] != `{"path":"work/input.csv"}` {
-		t.Fatalf("arguments lost: %v", es.data["tool_args"])
+	if es.data["tool_start"]["arguments"] != `{"path":"work/input.csv"}` {
+		t.Fatalf("arguments lost: %v", es.data["tool_start"])
 	}
 }

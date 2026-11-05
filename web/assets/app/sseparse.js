@@ -40,9 +40,6 @@ export function handleFrame(frame, h) {
     case "tool_start":
       h.onToolStart && h.onToolStart(data);
       break;
-    case "tool_args":
-      h.onToolArgs && h.onToolArgs(data);
-      break;
     case "tool_end":
       h.onToolEnd && h.onToolEnd(data);
       break;

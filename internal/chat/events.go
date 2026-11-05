@@ -41,18 +41,11 @@ type ToolStarted struct {
 	CallID     string `json:"call_id"`
 	MessageID  string `json:"message_id"`
 	Tool       string `json:"tool"`
+	Arguments  string `json:"arguments"`
 	StatusOnly bool   `json:"status_only,omitempty"`
 }
 
 func (ToolStarted) Kind() string { return "tool_start" }
-
-type ToolArguments struct {
-	CallID    string `json:"call_id"`
-	MessageID string `json:"message_id"`
-	Text      string `json:"t"`
-}
-
-func (ToolArguments) Kind() string { return "tool_args" }
 
 type ToolFinished struct {
 	CallID    string `json:"call_id"`

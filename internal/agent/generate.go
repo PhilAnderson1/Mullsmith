@@ -21,15 +21,6 @@ const (
 // disconnects; Round maps it to status "aborted".
 var ErrClientGone = errors.New("client disconnected")
 
-// ToolEvent is a normalized call announcement or argument fragment. The
-// assembler owns IDs and only announces a call once its name is known.
-type ToolEvent struct {
-	Kind      string
-	CallID    string
-	Tool      string
-	Arguments string
-}
-
 // Result carries the final state of a generation for persistence.
 type Result struct {
 	Content    string
@@ -50,8 +41,9 @@ type Generator struct {
 }
 
 // Round streams one model round (spec §6.1 step 3–5). Tool deltas are
-// forwarded raw through toolDelta (may be nil) for live UI cards and are
-// accumulated by index into Result.ToolCalls. Reasoning is accumulated but
+// accumulated privately by index into complete Result.ToolCalls. Endpoint
+// fragmentation is deliberately contained here: consumers only see calls
+// after the model has finished the round. Reasoning is accumulated but
 // only emitted as a separate event kind — it is never part of the answer
 // content (spec §6.2). thinking carries the rendered request fragment of
 // the generation's snapshotted choice (nil = Default, no override); the
@@ -60,7 +52,6 @@ type Generator struct {
 func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMessage,
 	tools []llm.ToolSpec, thinking map[string]any,
 	emit func(kind, text string) error,
-	toolDelta func(ToolEvent),
 ) Result {
 	var (
 		content    strings.Builder
@@ -90,19 +81,8 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 				order = append(order, tc.Index)
 			}
 			// Own the identity: endpoint IDs can repeat across calls or rounds.
-			// This same ID names live cards, persisted calls and protocol replay.
+			// This same ID names persisted calls, UI events and protocol replay.
 			a.absorb(tc)
-			if toolDelta != nil && a.name != "" {
-				if !a.announced {
-					a.announced = true
-					toolDelta(ToolEvent{Kind: "tool_start", CallID: a.id, Tool: a.name})
-					if a.args.Len() > 0 {
-						toolDelta(ToolEvent{Kind: "tool_args", CallID: a.id, Arguments: a.args.String()})
-					}
-				} else if tc.Arguments != "" {
-					toolDelta(ToolEvent{Kind: "tool_args", CallID: a.id, Arguments: tc.Arguments})
-				}
-			}
 		}
 		if d.Reasoning != "" {
 			reasoning.WriteString(d.Reasoning)
@@ -167,10 +147,9 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 // callAccumulator stitches streamed ToolCallDelta fragments (shared index)
 // back into one complete call.
 type callAccumulator struct {
-	announced bool
-	id        string
-	name      string
-	args      strings.Builder
+	id   string
+	name string
+	args strings.Builder
 }
 
 func (a *callAccumulator) absorb(d llm.ToolCallDelta) {

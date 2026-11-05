@@ -106,29 +106,21 @@ export function createGenerationController({
             if (!host) return;
             const quiet = getMeta()?.tool_cards === "useful" && Boolean(d.status_only);
             const card = quiet ? null : toolCardNode(d.call_id, d.tool);
-            if (card) host.append(card);
-            // Reserve this call's position before later calls are announced.
-            // Dedicated output (an inline image or shared-file card) arrives
-            // on tool_end; inserting it at this marker keeps the live order
-            // identical to the stored call/card/output order after reload.
-            const marker = document.createComment(`tool-output:${d.call_id}`);
-            host.append(marker);
-            st.cards[d.call_id] = { card, marker, args: "", tool: d.tool };
+            const args = d.arguments || "";
+            if (card) {
+              host.append(card);
+              if (args) {
+                const pre = card.querySelector(".tool-args");
+                pre.textContent = formatToolArgs(args);
+                pre.hidden = false;
+              }
+            }
+            st.cards[d.call_id] = { card, args, tool: d.tool };
             if (quiet) {
               const round = st.byId.get(d.message_id);
               if (round) syncAssistantVisibility(round.nodes.el);
             }
             maybeScroll();
-          },
-          onToolArgs(d) {
-            if (!live()) return;
-            const c = st.cards[d.call_id];
-            if (!c) return;
-            c.args += d.t || "";
-            if (!c.card) return;
-            const pre = c.card.querySelector(".tool-args");
-            pre.textContent = formatToolArgs(c.args);
-            pre.hidden = false;
           },
           onToolEnd(d) {
             if (!live()) return;
@@ -143,7 +135,7 @@ export function createGenerationController({
               const host = cardHost(st, d);
               if (host) {
                 c.card = toolCardNode(d.call_id, d.tool || c.tool);
-                host.insertBefore(c.card, c.marker?.parentNode === host ? c.marker : null);
+                host.append(c.card);
                 if (c.args) {
                   const pre = c.card.querySelector(".tool-args");
                   pre.textContent = formatToolArgs(c.args);
@@ -156,15 +148,14 @@ export function createGenerationController({
             const file = sharedFileFor(view);
             if (file) {
               const host = cardHost(st, d);
-              if (host) host.insertBefore(artifactCard(file), c.marker?.parentNode === host ? c.marker : null);
+              if (host) host.append(artifactCard(file));
             }
             const image = displayedImageFor(view);
             if (image) {
               const host = cardHost(st, d);
               const figure = displayImage(image);
-              if (host && figure) host.insertBefore(figure, c.marker?.parentNode === host ? c.marker : null);
+              if (host && figure) host.append(figure);
             }
-            c.marker?.remove();
             if (round) syncAssistantVisibility(round.nodes.el);
             maybeScroll();
           },
@@ -176,8 +167,8 @@ export function createGenerationController({
             let c = st.cards[d.call_id];
             if (!c || !c.card) {
               const card = toolCardNode(d.call_id, d.tool);
-              host.insertBefore(card, c?.marker?.parentNode === host ? c.marker : null);
-              if (!c) c = st.cards[d.call_id] = { card, marker: null, args: d.arguments || "", tool: d.tool };
+              host.append(card);
+              if (!c) c = st.cards[d.call_id] = { card, args: d.arguments || "", tool: d.tool };
               else c.card = card;
             }
             attachApproval(c.card, st, d);

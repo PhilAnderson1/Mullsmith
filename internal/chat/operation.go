@@ -134,7 +134,7 @@ func (op *Operation) Run(emit Emit) {
 		}
 		roundStart := time.Now() // model time only: tool runs land on tool cards
 		res = s.runModelRound(genCtx, conn, s.Model(conv.Model), msgs, toolSpecs,
-			thinkFrag, am.ID)
+			thinkFrag)
 		roundMS := time.Since(roundStart).Milliseconds()
 
 		if res.Status != "complete" {
@@ -181,6 +181,10 @@ func (op *Operation) Run(emit Emit) {
 			}
 			var result, attach string
 			var terr error
+			// The model round has finished, so this call's name and arguments
+			// are complete. Announce it only now, immediately before its own
+			// approval/execution lifecycle; calls and outputs remain adjacent.
+			s.announceToolCall(conn, am.ID, call)
 			// Rounds bound model continuations; calls bound the aggregate
 			// filesystem/network/database work one accepted user turn can
 			// induce. Count every proposal, including unknown, malformed,
