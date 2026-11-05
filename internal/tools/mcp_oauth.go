@@ -152,7 +152,7 @@ func (m *MCPOAuthManager) oauthServer(id string) (config.MCPServer, bool) {
 }
 
 func (m *MCPOAuthManager) encrypt(userID, serverID string, value *oauthStoredToken) ([]byte, error) {
-	plain, err := json.Marshal(value)
+	plain, err := json.Marshal(value) // #nosec G117 -- transient serialization is immediately AEAD-encrypted; plaintext is never logged or stored
 	if err != nil {
 		return nil, err
 	}
