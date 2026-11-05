@@ -59,11 +59,6 @@ func (op *Operation) Run(emit Emit) {
 		maxCalls = 0
 	}
 	toolCallCount := 0
-	maxNetworkCalls := s.cfg.Tools.Agent.MaxNetworkCallsPerTurn
-	if maxNetworkCalls < 0 {
-		maxNetworkCalls = 0
-	}
-	networkCallCount := 0
 	limitFeedbackSent := false
 	var res agent.Result
 	// storeErr records a persistence failure the terminal events must
@@ -191,17 +186,9 @@ func (op *Operation) Run(emit Emit) {
 			// denied and already-over-limit calls, so no cheaper call class
 			// becomes an accounting bypass.
 			toolCallCount++
-			networkCall := s.Tools.IsNetwork(call.Function.Name)
-			if networkCall {
-				networkCallCount++
-			}
 			if round >= maxRounds || toolCallCount > maxCalls {
 				limitedThisRound = true
 				result, terr = s.rejectToolCall(genCtx, conn, userID, conv.ID, am.ID, g.ID, call, "tool call limit reached")
-			} else if networkCall && networkCallCount > maxNetworkCalls {
-				limitedThisRound = true
-				result, terr = s.rejectToolCall(genCtx, conn, userID, conv.ID, am.ID, g.ID,
-					call, "network tool call limit reached")
 			} else if call.Function.Name == tools.ViewImageName && visionOn &&
 				requestImageCount(msgs) >= s.visionMaxImages() {
 				result, terr = s.rejectToolCall(genCtx, conn, userID, conv.ID, am.ID, g.ID,

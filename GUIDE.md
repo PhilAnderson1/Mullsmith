@@ -473,10 +473,10 @@ contain instructions intended to manipulate the model, and approval does not
 eliminate that risk.
 
 A **round** is one batch of tool requests from a model response; it may contain
-several **calls**. The supplied per-turn limits are 20 tool rounds, 100 proposed
-tool calls and 10 network tool calls. They bound a single response workflow, not
-the lifetime of a conversation. The code execution timeout applies to each run;
-one turn can contain multiple sequential runs.
+several **calls**. The supplied per-turn limits are 20 tool rounds and 100
+proposed tool calls. They bound a single response workflow, not the lifetime of
+a conversation. The code execution timeout applies to each run; one turn can
+contain multiple sequential runs.
 
 ### Optional code execution
 
@@ -649,7 +649,7 @@ The template supplies conservative defaults for a low-traffic server.
 | Stored conversations/messages | `app_limits.max_conversations_per_user`, `max_messages_per_user` |
 | File storage and entry count | `scratchpad.user_quota`, `max_entries` |
 | Upload/download workload | Scratchpad upload size, web download size and `app_limits` transfer concurrency |
-| Tool activity in a single turn | `tools.agent.max_tool_rounds`, `max_tool_calls_per_turn`, `max_network_tool_calls_per_turn` |
+| Tool activity in a single turn | `tools.agent.max_tool_rounds`, `max_tool_calls_per_turn` |
 
 Choose a total generation concurrency your model server can handle.
 

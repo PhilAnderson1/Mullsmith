@@ -94,9 +94,6 @@ func TestLoadMinimalAndDefaults(t *testing.T) {
 	if cfg.Tools.Agent.MaxToolCallsPerTurn != 100 {
 		t.Errorf("max_tool_calls_per_turn default = %d, want 100", cfg.Tools.Agent.MaxToolCallsPerTurn)
 	}
-	if cfg.Tools.Agent.MaxNetworkCallsPerTurn != 10 {
-		t.Errorf("max_network_tool_calls_per_turn default = %d, want 10", cfg.Tools.Agent.MaxNetworkCallsPerTurn)
-	}
 	if cfg.Tools.Agent.ToolCards != "useful" {
 		t.Errorf("tool_cards default = %q, want useful", cfg.Tools.Agent.ToolCards)
 	}
@@ -688,11 +685,6 @@ llm: {endpoint: "http://x/v1", models: [{id: m, context_size: 4096}], max_tokens
 			"negative tool call cap",
 			minimalYAML + "tools:\n  agent:\n    max_tool_calls_per_turn: -1\n",
 			"max_tool_calls_per_turn",
-		},
-		{
-			"negative network tool call cap",
-			minimalYAML + "tools:\n  agent:\n    max_network_tool_calls_per_turn: -1\n",
-			"max_network_tool_calls_per_turn",
 		},
 		{
 			"negative download size",

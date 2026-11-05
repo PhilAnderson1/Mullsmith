@@ -203,9 +203,6 @@ tools:
     # Maximum proposed tool calls per turn.
     max_tool_calls_per_turn: 100
 
-    # Maximum network calls per turn.
-    max_network_tool_calls_per_turn: 10
-
     # Tool cards to display: "useful" hides successful status-only cards; "all" shows everything.
     tool_cards: "useful"
 

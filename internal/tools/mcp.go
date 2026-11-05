@@ -43,7 +43,6 @@ type mcpTool struct {
 func (t *mcpTool) Name() string               { return t.name }
 func (t *mcpTool) Description() string        { return t.description }
 func (t *mcpTool) Parameters() map[string]any { return t.parameters }
-func (t *mcpTool) IsNetworkTool() bool        { return true }
 
 func (t *mcpTool) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	args := map[string]any{}

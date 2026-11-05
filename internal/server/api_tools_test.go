@@ -691,58 +691,6 @@ func TestToolCallCapCountsAcrossRoundsAndResetsPerTurn(t *testing.T) {
 	}
 }
 
-func TestNetworkToolCallCapCountsAcrossRoundsAndLeavesFileAllowance(t *testing.T) {
-	search := &fakeTool{name: "web_search", content: `{}`, summary: "searched"}
-	read := &fakeTool{name: "fs_read", content: `{}`, summary: "read"}
-	policies := map[string]string{"web_search": "auto", "fs_read": "auto"}
-	cfg := toolChatCfg(t, 10, policies)
-	cfg.Tools.Agent.MaxToolCallsPerTurn = 10
-	cfg.Tools.Agent.MaxNetworkCallsPerTurn = 2
-	a, script := newToolServer(t, cfg, registryFor(policies, search, read), [][]string{
-		{
-			toolCallChunk(0, "n1", "web_search", `{}`),
-			toolCallChunk(1, "f1", "fs_read", `{}`),
-			finishChunk("tool_calls"),
-		},
-		{
-			toolCallChunk(0, "n2", "web_search", `{}`),
-			toolCallChunk(1, "n3", "web_search", `{}`),
-			toolCallChunk(2, "f2", "fs_read", `{}`),
-			finishChunk("tool_calls"),
-		},
-		{answerChunk("first done"), finishChunk("stop")},
-		{toolCallChunk(0, "n4", "web_search", `{}`), finishChunk("tool_calls")},
-		{answerChunk("second done"), finishChunk("stop")},
-	})
-	c := createConv(t, a, map[string]any{"title": "Network cap"})
-
-	resp := sendChat(t, a, c.ID, "first")
-	first := drainSSE(t, newSSEReader(t, resp))
-	resp.Body.Close()
-	if first.done["status"] != "complete" || search.callCount() != 2 || read.callCount() != 2 {
-		t.Fatalf("first turn: done=%v search=%d read=%d, want complete/2/2",
-			first.done, search.callCount(), read.callCount())
-	}
-	var refusal map[string]any
-	for _, message := range payloadRole(t, script.roundBody(2), "tool") {
-		if message["content"] == `{"error":"network tool call limit reached"}` {
-			refusal = message
-			break
-		}
-	}
-	if refusal == nil || refusal["content"] != `{"error":"network tool call limit reached"}` {
-		t.Fatalf("network refusal feedback = %v", refusal)
-	}
-
-	// A new submitted user message receives a fresh network allowance.
-	resp = sendChat(t, a, c.ID, "second")
-	second := drainSSE(t, newSSEReader(t, resp))
-	resp.Body.Close()
-	if second.done["status"] != "complete" || search.callCount() != 3 {
-		t.Fatalf("second turn: done=%v executions=%d, want complete/3", second.done, search.callCount())
-	}
-}
-
 func TestUnknownToolReportedToModel(t *testing.T) {
 	reg := registryFor(map[string]string{})
 	cfg := toolChatCfg(t, 4, map[string]string{})

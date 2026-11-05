@@ -394,11 +394,10 @@ type WebDownload struct {
 }
 
 type Agent struct {
-	MaxToolRounds          int               `yaml:"max_tool_rounds"`
-	MaxToolCallsPerTurn    int               `yaml:"max_tool_calls_per_turn"`
-	MaxNetworkCallsPerTurn int               `yaml:"max_network_tool_calls_per_turn"`
-	ToolCards              string            `yaml:"tool_cards"` // useful | all
-	Approval               map[string]string `yaml:"approval"`   // tool → auto | confirm
+	MaxToolRounds       int               `yaml:"max_tool_rounds"`
+	MaxToolCallsPerTurn int               `yaml:"max_tool_calls_per_turn"`
+	ToolCards           string            `yaml:"tool_cards"` // useful | all
+	Approval            map[string]string `yaml:"approval"`   // tool → auto | confirm
 }
 
 // MCP configures administrator-managed Model Context Protocol servers.
@@ -1088,9 +1087,6 @@ func (c *Config) setDefaults() {
 	if c.Tools.Agent.ToolCards == "" {
 		c.Tools.Agent.ToolCards = "useful"
 	}
-	if c.Tools.Agent.MaxNetworkCallsPerTurn == 0 {
-		c.Tools.Agent.MaxNetworkCallsPerTurn = 10
-	}
 	if c.Tools.Agent.Approval == nil {
 		c.Tools.Agent.Approval = map[string]string{}
 	}
@@ -1430,9 +1426,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Tools.Agent.MaxToolCallsPerTurn <= 0 {
 		f.bad("tools.agent.max_tool_calls_per_turn: must be > 0")
-	}
-	if c.Tools.Agent.MaxNetworkCallsPerTurn <= 0 {
-		f.bad("tools.agent.max_network_tool_calls_per_turn: must be > 0")
 	}
 	if c.Tools.Agent.ToolCards != "useful" && c.Tools.Agent.ToolCards != "all" {
 		f.bad("tools.agent.tool_cards: must be useful or all")

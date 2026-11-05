@@ -55,10 +55,6 @@ type Tool interface {
 	Execute(ctx context.Context, inv Invocation) (Result, error)
 }
 
-// NetworkTool marks tools whose execution makes an outbound network request.
-// The chat loop uses it for the shared per-turn network-call budget.
-type NetworkTool interface{ IsNetworkTool() bool }
-
 // RichCardTool marks tools whose successful result contains structured data
 // intended for the browser, rather than only a completion summary for audit.
 type RichCardTool interface{ HasRichCard() bool }
@@ -120,17 +116,6 @@ func (r *Registry) Specs() []llm.ToolSpec {
 func (r *Registry) Get(name string) (Tool, bool) {
 	t, ok := r.byName[name]
 	return t, ok
-}
-
-// IsNetwork reports whether a registered tool consumes the network budget.
-func (r *Registry) IsNetwork(name string) bool {
-	switch name {
-	case "web_search", "web_fetch", "web_download":
-		return true
-	}
-	t, ok := r.Get(name)
-	n, marked := t.(NetworkTool)
-	return ok && marked && n.IsNetworkTool()
 }
 
 // StatusOnly reports whether a successful call can be visually quiet. Errors,

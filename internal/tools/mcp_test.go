@@ -49,11 +49,6 @@ func TestMCPToolAdapterCallsSession(t *testing.T) {
 	if err != nil || !failed.Failed || !strings.Contains(failed.Summary, "reported an error") {
 		t.Fatalf("reported failure = %+v, %v", failed, err)
 	}
-	reg := NewRegistry(nil)
-	reg.Register(tool)
-	if !reg.IsNetwork(tool.Name()) {
-		t.Fatal("MCP tool did not consume the network-tool budget")
-	}
 }
 
 func TestRegisterMCPDiscoversHTTPToolsAndPolicy(t *testing.T) {
@@ -75,7 +70,7 @@ func TestRegisterMCPDiscoversHTTPToolsAndPolicy(t *testing.T) {
 	registerMCP(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), reg, policies)
 	defer reg.Close()
 	tool, ok := reg.Get("mcp_docs_ask")
-	if !ok || reg.Policy(tool.Name()) != ApprovalAuto || !reg.IsNetwork(tool.Name()) {
+	if !ok || reg.Policy(tool.Name()) != ApprovalAuto {
 		t.Fatalf("registered MCP tool = %v, policy = %q", ok, reg.Policy("mcp_docs_ask"))
 	}
 	result, err := tool.Execute(context.Background(), Invocation{Arguments: `{}`})
