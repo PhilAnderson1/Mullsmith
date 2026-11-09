@@ -2,66 +2,63 @@
 
 [![CI](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/PhilAnderson1/Mullsmith/actions/workflows/ci.yml)
 
-**Your local AI assistant, on every device.**
+**Your AI assistant, from your browser.**
 
-A lightweight, self-hosted AI assistant for your model server, with a web
-interface, built-in web and file tools, and optional sandboxed code execution.
+Chat with your models, work with files and get help with tasks from your computer,
+tablet or phone. Run Mullsmith on a Linux computer or server, connect it to your
+model server or a supported hosted provider, and open it in your browser.
+
+Mullsmith provides the assistant and its tools; it does not download or run the
+language model itself.
 
 <p align="center">
   <img src="assets/mullsmith.png" alt="Mullsmith on desktop and phone, showing code execution, a downloadable file and web fetching" width="85%">
 </p>
 
-- **Small and self-contained.** Approximately 14 MiB. No Docker, Python, Node.js
-  or separate database required for the core application.
-- **Made for local models.** Connect to Gufo, llama.cpp, Ollama, vLLM or LM Studio—or
-  use OpenRouter—with supplied model-specific thinking controls.
-- **Useful tools included.** Search the web, work with files and download the results.
-- **Optional command and code execution.** Run shell commands and Python in a
-  resource-limited bubblewrap sandbox.
-- **Your data, on your server.** Accounts, conversation history and files stored
-  locally, with separate private storage for each user.
-- **Serve it directly.** Designed for your home network or the public internet,
-  with built-in HTTPS—no reverse proxy required.
-- **Use any device.** Responsive interface for desktop, tablet and phone.
-  Save it to your home screen as a web app.
-- **Free and open source.** No subscriptions, paid tiers or upselling.
+- **Easy setup with thinking controls built in.** Included catalogues cover
+  popular model servers and model-specific thinking settings, giving you
+  reasoning controls suited to your model. Extend the catalogues to support
+  new endpoints and models.
+- **Go beyond chat.** Work with files and images, search the web, and let the
+  assistant run code to calculate, process data and create downloadable results.
+  Optional code execution is isolated and has approval controls.
+- **Connect more tools and services.** Add local or remote MCP servers to extend
+  what your assistant can do. OAuth support lets each user connect their own
+  account to compatible services through Settings.
+- **Keep accounts and history on your server.** Access your chats from all your
+  devices. Mullsmith supports multiple user accounts.
+- **Responsive page design.** Access Mullsmith from your PC, tablet or mobile
+  phone, or save it to your home screen as a web app.
+- **Keep setup simple.** Install a small, self-contained application, with no
+  separate database to manage. Built-in HTTPS supports access beyond your home
+  network when configured.
 
-## Install
+## Get started
 
-Download the appropriate `.deb` or `.rpm` package from
-[Releases](https://github.com/PhilAnderson1/Mullsmith/releases), then install:
+You need a Linux computer or server, administrator access to install Mullsmith,
+and a running model server or supported hosted provider. Have your model's API
+address, model ID and any required API key ready.
 
-```sh
-# Debian / Ubuntu
-sudo apt install ./mullsmith_*.deb
+**[Follow the Quick start](QUICKSTART.md)** to install Mullsmith, create your
+account, connect your model and get your first reply.
 
-# RPM-based systems
-sudo dnf install ./mullsmith-*.rpm
-```
+Mullsmith is intended for you and people you trust. For access over the internet,
+follow the [HTTPS setup](GUIDE.md#internet-access-and-https) and keep registration
+invite-only or closed.
 
-Mullsmith starts automatically with invite-only registration. Manually create your
-first account, substituting your email, name and password:
-
-```sh
-sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
-```
-
-**Open `http://YOUR-SERVER-IP:3210` from any device on your network and log in to check the installation.**
-
-[Set your endpoint URL, endpoint type, API key if required, and model](GUIDE.md#models-and-thinking-controls)
-under `llm:` in `/etc/mullsmith/config.yaml`, then restart:
-
-```sh
-sudo systemctl restart mullsmith
-```
-
+Other installation options:
 [Tar installation](GUIDE.md#tar-archive) ·
-[Build from source](GUIDE.md#building-from-source) ·
-[Configuration reference](configs/config.yaml) ·
-[Internet access and HTTPS](GUIDE.md#internet-access-and-https) ·
-[Full guide](GUIDE.md)
+[Build from source](GUIDE.md#building-from-source)
 
-Requires a running model endpoint. Optional code execution requires bubblewrap;
-web search requires a Brave Search API key.
-Intended for trusted users. For internet access, enable HTTPS and use invite-only
-or closed registration.
+## Learn more
+
+- [Full guide](GUIDE.md) — setup, tools and everyday administration.
+- [Models and thinking controls](GUIDE.md#models-and-thinking-controls) — connect
+  your model and configure its capabilities.
+- [Enable tools](GUIDE.md#enable-tools) — set up web search, code execution and
+  connections to other tools.
+- [MCP servers and OAuth](GUIDE.md#mcp-tool-servers) — add tools and let users
+  connect their service accounts.
+- [Accounts and invitations](GUIDE.md#accounts-and-invitations) — give others access.
+- [Troubleshooting](GUIDE.md#troubleshooting) — help when something does not work.
+- [Configuration reference](configs/config.yaml) — detailed settings when you need them.
