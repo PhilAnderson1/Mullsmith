@@ -150,6 +150,7 @@ const {
   state, navigation, generation, navOwner, selectConversation, startGeneration,
   sendFromComposer, regenerateFrom,
   onHashChange, onModelChange, earlierButton, newChat, renderConversation,
+  routeAuthForm, backToLogin, onResendConfirm,
 } = await import("../assets/app/app.js");
 
 // reset gives each test a clean, logged-in-looking session.
@@ -175,6 +176,72 @@ const CHAT_OK = (url) =>
 // tick drains the microtask queue AND one macrotask round, so chained
 // awaits inside the code under test (fetch → json → next fetch) progress.
 const tick = () => new Promise((r) => setImmediate(r));
+
+test("pending signup panel hides registration policy and can return to login", () => {
+  reset();
+  state.meta = { registration: "invite-only", email_features: true };
+  state.pendingInbox = "pending@example.test";
+  location.hash = "";
+
+  routeAuthForm();
+  assert.equal(elFor("#register-confirm-note").hidden, false);
+  assert.equal(elFor("#form-login").hidden, true);
+  assert.equal(elFor("#auth-mode-note").hidden, true);
+
+  // The hash is already empty here: this is the exact case where assigning
+  // an empty hash cannot provide a hashchange event to finish navigation.
+  backToLogin();
+  assert.equal(state.pendingInbox, "");
+  assert.equal(elFor("#register-confirm-note").hidden, true);
+  assert.equal(elFor("#form-login").hidden, false);
+  assert.equal(elFor("#auth-mode-note").hidden, true);
+});
+
+test("invite-only policy appears on signup but not sign-in", () => {
+  reset();
+  state.meta = { registration: "invite-only", email_features: true };
+
+  location.hash = "";
+  routeAuthForm();
+  assert.equal(elFor("#form-login").hidden, false);
+  assert.equal(elFor("#auth-mode-note").hidden, true);
+
+  location.hash = "#register";
+  routeAuthForm();
+  assert.equal(elFor("#form-register").hidden, false);
+  assert.equal(elFor("#auth-mode-note").hidden, false);
+  assert.equal(elFor("#auth-mode-note").textContent, "Registrations are invite-only.");
+});
+
+test("routing after an auth success clears errors from an earlier form attempt", () => {
+  reset();
+  state.meta = { registration: "invite-only", email_features: true };
+  elFor("#login-error").hidden = false;
+  elFor("#login-error").textContent = "invalid email or password";
+
+  routeAuthForm();
+
+  assert.equal(elFor("#form-login").hidden, false);
+  assert.equal(elFor("#login-error").hidden, true);
+});
+
+test("resend confirmation posts the pending address and leaves visible feedback", async () => {
+  reset();
+  state.pendingInbox = "pending@example.test";
+  let request;
+  fetcher = async (url, opts) => {
+    request = { url, body: JSON.parse(opts.body) };
+    return ok({ ok: true, message: "If that address needs a link, one is on its way." });
+  };
+
+  await onResendConfirm();
+
+  assert.equal(request.url, "/api/v1/auth/resend-confirm");
+  assert.deepEqual(request.body, { email: "pending@example.test" });
+  assert.equal(elFor("#resend-ok").hidden, false);
+  assert.match(elFor("#resend-ok").textContent, /another confirmation link/i);
+  assert.equal(elFor("#btn-resend-confirm").disabled, false);
+});
 
 test("new chat carries the model currently selected in the picker", async () => {
   reset("A");

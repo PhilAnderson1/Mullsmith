@@ -12,8 +12,20 @@ import (
 	_ "modernc.org/sqlite" // pure-Go driver — CGO_ENABLED=0 builds stay static
 )
 
+// migrationV1SQL is the immutable initial schema. Once released, migrations
+// must be appended rather than changing SQL that an older database has already
+// recorded as applied.
+//
 //go:embed schema/schema.sql
-var schemaSQL string
+var migrationV1SQL string
+
+const currentSchemaVersion = 1
+
+// schemaMigrations is indexed by target version: element 0 migrates version
+// 0 to version 1. Keep old entries immutable and append each new migration.
+var schemaMigrations = [...]string{
+	migrationV1SQL,
+}
 
 // DB wraps the sql database handle.
 type DB struct {
@@ -22,7 +34,7 @@ type DB struct {
 	maxMessagesPerUser      int
 }
 
-// Open opens the database file and initializes the current schema if needed.
+// Open opens the database file and migrates it to the current schema if needed.
 func Open(path string) (*DB, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=data_sync(NORMAL)",
 		filepath.Clean(path))
@@ -38,27 +50,63 @@ func Open(path string) (*DB, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	if err := d.initializeSchema(); err != nil {
+	if err := d.migrateSchema(); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("initialize schema: %w", err)
+		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 	return d, nil
 }
 
 func (d *DB) Close() error { return d.sqlDB.Close() }
 
-// initializeSchema applies the current schema atomically. This development
-// application does not upgrade historical database schemas.
-func (d *DB) initializeSchema() error {
+// migrateSchema applies every outstanding migration and its version marker in
+// one transaction. Version 0 is reserved for a new, completely empty database;
+// pre-versioning development databases are intentionally not supported.
+func (d *DB) migrateSchema() error {
+	var version int
+	if err := d.sqlDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version > currentSchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than this application supports (version %d)", version, currentSchemaVersion)
+	}
+	if version == currentSchemaVersion {
+		return nil
+	}
+	if len(schemaMigrations) != currentSchemaVersion {
+		return fmt.Errorf("internal migration table has %d entries for schema version %d", len(schemaMigrations), currentSchemaVersion)
+	}
+	if version == 0 {
+		var objects int
+		if err := d.sqlDB.QueryRow(`
+			SELECT COUNT(*)
+			FROM sqlite_schema
+			WHERE name NOT LIKE 'sqlite_%'
+		`).Scan(&objects); err != nil {
+			return fmt.Errorf("inspect unversioned database: %w", err)
+		}
+		if objects != 0 {
+			return fmt.Errorf("database is unversioned but not empty; recreate it before starting this release")
+		}
+	}
+
 	tx, err := d.sqlDB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(schemaSQL); err != nil {
-		return err
+	for target := version + 1; target <= currentSchemaVersion; target++ {
+		if _, err := tx.Exec(schemaMigrations[target-1]); err != nil {
+			return fmt.Errorf("apply schema migration %d: %w", target, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, target)); err != nil {
+			return fmt.Errorf("record schema migration %d: %w", target, err)
+		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema migrations: %w", err)
+	}
+	return nil
 }
 
 // ErrNoRows aliases sql.ErrNoRows for row lookups.

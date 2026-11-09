@@ -853,9 +853,9 @@ preserves existing configuration files and updates its supplied systemd unit.
 A unit customised with `systemctl edit --full mullsmith` remains under `/etc`
 and continues to override the supplied unit; review new unit changes when upgrading.
 
-During development, database schema changes may require recreating the database;
-there is not yet a general migration path for older schemas. Check release notes
-before upgrading an installation whose history you need to keep.
+Database upgrades apply ordered schema migrations automatically. Back up the
+database before upgrading, and do not start an older Mullsmith binary against a
+database that has already been opened by a newer release.
 
 | Installation | Remove software | Data behaviour |
 |---|---|---|

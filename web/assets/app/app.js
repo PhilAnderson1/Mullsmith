@@ -207,9 +207,32 @@ const AUTH_FORMS = [
   "form-login", "form-register", "form-forgot", "form-reset",
   "form-confirm", "register-confirm-note",
 ];
+const AUTH_ERRORS = [
+  "login-error", "register-error", "forgot-error", "reset-error",
+  "confirm-error", "resend-error",
+];
 
 function showAuthForm(id) {
   for (const f of AUTH_FORMS) show($("#" + f), f === id);
+  // An error belongs to the form attempt that produced it. Carrying it to a
+  // later route can contradict a successful reset/confirmation message.
+  for (const error of AUTH_ERRORS) show($("#" + error), false);
+  // Registration policy is useful on the login/register choices, but it is
+  // stale noise once registration has succeeded and the inbox panel owns the
+  // card (likewise on reset/confirmation forms).
+  const registration = state.meta && state.meta.registration;
+  const modeNote = $("#auth-mode-note");
+  if (registration === "closed") {
+    modeNote.textContent = "Accounts are created by the administrator.";
+  } else if (registration === "invite-only") {
+    modeNote.textContent = "Registrations are invite-only.";
+  }
+  // Invite requirements belong beside the invite field, not on sign-in.
+  // Closed registration has no reachable signup form, so its administrator
+  // guidance remains on login.
+  show(modeNote,
+    (registration === "invite-only" && id === "form-register") ||
+    (registration === "closed" && id === "form-login"));
   // Any switch clears the previous success note; the handlers that set one
   // display it AFTER routing (scrub → route → note), never before.
   show($("#auth-done-note"), false);
@@ -355,6 +378,9 @@ async function onResetSubmit(ev) {
   try {
     await api.resetPassword(state.emailToken, pw);
     $("#form-reset").reset();
+    // A password entered before requesting the reset is now guaranteed stale.
+    // Keep the email convenience, but never present the obsolete secret again.
+    $("#login-password").value = "";
     scrubHash(); // lands on the login form
     $("#auth-done-note").textContent = "Password updated — sign in with the new one. Every device was signed out.";
     show($("#auth-done-note"), true);
@@ -366,14 +392,29 @@ async function onResetSubmit(ev) {
 
 async function onResendConfirm() {
   const errEl = $("#resend-error");
+  const okEl = $("#resend-ok");
+  const button = $("#btn-resend-confirm");
   show(errEl, false);
+  show(okEl, false);
+  button.disabled = true;
   try {
     await api.resendConfirm(state.pendingInbox);
-    toast("Confirmation mail sent again — check your inbox.", false);
+    okEl.textContent = "Request accepted. If this signup is still pending, another confirmation link is on its way.";
+    show(okEl, true);
   } catch (err) {
     errEl.textContent = err.message;
     show(errEl, true);
+  } finally {
+    button.disabled = false;
   }
+}
+
+function backToLogin() {
+  state.pendingInbox = "";
+  // The post-registration panel normally already has an empty hash, so merely
+  // assigning "" does not fire hashchange. Route synchronously as well.
+  location.hash = "";
+  routeAuthForm();
 }
 
 async function onCancelPendingEmail() {
@@ -419,17 +460,12 @@ function applyMetaFlags() {
   show($("#register-invite-wrap"), m.registration === "invite-only");
   show($("#login-forgot"), !!m.email_features);
   if (m.registration === "closed") {
-    $("#auth-mode-note").textContent = "Accounts are created by the administrator.";
-    show($("#auth-mode-note"), true);
     // Hide the WHOLE "No account yet?" sentence, not just the link — the
     // question itself is noise when nobody can register (the <p> owns the
     // text, so hiding #link-register alone left the sentence on screen).
     show($("#login-switch"), false);
   } else {
     show($("#login-switch"), true);
-    if (m.registration === "invite-only") {
-      show($("#auth-mode-note"), true);
-    }
   }
   const sel = $("#model-picker");
   sel.replaceChildren();
@@ -497,6 +533,8 @@ async function onRegister(ev) {
       // of entering chat — there is no session and nothing to enter yet.
       state.pendingInbox = me.email || $("#register-email").value.trim();
       $("#confirm-note-email").textContent = state.pendingInbox;
+      show($("#resend-error"), false);
+      show($("#resend-ok"), false);
       if (location.hash === "#register") location.hash = "";
       routeAuthForm();
       return;
@@ -1664,8 +1702,7 @@ async function boot() {
   });
   $("#link-confirm-back").addEventListener("click", (e) => {
     e.preventDefault();
-    state.pendingInbox = ""; // "back to sign in" also dismisses the panel
-    location.hash = "";
+    backToLogin();
   });
   $("#link-register").addEventListener("click", (e) => {
     e.preventDefault();
@@ -1872,5 +1909,5 @@ if (!globalThis.__MULLSMITH_TEST__) boot();
 export {
   state, navigation, generation, navOwner, listOwner, selectConversation, startGeneration, abandonInflight,
   sendFromComposer, regenerateFrom, onHashChange, onModelChange, onThinkingChange, earlierButton,
-  newChat, renderConversation,
+  newChat, renderConversation, routeAuthForm, backToLogin, onResendConfirm,
 };

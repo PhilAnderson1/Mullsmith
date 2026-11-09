@@ -8,9 +8,6 @@ Chat with your models, work with files and get help with tasks from your compute
 tablet or phone. Run Mullsmith on a Linux computer or server, connect it to your
 model server or a supported hosted provider, and open it in your browser.
 
-Mullsmith provides the assistant and its tools; it does not download or run the
-language model itself.
-
 <p align="center">
   <img src="assets/mullsmith.png" alt="Mullsmith on desktop and phone, showing code execution, a downloadable file and web fetching" width="85%">
 </p>
@@ -29,9 +26,10 @@ language model itself.
   devices. Mullsmith supports multiple user accounts.
 - **Responsive page design.** Access Mullsmith from your PC, tablet or mobile
   phone, or save it to your home screen as a web app.
-- **Keep setup simple.** Install a small, self-contained application, with no
-  separate database to manage. Built-in HTTPS supports access beyond your home
-  network when configured.
+- **Access from wherever you are.** Built-in HTTPS lets you serve Mullsmith
+  directly over the internet, without setting up a reverse proxy.
+- **Simple to install and configure.** One small, self-contained application
+  with no separate database to manage.
 
 ## Get started
 

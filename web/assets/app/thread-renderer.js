@@ -2,7 +2,7 @@
 // lifecycle effects enter through explicit callbacks.
 import { renderMarkdown } from "/assets/app/markdown.js";
 import { humanSize, fileApiUrl } from "/assets/app/file-presenter.js";
-import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, displayedImageFor, roundStatusNote, formatToolArgs, syncAssistantVisibility } from "/assets/app/thread.js";
+import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, displayedImageFor, roundStatusNote, paintToolArgs, syncAssistantVisibility } from "/assets/app/thread.js";
 export function createThreadRenderer({
   onRegenerate, onEarlier, onApproval, updateCtxMeter, recordActivity, toast, getMeta = () => ({})
 }) {
@@ -187,9 +187,7 @@ export function createThreadRenderer({
     card.classList.add("st-awaiting");
     card.open = true;
     card.querySelector(".tool-state").textContent = "needs approval";
-    const argsEl = card.querySelector(".tool-args");
-    argsEl.textContent = formatToolArgs(d.arguments);
-    argsEl.hidden = false;
+    paintToolArgs(card, d.arguments);
     if (card.querySelector(".approval-row")) return; // duplicate event: idempotent
 
     const row = document.createElement("div");

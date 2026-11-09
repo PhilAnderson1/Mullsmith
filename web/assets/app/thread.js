@@ -35,6 +35,18 @@ export function formatToolArgs(raw) {
   return runes.length > 600 ? runes.slice(0, 600).join("") + "…" : s;
 }
 
+// Tool calls without parameters commonly arrive as `{}`. The card title and
+// approval question already communicate everything useful in that case, so an
+// empty code block is noise. Partial/non-empty arguments remain visible.
+export function paintToolArgs(card, raw) {
+  const args = card.querySelector(".tool-args");
+  const formatted = formatToolArgs(raw);
+  const visible = formatted !== "" && formatted !== "{}";
+  args.textContent = visible ? formatted : "";
+  args.hidden = !visible;
+  return visible;
+}
+
 // safeLink is the only way a tool result URL reaches an <a href>: anything
 // that is not http(s) (javascript:, data:, …) is dropped.
 export function safeLink(u) {
@@ -193,11 +205,7 @@ export function buildCallCard(view, argsRaw, cardMode = "all") {
   if (cardMode === "useful" && view.statusOnly && view.status === "ok") return null;
   const card = toolCardNode(view.id, view.tool);
   card.classList.remove("st-running");
-  if (argsRaw) {
-    const argsEl = card.querySelector(".tool-args");
-    argsEl.textContent = formatToolArgs(argsRaw);
-    argsEl.hidden = false;
-  }
+  paintToolArgs(card, argsRaw);
   paintCallOutcome(card, view, cardMode);
   return card;
 }

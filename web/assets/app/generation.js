@@ -2,7 +2,7 @@
 // navigation port owns identity; the view port owns thread DOM assembly.
 import { api, ApiError } from "/assets/app/api.js";
 import { streamChat } from "/assets/app/sse.js";
-import { toolCardNode, formatToolArgs, callFromEvent, paintCallOutcome, sharedFileFor, displayedImageFor } from "/assets/app/thread.js";
+import { toolCardNode, paintToolArgs, callFromEvent, paintCallOutcome, sharedFileFor, displayedImageFor } from "/assets/app/thread.js";
 export function createGenerationController({
   navigation, view, getMeta, syncComposerButtons, toast, handleErr, applyTitle, showCtxFull, updateCtxMeter, promoteConversation
 }) {
@@ -109,11 +109,7 @@ export function createGenerationController({
             const args = d.arguments || "";
             if (card) {
               host.append(card);
-              if (args) {
-                const pre = card.querySelector(".tool-args");
-                pre.textContent = formatToolArgs(args);
-                pre.hidden = false;
-              }
+              paintToolArgs(card, args);
             }
             st.cards[d.call_id] = { card, args, tool: d.tool };
             if (quiet) {
@@ -136,11 +132,7 @@ export function createGenerationController({
               if (host) {
                 c.card = toolCardNode(d.call_id, d.tool || c.tool);
                 host.append(c.card);
-                if (c.args) {
-                  const pre = c.card.querySelector(".tool-args");
-                  pre.textContent = formatToolArgs(c.args);
-                  pre.hidden = false;
-                }
+                paintToolArgs(c.card, c.args);
               }
             }
             if (c.card) paintCallOutcome(c.card, view, getMeta()?.tool_cards);

@@ -74,7 +74,7 @@ globalThis.location = { origin: "https://app.example" };
 
 const {
   callFromEvent, callFromStored, buildCallCard, paintCallOutcome, toolCardNode,
-  sharedFileFor, displayedImageFor, roundStatusNote, syncAssistantVisibility,
+  sharedFileFor, displayedImageFor, roundStatusNote, syncAssistantVisibility, paintToolArgs,
 } = await import("../assets/app/thread.js");
 
 // digest collapses a rendered card to everything a viewer can read:
@@ -92,6 +92,20 @@ const results = [
   { title: "Kyoto guide", url: "https://example.org/kyoto" },
   { title: "Trains", url: "https://example.org/trains" },
 ];
+
+test("empty object tool arguments do not render an argument block", () => {
+  const card = toolCardNode("empty-args", "mcp_todoist_get-overview");
+  assert.equal(paintToolArgs(card, "  { }\n"), false);
+  assert.equal(card.querySelector(".tool-args").hidden, true);
+  assert.equal(card.querySelector(".tool-args").textContent, "");
+
+  assert.equal(paintToolArgs(card, '{"project":"inbox"}'), true);
+  assert.equal(card.querySelector(".tool-args").hidden, false);
+  assert.equal(card.querySelector(".tool-args").textContent, '{"project":"inbox"}');
+
+  assert.equal(paintToolArgs(card, '{"project":'), true,
+    "partial streamed arguments remain visible");
+});
 
 // The server guarantees this pair: ClampCard's output goes into the
 // tool_end event AND tool_calls.display unchanged.

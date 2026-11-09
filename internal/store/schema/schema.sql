@@ -1,6 +1,5 @@
--- Current application schema. Development databases are initialized directly;
--- changes to this file do not upgrade an older schema. Recreate a development
--- database when its structure changes. IF NOT EXISTS makes startup repeatable.
+-- Schema migration 1: the initial public schema.
+-- Keep this file immutable. Add a new ordered migration for every later change.
 
 CREATE TABLE IF NOT EXISTS users (
   id                    TEXT PRIMARY KEY,

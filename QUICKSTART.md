@@ -55,7 +55,22 @@ sudo mullsmith admin create-user -email you@example.org -name 'Your name' -passw
 The default installation uses invite-only registration. This command creates your
 account directly; you do not need an invitation or email setup.
 
-## 3. Connect your model
+## 3. Check Mullsmith is running
+
+On your computer, tablet or phone, open `http://YOUR-SERVER-IP:3210`, replacing
+`YOUR-SERVER-IP` with the network IP address of the server running Mullsmith.
+Your device should be on the same network. If you are browsing on the
+Mullsmith server itself, you can use `http://localhost:3210` instead.
+
+Sign in with the email and password you created above. When the chat interface
+appears, you have confirmed that Mullsmith is running and your account works.
+You will connect your model in the next step before sending a message.
+
+If the page does not open or you cannot sign in, use the
+[troubleshooting checks below](#if-something-does-not-work) before changing any
+settings. Keep this browser tab open for your first chat.
+
+## 4. Connect your model
 
 Open `/etc/mullsmith/config.yaml` in a text editor with administrator access, for example:
 
@@ -102,13 +117,10 @@ Resolve any reported errors, then apply the settings:
 sudo systemctl restart mullsmith
 ```
 
-## 4. Send your first message
+## 5. Send your first message
 
-1. On your computer, tablet or phone, open `http://YOUR-SERVER-IP:3210`, replacing
-   `YOUR-SERVER-IP` with the network IP address of the server running Mullsmith.
-   Your device should be on the same network. If you are browsing on the
-   Mullsmith server itself, you can use `http://localhost:3210` instead.
-2. Sign in with the email and password you created above.
+1. Return to your Mullsmith browser tab and refresh the page.
+2. Sign in again if prompted.
 3. Start a new chat and send a simple message, such as “Give me three ideas for
    a quick lunch.”
 
@@ -121,8 +133,8 @@ to the conversation later from the conversation list.
 |---|---|
 | The page will not open | Run `sudo systemctl status mullsmith`. Check the browser address and, when connecting from another device, that your firewall allows access to port 3210 from your network. |
 | You cannot sign in | Use the account created in step 2. Browser registration requires an invitation by default. |
-| The page opens but you get no reply | Check that your model server is running, then run the configuration check in step 3. Verify the API address, model ID and any required API key. |
-| Mullsmith will not restart after editing settings | Run the configuration check in step 3 and correct the reported errors. Check indentation and avoid duplicate sections. |
+| The page opens but you get no reply | Check that your model server is running, then run the configuration check in step 4. Verify the API address, model ID and any required API key. |
+| Mullsmith worked before editing settings but will not restart | Start by checking the settings you changed. Run the configuration check in step 4 and correct the reported errors. Check indentation and avoid duplicate sections. |
 
 For more help, see [troubleshooting](GUIDE.md#troubleshooting).
 

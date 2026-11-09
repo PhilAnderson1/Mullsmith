@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,12 +40,59 @@ func TestInitializeSchemaIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var version int
+	if err := db1.sqlDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("fresh database version = %d, want %d", version, currentSchemaVersion)
+	}
 	db1.Close()
 	db2, err := Open(path)
 	if err != nil {
 		t.Fatalf("re-open: %v", err)
 	}
 	defer db2.Close()
+}
+
+func TestSchemaRejectsNewerDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "newer.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Open(path)
+	if err == nil || !strings.Contains(err.Error(), "newer than this application supports") {
+		t.Fatalf("Open newer database error = %v, want unsupported-version error", err)
+	}
+}
+
+func TestSchemaRejectsUnversionedNonemptyDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE legacy (id INTEGER PRIMARY KEY)`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Open(path)
+	if err == nil || !strings.Contains(err.Error(), "unversioned but not empty") {
+		t.Fatalf("Open unversioned database error = %v, want recreate error", err)
+	}
 }
 
 func TestCreateGetUser(t *testing.T) {
