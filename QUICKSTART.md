@@ -14,8 +14,8 @@ You will need:
 - A running model server, such as llama.cpp, Ollama or LM Studio, or access to a
   supported hosted provider such as OpenRouter. Mullsmith does not download or run
   the model itself.
-- Your model server's API address, the exact model ID it serves, and an API key
-  if it requires one.
+- An OpenRouter API key, or your own model server's API address, exact model ID
+  and any required API key.
 
 The model server must be reachable from the computer running Mullsmith. If you
 want to make Mullsmith accessible over the internet, follow the
@@ -78,7 +78,11 @@ Open `/etc/mullsmith/config.yaml` in a text editor with administrator access, fo
 sudo nano /etc/mullsmith/config.yaml
 ```
 
-Find the existing `llm:` section. Update `endpoint`, `endpoint_type` and `api_key`
+**Using OpenRouter?** The supplied defaults are ready to use: add your
+[OpenRouter](https://openrouter.ai/) API key to `llm.api_key`, then
+[check and apply your settings](#check-and-apply-your-settings).
+
+**Using your own model server?** Find the existing `llm:` section. Update `endpoint`, `endpoint_type` and `api_key`
 to match your model server. Replace the example `models:` list with your model's
 details. This example connects to llama.cpp:
 
@@ -104,6 +108,8 @@ network address if it runs elsewhere. Leave `api_key` empty only if no key is re
 For other servers, use the address and endpoint type in the
 [model setup table](GUIDE.md#models-and-thinking-controls). That section also
 explains how to enable image input and model-specific thinking controls later.
+
+### Check and apply your settings
 
 Save the file, then check your settings and connection:
 

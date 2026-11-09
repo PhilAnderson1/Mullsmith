@@ -73,6 +73,11 @@ Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edi
 
 ## Models and thinking controls
 
+The supplied configuration uses OpenRouter with Qwen3.8-27B and its thinking
+controls. To use it, add your OpenRouter API key to `llm.api_key`; usage is billed
+to your OpenRouter account. To connect another model server, change the settings
+below.
+
 Mullsmith works with a single configured OpenAI-compatible Chat Completions
 endpoint, which can offer multiple models. Set model ID names exactly as your
 endpoint advertises them.

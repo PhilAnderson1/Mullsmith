@@ -53,14 +53,15 @@ server:
 
 # Model endpoint and generation behavior.
 llm:
-  # OpenAI-compatible API base URL.
-  endpoint: "http://127.0.0.1:9931/v1"
+  # OpenRouter is ready to use once you add your API key below (paid usage).
+  # For a local model server, change the endpoint, endpoint_type and model entry.
+  endpoint: "https://openrouter.ai/api/v1"
 
   # Endpoint type, supported options are: gufo, llama_cpp, vllm, lm_studio, ollama_openai, openrouter.
-  endpoint_type: "llama_cpp"
+  endpoint_type: "openrouter"
 
-  # Endpoint bearer token.
-  api_key: ""
+  # Your API key (if applicable)
+  api_key: "YOUR_API_KEY_GOES_HERE"
   # To keep this secret in a separate environment file, use the following environment variable:
   # api_key: "${MULLSMITH_LLM_API_KEY:-}"
 
@@ -69,7 +70,7 @@ llm:
   # each additional model you want to offer.
   models:
     # Endpoint model identifier.
-    - id: "qwen3.8-27b"
+    - id: "qwen/qwen3.8-27b"
 
       # Select this model by default.
       default: true
@@ -83,7 +84,7 @@ llm:
       thinking_profile: "qwen3_8"
 
       # Model context window in tokens; omit to discover it automatically (if supported by endpoint).
-      context_size: 262144
+      # context_size: 262144
 
       # This model supports image input.
       vision: true
