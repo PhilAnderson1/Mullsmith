@@ -431,6 +431,9 @@ func TestThinkingSnapshotSurvivesToolRounds(t *testing.T) {
 
 	rd := newSSEReader(t, sendResp)
 	drainSSE(t, rd)
+	idleCtx, cancelIdle := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelIdle()
+	s.WaitIdle(idleCtx)
 
 	bodies := rec.streamBodies()
 	if len(bodies) != 2 {
