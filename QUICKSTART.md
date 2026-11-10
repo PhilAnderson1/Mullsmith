@@ -3,9 +3,6 @@
 Install Mullsmith, connect your model and send your first message. This walkthrough
 is for using Mullsmith on a Linux computer or across a trusted home network.
 
-If someone has already set up Mullsmith for you, open the address they gave you
-and sign in with your account.
-
 ## Before you start
 
 You will need:
@@ -17,9 +14,7 @@ You will need:
 - An OpenRouter API key, or your own model server's API address, exact model ID
   and any required API key.
 
-The model server must be reachable from the computer running Mullsmith. If you
-want to make Mullsmith accessible over the internet, follow the
-[HTTPS setup](GUIDE.md#internet-access-and-https) before doing so.
+The model server must be reachable from the computer running Mullsmith.
 
 ## 1. Install Mullsmith
 
@@ -68,7 +63,7 @@ You will connect your model in the next step before sending a message.
 
 If the page does not open or you cannot sign in, use the
 [troubleshooting checks below](#if-something-does-not-work) before changing any
-settings. Keep this browser tab open for your first chat.
+settings.
 
 ## 4. Connect your model
 
@@ -99,7 +94,8 @@ llm:
 ```
 
 Edit these entries within the existing section, keeping its other settings and
-the rest of the file. Do not add a second `llm:` section. Use spaces, not tabs.
+the rest of the file. Do not add a second `llm:` section. Use 2 spaces rather than
+a tab to indent, otherwise the YAML config file won't load.
 
 Replace `your-model-id` with the exact ID shown by your model server.
 `127.0.0.1` means the model server runs on the same computer as Mullsmith; use its
@@ -140,7 +136,7 @@ to the conversation later from the conversation list.
 | The page will not open | Run `sudo systemctl status mullsmith`. Check the browser address and, when connecting from another device, that your firewall allows access to port 3210 from your network. |
 | You cannot sign in | Use the account created in step 2. Browser registration requires an invitation by default. |
 | The page opens but you get no reply | Check that your model server is running, then run the configuration check in step 4. Verify the API address, model ID and any required API key. |
-| Mullsmith worked before editing settings but will not restart | Start by checking the settings you changed. Run the configuration check in step 4 and correct the reported errors. Check indentation and avoid duplicate sections. |
+| Mullsmith worked before editing settings but will not restart | Start by checking the settings you changed. Run the configuration check in step 4 and correct the reported errors. Check indentation (must use 2 spaces for each indentation, not tabs) and avoid duplicate sections. |
 
 For more help, see [troubleshooting](GUIDE.md#troubleshooting).
 
