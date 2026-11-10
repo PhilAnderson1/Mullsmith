@@ -88,6 +88,12 @@ func TestAbortGenerationsLetsShutdownFinish(t *testing.T) {
 		}
 	}
 drained:
+	// The terminal SSE event can reach the client just before Operation.Run's
+	// deferred Close removes the generation from the registry. Wait for that
+	// cleanup rather than racing it with an immediate Count assertion.
+	idleCtx, idleCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer idleCancel()
+	s.WaitIdle(idleCtx)
 	if got := s.chat.Generations.Count(); got != 0 {
 		t.Fatalf("generation still registered after abort: %d", got)
 	}
