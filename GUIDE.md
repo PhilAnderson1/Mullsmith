@@ -403,6 +403,84 @@ explicitly allow its network access.
 Enable search under `tools.web_search` with `enabled: true`, `provider: "brave"`
 and your API key. No search key is required for direct web fetch/download.
 
+### Optional code execution
+
+Enable code execution so the assistant can perform calculations, process data
+and create files by writing and running scripts. Users are asked to approve
+execution with the settings below.
+
+Install bubblewrap (for example, `sudo apt install bubblewrap`). Then enable:
+
+```yaml
+tools:
+  code_run:
+    enabled: true
+    timeout: 30s
+    max_memory: 1GiB
+    max_output: 256KiB
+    allow_network: false
+  agent:
+    approval:
+      code_run: "confirm"
+```
+
+Restart Mullsmith after enabling execution. It checks that isolation and resource
+limits work before starting; if startup fails, check the logs and the platform
+notes below.
+
+Code can read uploaded files and write to the user's `work/` and `artifacts/`
+areas. It cannot access other users' files, the database or server configuration.
+Execution has time and resource limits.
+
+Keep `allow_network: false` unless your tasks need network access. Enabling it
+allows code to contact both internet and local-network services reachable from
+the server, including sending files to them. Web-fetch restrictions do not apply
+to executed code.
+
+#### If code execution will not start on a Raspberry Pi
+
+Some Raspberry Pi systems need memory limits enabled before code execution can
+run. Check with:
+
+```sh
+cat /sys/fs/cgroup/cgroup.controllers
+```
+
+If `memory` is absent, append `cgroup_enable=memory` to the existing single line
+in `/boot/firmware/cmdline.txt`, reboot, and run the check again.
+
+#### Put a hard limit on code-generated files
+
+The application's storage quota does not strictly limit all disk use by executed
+code. If you need a hard limit, put the scratchpad on a separate, size-limited
+filesystem. The default location is `/var/lib/mullsmith/scratchpad`.
+
+Stop Mullsmith before moving existing files, preserve ownership by `mullsmith`,
+and mount the new filesystem before restarting. Move existing files onto it
+rather than hiding them beneath the mount.
+
+### Approvals and execution limits
+
+`tools.agent.approval` accepts `auto` (run immediately) or `confirm` (ask the user).
+Code execution approval may be remembered for the current conversation. Use an
+optional tool's `enabled` setting to disable it; `confirm` is not a disable switch.
+
+`tools.agent.tool_cards` accepts `useful` (the default) or `all`. `useful` hides
+successful status-only cards while retaining approvals, failures, search results,
+downloads, images and other structured results. Calls remain in conversation
+history and are still supplied to the model; this setting changes presentation only.
+
+Keep deletion and code execution on `confirm` unless you deliberately want them
+to run unattended. Read the requested action: web pages and uploaded files can
+contain instructions intended to manipulate the model, and approval does not
+eliminate that risk.
+
+A **round** is one batch of tool requests from a model response; it may contain
+several **calls**. The supplied per-turn limits are 20 tool rounds and 100
+proposed tool calls. They bound a single response workflow, not the lifetime of
+a conversation. The code execution timeout applies to each run; one turn can
+contain multiple sequential runs.
+
 ### MCP tool servers
 
 Connect MCP servers to give your assistant access to additional tools and
@@ -541,84 +619,6 @@ Each server keeps its files under `mcp.state_dir/<server-id>`. If it needs anoth
 writable location, add that directory to the service's `ReadWritePaths` setting;
 see [storage locations](#backups-and-storage-locations). Keep the existing
 service restrictions in place.
-
-### Approvals and execution limits
-
-`tools.agent.approval` accepts `auto` (run immediately) or `confirm` (ask the user).
-Code execution approval may be remembered for the current conversation. Use an
-optional tool's `enabled` setting to disable it; `confirm` is not a disable switch.
-
-`tools.agent.tool_cards` accepts `useful` (the default) or `all`. `useful` hides
-successful status-only cards while retaining approvals, failures, search results,
-downloads, images and other structured results. Calls remain in conversation
-history and are still supplied to the model; this setting changes presentation only.
-
-Keep deletion and code execution on `confirm` unless you deliberately want them
-to run unattended. Read the requested action: web pages and uploaded files can
-contain instructions intended to manipulate the model, and approval does not
-eliminate that risk.
-
-A **round** is one batch of tool requests from a model response; it may contain
-several **calls**. The supplied per-turn limits are 20 tool rounds and 100
-proposed tool calls. They bound a single response workflow, not the lifetime of
-a conversation. The code execution timeout applies to each run; one turn can
-contain multiple sequential runs.
-
-### Optional code execution
-
-Enable code execution so the assistant can perform calculations, process data
-and create files by writing and running scripts. Users are asked to approve
-execution with the settings below.
-
-Install bubblewrap (for example, `sudo apt install bubblewrap`). Then enable:
-
-```yaml
-tools:
-  code_run:
-    enabled: true
-    timeout: 30s
-    max_memory: 1GiB
-    max_output: 256KiB
-    allow_network: false
-  agent:
-    approval:
-      code_run: "confirm"
-```
-
-Restart Mullsmith after enabling execution. It checks that isolation and resource
-limits work before starting; if startup fails, check the logs and the platform
-notes below.
-
-Code can read uploaded files and write to the user's `work/` and `artifacts/`
-areas. It cannot access other users' files, the database or server configuration.
-Execution has time and resource limits.
-
-Keep `allow_network: false` unless your tasks need network access. Enabling it
-allows code to contact both internet and local-network services reachable from
-the server, including sending files to them. Web-fetch restrictions do not apply
-to executed code.
-
-#### If code execution will not start on a Raspberry Pi
-
-Some Raspberry Pi systems need memory limits enabled before code execution can
-run. Check with:
-
-```sh
-cat /sys/fs/cgroup/cgroup.controllers
-```
-
-If `memory` is absent, append `cgroup_enable=memory` to the existing single line
-in `/boot/firmware/cmdline.txt`, reboot, and run the check again.
-
-#### Put a hard limit on code-generated files
-
-The application's storage quota does not strictly limit all disk use by executed
-code. If you need a hard limit, put the scratchpad on a separate, size-limited
-filesystem. The default location is `/var/lib/mullsmith/scratchpad`.
-
-Stop Mullsmith before moving existing files, preserve ownership by `mullsmith`,
-and mount the new filesystem before restarting. Move existing files onto it
-rather than hiding them beneath the mount.
 
 ### Files and retention
 
