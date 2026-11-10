@@ -203,13 +203,14 @@ export function createThreadRenderer({
     deny.type = "button";
     deny.className = "btn small ghost";
     deny.textContent = "Deny";
-    // §6.1/§9.9: code_run offers "always allow in this conversation".
+    // Remember code execution or all functions from the named MCP server.
     let rememberBox = null;
     if (d.rememberable) {
       const cb = document.createElement("input");
       cb.type = "checkbox";
       const txt = document.createElement("span");
       txt.textContent = " Always allow in this conversation";
+      if (d.remember_server) txt.textContent += ` (all tools from ${d.remember_server})`;
       rememberBox = document.createElement("label");
       rememberBox.className = "approval-remember";
       rememberBox.append(cb, txt);

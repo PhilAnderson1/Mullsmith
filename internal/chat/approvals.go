@@ -1,12 +1,15 @@
 package chat
 
-import "sync"
+import (
+	"mullsmith/internal/tools"
+	"sync"
+)
 
 // Approvals implements "users may Remember the choice per
 // conversation" (§6.1 step 5, §9.9 layer 6). Deliberately in-memory only:
 // a server restart re-opens every consent prompt (a restart is a fresh
 // consent window), and entries drop with the conversation. Remembering is
-// offered for code_run only — the other confirm-grade tools stay gated.
+// offered for code_run and MCP servers; other tools stay gated.
 type Approvals struct {
 	mu     sync.Mutex
 	byConv map[string]map[string]bool // convID → tool → approved
@@ -42,4 +45,16 @@ func (m *Approvals) Forget(convID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.byConv, convID)
+}
+
+// approvalKey uses the adapter's server identity rather than parsing tool names:
+// server IDs and function names can both contain underscores.
+func approvalKey(tool tools.Tool) string {
+	if mcp, ok := tool.(interface{ MCPServerID() string }); ok && mcp.MCPServerID() != "" {
+		return "mcp-server:" + mcp.MCPServerID()
+	}
+	if tool.Name() == "code_run" {
+		return "code_run"
+	}
+	return ""
 }

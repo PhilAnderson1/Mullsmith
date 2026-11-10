@@ -58,12 +58,13 @@ type ToolFinished struct {
 func (ToolFinished) Kind() string { return "tool_end" }
 
 type ApprovalRequested struct {
-	ApprovalID   string `json:"approval_id"`
-	CallID       string `json:"call_id"`
-	MessageID    string `json:"message_id"`
-	Tool         string `json:"tool"`
-	Arguments    string `json:"arguments"`
-	Rememberable bool   `json:"rememberable"`
+	ApprovalID     string `json:"approval_id"`
+	CallID         string `json:"call_id"`
+	MessageID      string `json:"message_id"`
+	Tool           string `json:"tool"`
+	Arguments      string `json:"arguments"`
+	Rememberable   bool   `json:"rememberable"`
+	RememberServer string `json:"remember_server,omitempty"`
 }
 
 func (ApprovalRequested) Kind() string { return "awaiting_approval" }

@@ -42,6 +42,7 @@ type mcpTool struct {
 	name        string
 	remoteName  string
 	serverName  string
+	serverID    string
 	description string
 	parameters  map[string]any
 	caller      mcpToolCaller
@@ -50,6 +51,8 @@ type mcpTool struct {
 	hideErrors  bool
 	onError     func()
 }
+
+func (t *mcpTool) MCPServerID() string { return t.serverID }
 
 func (t *mcpTool) Name() string               { return t.name }
 func (t *mcpTool) Description() string        { return t.description }
@@ -160,7 +163,7 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 			}
 			desc = fmt.Sprintf("[%s MCP server] %s", server.Name, Elide(desc, 4096))
 			adapted = append(adapted, &mcpTool{name: name, remoteName: remote.Name,
-				serverName: server.Name, description: desc, parameters: params, caller: caller,
+				serverID: server.ID, serverName: server.Name, description: desc, parameters: params, caller: caller,
 				logger: logger, secrets: secrets})
 			seen[name] = true
 		}

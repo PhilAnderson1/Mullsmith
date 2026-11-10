@@ -273,7 +273,7 @@ func (m *MCPOAuthManager) install(userID string, server config.MCPServer, remote
 		if desc == "" {
 			desc = "Tool supplied by the configured MCP server."
 		}
-		adapted[name] = &mcpTool{name: name, remoteName: remote.Name, serverName: server.Name,
+		adapted[name] = &mcpTool{name: name, remoteName: remote.Name, serverName: server.Name, serverID: server.ID,
 			description: fmt.Sprintf("[%s MCP server] %s", server.Name, Elide(desc, 4096)),
 			parameters:  params, caller: caller, logger: m.logger,
 			secrets: mcpSecretValues(server), hideErrors: true,

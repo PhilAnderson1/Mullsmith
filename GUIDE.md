@@ -462,8 +462,11 @@ rather than hiding them beneath the mount.
 ### Approvals and execution limits
 
 `tools.agent.approval` accepts `auto` (run immediately) or `confirm` (ask the user).
-Code execution approval may be remembered for the current conversation. Use an
-optional tool's `enabled` setting to disable it; `confirm` is not a disable switch.
+For code execution and MCP functions, select **Always allow in this conversation**
+to skip later prompts for code execution or all functions from that MCP server
+in the chat. Other MCP servers and conversations still ask separately. Remembered approvals reset when Mullsmith
+restarts. Use an optional tool's `enabled` setting to disable it; `confirm` is
+not a disable switch.
 
 `tools.agent.tool_cards` accepts `useful` (the default) or `all`. `useful` hides
 successful status-only cards while retaining approvals, failures, search results,

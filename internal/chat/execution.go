@@ -98,11 +98,12 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		return content, "", err
 	}
 
+	key := approvalKey(tool)
 	status := "running"
-	// code_run defaults to confirm; a remembered "always allow in this
-	// conversation" (§9.9) skips the prompt for the rest of the chat.
+	// Remembered code execution and MCP function approvals skip later
+	// prompts for code execution or that MCP server in this conversation.
 	needApproval := s.Tools.PolicyFor(userID, name) == tools.ApprovalConfirm &&
-		!s.Approvals.Remembered(convID, name)
+		(key == "" || !s.Approvals.Remembered(convID, key))
 	if needApproval {
 		status = "pending_approval"
 	}
@@ -126,7 +127,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 	}
 
 	if status == "pending_approval" {
-		decision := s.awaitApproval(ctx, g, conn, callID, name, call.Function.Arguments, assistantMsgID)
+		decision := s.awaitApproval(ctx, g, conn, callID, name, call.Function.Arguments, assistantMsgID, key)
 		newStatus, uctx := "approved", ctx
 		if !decision.Approve {
 			newStatus, uctx = "denied", context.Background() // abort may have killed ctx
@@ -150,8 +151,8 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 				return `{"error":` + jsonQuote(msg) + `}`, "", persistErr
 			}
 		}
-		if decision.Approve && decision.Remember && name == "code_run" {
-			s.Approvals.Remember(convID, name) // only after the approval is durable (C3, §9.9)
+		if decision.Approve && decision.Remember && key != "" {
+			s.Approvals.Remember(convID, key) // only after the approval is durable (C3, §9.9)
 		}
 		if !decision.Approve {
 			emitEnd("denied", verdict)
@@ -311,17 +312,21 @@ func isCancellation(err error, genCtx context.Context) bool {
 }
 
 // awaitApproval parks the loop on the user's decision; abort or the
-// 10-minute timeout deny (spec §6.1 step 5). code_run approvals advertise
+// 10-minute timeout deny (spec §6.1 step 5). Code and MCP approvals advertise
 // rememberable so the UI can offer "always allow in this conversation".
 func (s *Service) awaitApproval(ctx context.Context, g *Generation, conn sink,
-	callID, name, args, msgID string,
+	callID, name, args, msgID, key string,
 ) ApprovalDecision {
 	apID, decCh, ok := s.Generations.AddApproval(g.ID)
 	if !ok {
 		return ApprovalDecision{} // generation gone: fail closed
 	}
 	defer s.Generations.RemoveApproval(g.ID, apID)
-	_ = conn.Send(ApprovalRequested{ApprovalID: apID, CallID: callID, MessageID: msgID, Tool: name, Arguments: args, Rememberable: name == "code_run"})
+	serverID := ""
+	if strings.HasPrefix(key, "mcp-server:") {
+		serverID = strings.TrimPrefix(key, "mcp-server:")
+	}
+	_ = conn.Send(ApprovalRequested{ApprovalID: apID, CallID: callID, MessageID: msgID, Tool: name, Arguments: args, Rememberable: key != "", RememberServer: serverID})
 	timer := time.NewTimer(ApprovalTimeout)
 	defer timer.Stop()
 	select {
