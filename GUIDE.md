@@ -1,11 +1,8 @@
-# Mullsmith guide
+# Mullsmith configuration and administration guide
 
-Mullsmith connects your browser to a model endpoint you already run or subscribe
-to. It stores accounts, conversations and files on your server. It does not run
-or download the language model itself.
-
-Start with the installation instructions, then choose the deployment that fits
-who will use your server.
+Use this guide to connect models and tools, manage accounts, enable remote access
+and maintain your Mullsmith server. For your first installation and chat, follow
+the [Quick start](QUICKSTART.md).
 
 - [Install Mullsmith](#install-mullsmith)
 - [Models and thinking controls](#models-and-thinking-controls)
@@ -26,23 +23,10 @@ Use two spaces per indentation level, never tabs. Restart after configuration ch
 
 ## Install Mullsmith
 
-### Debian and Ubuntu
-
-Download the `.deb` for your machine from
-[Releases](https://github.com/PhilAnderson1/Mullsmith/releases), then:
-
-```sh
-sudo apt install ./mullsmith_*.deb
-```
-
-### RPM-based distributions
-
-Download the `.rpm` for your machine from
-[Releases](https://github.com/PhilAnderson1/Mullsmith/releases), then install with DNF:
-
-```sh
-sudo dnf install ./mullsmith-*.rpm
-```
+For Debian, Ubuntu and RPM packages, follow the
+[Quick start installation steps](QUICKSTART.md#1-install-mullsmith).
+Alternative installation methods are described below and under
+[building from source](#building-from-source).
 
 ### Tar archive
 
@@ -58,18 +42,10 @@ uses `/usr/local/bin/mullsmith`. Both use `/etc/mullsmith` for configuration and
 
 ### Create your first account
 
-The installer enables and starts the Mullsmith service.
-The supplied configuration serves HTTP on port 3210 on all IPv4/IPv6 interfaces,
-with invite-only registration.
-
-Create your first Mullsmith account, substituting your email, name and password:
-
-```sh
-sudo mullsmith admin create-user -email you@example.org -name 'Your name' -password 'password at least 10 characters'
-```
-
-Open `http://YOUR-SERVER-IP:3210` and log in to check the installation. Then edit
-`/etc/mullsmith/config.yaml`, setting the endpoint and model details as described below.
+The installer starts Mullsmith with invite-only registration. Follow the Quick
+start to [create your account](QUICKSTART.md#2-create-your-account) and
+[check that you can sign in](QUICKSTART.md#3-check-mullsmith-is-running), then
+configure your model below.
 
 ## Models and thinking controls
 
@@ -78,10 +54,12 @@ controls. To use it, add your OpenRouter API key to `llm.api_key`; usage is bill
 to your OpenRouter account. To connect another model server, change the settings
 below.
 
-Mullsmith works with a single configured OpenAI-compatible Chat Completions
-endpoint, which can offer multiple models. Set model ID names exactly as your
-endpoint advertises them.
-These example URLs must match the actual IP addresses and ports you chose for your model servers.
+### Connect a model server or provider
+
+Mullsmith connects to one model server or provider at a time, which can offer
+multiple models through an OpenAI-compatible Chat Completions API. Use the exact
+model IDs it provides. Replace the example addresses and ports below with yours;
+`127.0.0.1` means the model server runs on the Mullsmith computer.
 
 | Server | Example `llm.endpoint` | `llm.endpoint_type` |
 |---|---|---|
@@ -98,8 +76,7 @@ For a model on llama.cpp:
 llm:
   endpoint: "http://127.0.0.1:9931/v1"
   endpoint_type: "llama_cpp"
-  # Uncomment and enter your API key if required.
-  # api_key: ""
+  api_key: "" # Leave empty if your server does not require a key.
   models:
     - id: "your-model-id"
       default: true
@@ -107,6 +84,8 @@ llm:
       vision: false # Set to true if the model and endpoint support image input.
       # context_size: 32768 # Set to the endpoint's configured context window, or omit for discovery.
 ```
+
+### Choose thinking controls and image support
 
 `thinking_profile` determines which thinking controls appear for a model, such as
 on/off or low/medium/high. Choose the matching profile from
@@ -120,6 +99,8 @@ Set the model's context size and image support as appropriate:
   discovery if the endpoint reports it. Without either, the usage meter shows
   token counts without a known capacity.
 - `vision: true`: enable image input only when the model and endpoint support it.
+
+### Add more models
 
 Add more entries under `llm.models` to offer more models, with one marked
 `default: true`. Give each its own thinking profile, context size and image support.
@@ -167,25 +148,14 @@ commands as for the service; see [secrets](#secrets). Certificate files staged i
 
 ## Choose your deployment
 
-### Trust model
+### Decide who will have access
 
-Mullsmith is designed to serve directly on your local network or the public
-internet, with accounts restricted to people you trust not to deliberately abuse
-the service.
+Mullsmith is intended for you and people you trust. Account holders can use model
+resources, store files and use enabled tools. It is not intended as an open
+public service for untrusted users.
 
-Open registration is intended for networks where everyone who can reach Mullsmith
-is trusted, such as a private home LAN. It is not recommended on shared or
-untrusted networks, or when Mullsmith is accessible from the public internet.
-In those environments, enable HTTPS and use invite-only or closed registration.
-
-Authenticated users can consume model resources, store files and use enabled
-tools. These capabilities expose more of the application than the login page
-does. Access controls, quotas and sandboxing provide protection, but Mullsmith is
-not intended as a public service for untrusted account holders. This is especially
-important when code execution is enabled.
-
-Trusted users can still make mistakes or run unsafe model-generated code, so
-sandboxing and resource limits remain important.
+Choose the setup below that matches where people will connect. Use invite-only
+or closed registration for shared networks and internet access.
 
 ### Personal computer
 
@@ -253,7 +223,7 @@ and login works.
 ## Internet access and HTTPS
 
 Mullsmith can serve HTTPS directly without a reverse proxy. You need a hostname,
-a certificate for that hostname, and two configuration changes.
+a certificate for that hostname, and access to the server configuration.
 
 ### 1. Set up a hostname
 
@@ -303,7 +273,7 @@ Certbot prints the certificate paths. They normally look like:
 
 Use the actual paths printed, which may have a suffix such as `-0001`.
 
-### 3. Configure the startup unit
+### 3. Give Mullsmith access to your certificate
 
 The service needs its own readable copies of the certificate and key. Run:
 
@@ -435,10 +405,13 @@ and your API key. No search key is required for direct web fetch/download.
 
 ### MCP tool servers
 
-Mullsmith can expose tools from administrator-configured MCP servers using
-Streamable HTTP or a local `stdio` process. MCP support is optional and no
-server is enabled by default. Add a remote server to the top-level `mcp`
-section:
+Connect MCP servers to give your assistant access to additional tools and
+services. You can connect a remote service or run an installed tool server
+locally. No MCP servers are enabled by default.
+
+#### Connect a remote server
+
+Add the service to the top-level `mcp` section:
 
 ```yaml
 mcp:
@@ -450,19 +423,17 @@ mcp:
       approval: "confirm"
 ```
 
-Restart Mullsmith after changing the list. Tools from servers without an
-`oauth` block appear to every Mullsmith account as names beginning
-`mcp_<server-id>_`. `approval` may be `confirm` or `auto`; confirmation is the
-default. Calls share the ordinary per-turn tool-call limit and are recorded in
-conversation history like built-in tools.
+Restart Mullsmith after changing the list. By default, users are asked to approve
+tool calls. Set `approval: "auto"` only if you want calls to run without asking.
 
-The supplied configuration contains commented examples for DeepWiki, Weather
-and Wikidata. Add only servers you intend to use: their tool descriptions are
-sent with model requests, and tool arguments and results pass through the
-external server. An administrator-configured HTTP URL may deliberately point
-to a local service; MCP connections therefore do not use the public-address
-guard applied to `web_fetch` and `web_download`. Remote MCP authentication is
-optional. For a bearer token, add:
+The supplied configuration includes examples for DeepWiki, Weather and Wikidata.
+Add only services you intend to use: their tool descriptions go to the model,
+and the external service receives the arguments for calls made to it. Remote
+MCP servers may be on your local network or the internet.
+
+#### Use shared service credentials
+
+For a service using a bearer token, add:
 
 ```yaml
       bearer_token: "${MCP_SERVICE_TOKEN}"
@@ -475,19 +446,19 @@ For a service using an API-key header instead, add:
         X-API-Key: "${MCP_SERVICE_API_KEY}"
 ```
 
-Use environment variables without an empty fallback so a missing secret stops
-startup rather than silently making unauthenticated requests. Mullsmith redacts
-configured MCP credential values from its logs and diagnostics, refuses headers
-that could interfere with HTTP or MCP routing, and never forwards credentials
-across an origin-changing redirect. `-check-config` connects with the configured
-credential, so an authentication failure is reported without exposing it.
+Store these secrets in the [service environment](#secrets). Using `${NAME}`
+without an empty fallback makes a missing secret a configuration error. Run
+`-check-config` to check the connection and authentication.
 
 These credentials define one system-wide external identity. Every Mullsmith
 account offered that server's tools can act through the same identity; use
 per-user OAuth instead when the external service must distinguish users.
 
-For per-user OAuth, first register Mullsmith as an OAuth application with the
-service provider. Give the provider this exact callback URL:
+#### Let users connect their own accounts with OAuth
+
+Use OAuth when each user should access a service through their own account.
+First register Mullsmith as an OAuth application with the provider. Use this
+callback URL, replacing the example hostname and port with your Mullsmith address:
 
 ```text
 https://mullsmith.example.org:3210/api/v1/mcp/oauth/callback
@@ -531,24 +502,21 @@ Mullsmith rejects parameters that would override its callback, state or PKCE
 protection.
 
 For a server supporting OAuth dynamic client registration, omit `client_id`
-and `client_secret` and set `dynamic_client_registration: true`. Mullsmith
-registers separately for each user and stores the issued client credentials
-with that user's encrypted tokens.
+and `client_secret` and set `dynamic_client_registration: true`. Mullsmith handles
+registration for each user.
 The callback scheme comes from `server.tls.enabled`; the port in `server.host`
 overrides the listener port. Run `-check-config` to see the resulting callback
 URL, and register that same URL with the provider.
 
 After restart, each user opens **Settings → Connections** and selects
-**Connect**. Mullsmith uses Authorization Code with PKCE and stores the resulting
-tokens encrypted under that user's account. Only that user receives the
-connected tools. Disconnect removes the stored tokens locally; changing or
-losing `token_encryption_key` requires users to reconnect. Keep that key stable
-and back it up with the database. OAuth discovery and token requests must use
-public HTTPS endpoints and are protected by Mullsmith's private-network guard.
+**Connect**. Only that user receives the connected tools. Disconnect removes the
+saved connection from Mullsmith. Changing or losing `token_encryption_key`
+requires users to reconnect, so keep it stable and back it up with the database.
+The provider's OAuth service must be reachable over public HTTPS.
 
-A local MCP server must already be installed by the administrator. Configure
-its absolute executable path and arguments; Mullsmith invokes it directly and
-never through a shell:
+#### Run a local MCP server
+
+Install the MCP server first, then configure its executable path and arguments:
 
 ```yaml
 mcp:
@@ -564,25 +532,21 @@ mcp:
       approval: "confirm"
 ```
 
-Each process receives a minimal environment and uses
-`mcp.state_dir/<server-id>` for its working directory, home, caches and
-persistent state. Only variables explicitly listed under `environment` are
-added; Mullsmith's LLM, email and other credentials are not inherited. The
-process runs as the `mullsmith` service account under the same systemd
-restrictions as the application. With the supplied unit it can write beneath
-`/var/lib/mullsmith`, its private temporary area and runtime directory, but can
-read files elsewhere when normal Unix permissions allow and make network
-connections available to the service; it does not use the web tools' public-
-address guard. A server needing another writable directory requires that exact
-directory in the unit's `ReadWritePaths`; do not disable
-`ProtectSystem=strict`. All configured stdio servers share the service account
-and should therefore be treated as trusted administrator-installed software.
+Local servers run as the `mullsmith` service account. Install only software you
+trust: it can access files and network services available to that account.
+Pass required environment variables explicitly under `environment`; credentials
+from Mullsmith's other settings are not passed automatically.
+
+Each server keeps its files under `mcp.state_dir/<server-id>`. If it needs another
+writable location, add that directory to the service's `ReadWritePaths` setting;
+see [storage locations](#backups-and-storage-locations). Keep the existing
+service restrictions in place.
 
 ### Approvals and execution limits
 
 `tools.agent.approval` accepts `auto` (run immediately) or `confirm` (ask the user).
-An approval may be remembered for the current conversation. Use an optional tool's
-`enabled` setting to disable it; `confirm` is not a disable switch.
+Code execution approval may be remembered for the current conversation. Use an
+optional tool's `enabled` setting to disable it; `confirm` is not a disable switch.
 
 `tools.agent.tool_cards` accepts `useful` (the default) or `all`. `useful` hides
 successful status-only cards while retaining approvals, failures, search results,
@@ -602,6 +566,10 @@ contain multiple sequential runs.
 
 ### Optional code execution
 
+Enable code execution so the assistant can perform calculations, process data
+and create files by writing and running scripts. Users are asked to approve
+execution with the settings below.
+
 Install bubblewrap (for example, `sudo apt install bubblewrap`). Then enable:
 
 ```yaml
@@ -617,56 +585,54 @@ tools:
       code_run: "confirm"
 ```
 
-Mullsmith checks both the bubblewrap jail and cgroup delegation at
-startup; if either cannot work, it refuses to start with code execution enabled.
+Restart Mullsmith after enabling execution. It checks that isolation and resource
+limits work before starting; if startup fails, check the logs and the platform
+notes below.
 
-Raspberry Pi systems may have the cgroup memory controller disabled by default.
-This only needs changing when code execution is enabled. Check with:
+Code can read uploaded files and write to the user's `work/` and `artifacts/`
+areas. It cannot access other users' files, the database or server configuration.
+Execution has time and resource limits.
+
+Keep `allow_network: false` unless your tasks need network access. Enabling it
+allows code to contact both internet and local-network services reachable from
+the server, including sending files to them. Web-fetch restrictions do not apply
+to executed code.
+
+#### If code execution will not start on a Raspberry Pi
+
+Some Raspberry Pi systems need memory limits enabled before code execution can
+run. Check with:
 
 ```sh
 cat /sys/fs/cgroup/cgroup.controllers
 ```
 
 If `memory` is absent, append `cgroup_enable=memory` to the existing single line
-in `/boot/firmware/cmdline.txt`, reboot, and run the check again. Mullsmith can
-then enforce its aggregate memory limit on executed code.
+in `/boot/firmware/cmdline.txt`, reboot, and run the check again.
 
-Each run gets a fresh bubblewrap jail. Selected system files are read-only;
-the user's `work/` and `artifacts/` directories are writable, and `uploads/` is
-read-only. Other users' files, the database and server configuration are not
-mounted into the jail. Mullsmith separately creates cgroups to limit memory,
-CPU and task count across the process tree, and enforces the execution deadline.
-The sandbox shares the host kernel; it is not a virtual machine.
+#### Put a hard limit on code-generated files
 
-It is recommended to keep network access for code execution turned off. Enabling
-it lets all Mullsmith users run code that connects to local-network services and
-internet destinations reachable from the server, subject to its firewall rules.
-This could be used to probe internal services, send accessible files to external
-servers or misuse your internet connection. The web tools' restrictions on
-non-public addresses do not apply to executed code.
+The application's storage quota does not strictly limit all disk use by executed
+code. If you need a hard limit, put the scratchpad on a separate, size-limited
+filesystem. The default location is `/var/lib/mullsmith/scratchpad`.
 
-**Code execution is for trusted users.** Application storage accounting is not a
-hard filesystem quota: code can consume disk space or inodes in ways ordinary
-byte accounting does not fully capture. The default configuration is suitable
-for general use with trusted users. For additional hardening, place the scratchpad
-on a separate, size-limited filesystem, either on a dedicated partition or in a
-fixed-size file mounted through a loop device. The default location is
-`/var/lib/mullsmith/scratchpad`; mount it before starting the service and preserve
-ownership by `mullsmith`. If it contains existing files, move them to the new
-filesystem while the service is stopped rather than hiding them beneath a mount.
+Stop Mullsmith before moving existing files, preserve ownership by `mullsmith`,
+and mount the new filesystem before restarting. Move existing files onto it
+rather than hiding them beneath the mount.
 
 ### Files and retention
 
 Each user has three areas:
 
 - `uploads/`: original uploaded files, retained until deleted.
-- `work/`: temporary work, expired by the maintenance sweep after the configured
+- `work/`: temporary work, automatically deleted after the configured
   retention period (24 hours by default).
-- `artifacts/`: shared outputs, expired after seven days by default.
+- `artifacts/`: shared outputs, automatically deleted after seven days by default.
 
-Retention is based on file modification time; cleanup happens on a later sweep,
-not at the exact expiration instant. Download outputs you want to keep. Files are
-served as downloads; opening downloaded content locally is outside the sandbox.
+Retention runs from when a file was last modified. Cleanup is periodic, so files
+may remain for a while after that period. Download outputs you want to keep.
+Images can appear inline in chat; other shared files are offered as downloads.
+Opening downloaded files on your device is outside Mullsmith's execution sandbox.
 
 ## Everyday administration
 
@@ -727,9 +693,9 @@ login, set `authenticated_smtp: false` and its actual host/port. Authenticated
 SMTP requires TLS.
 
 Put the SMTP secret in the service environment as below. Check logs and perform
-a real test signup/reset. Mail is queued and retried; a successful HTTP response
-does not prove delivery. Reset links expire after 30 minutes, signup confirmation
-links after 24 hours; expired pending signups are cleaned up automatically.
+a real test signup/reset. Check that the message reaches your inbox; accepting
+a request does not guarantee delivery. Reset links expire after 30 minutes and
+signup confirmation links after 24 hours; expired pending signups are cleaned up automatically.
 
 ### Secrets
 
@@ -789,8 +755,7 @@ database backups, use SQLite's backup facility rather than copying a live `.db`
 file without its WAL. Files may change while a separate file backup runs.
 
 To restore, stop the service, restore configuration and data with their original
-permissions, then start and verify login and file access. Restore a binary
-compatible with the saved schema. Store backups securely: they contain private
+permissions, then start and verify login and file access. Use a Mullsmith version compatible with the backup. Store backups securely: they contain private
 conversations and potentially credentials.
 
 If you move `database.dir` or `scratchpad.root` outside `/var/lib/mullsmith`, grant
@@ -817,20 +782,19 @@ mullsmith -version
 
 | Symptom | Check |
 |---|---|
-| Page unreachable | Service status, listener address, host firewall, routing and whether the URL needs HTTP or HTTPS. Check Mullsmith's logs for errors: `sudo journalctl -u mullsmith -n 100 --no-pager` |
-| Page loads but chat fails | Endpoint address, API key and exact model ID; run `-check-config` with the service's environment |
-| New configuration rejected | YAML indentation, duplicate/unknown keys and option values; compare with the supplied template |
-| HTTPS fails after restart | Certificate hostname, expiry and readability; certificate staging command and file paths |
-| Enabling code execution prevents startup | Bubblewrap, unprivileged namespaces, cgroup v2 and systemd delegation; inspect the logged probe failure |
-| Thinking menu missing | Selected model's `thinking_profile`, catalogue paths and endpoint compatibility |
-| Signup unavailable | Registration mode, invitation code, signup limits or email confirmation |
-| Reset email missing | SMTP settings, service environment, delivery logs and junk folder |
-| Upload/write rejected | File-size limit, byte quota, entry ceiling, blocked extensions, filesystem space and permissions |
+| Page will not open | Run the service-status command above. If Mullsmith is running, check the address, port and firewall against your [deployment settings](#choose-your-deployment). |
+| Page opens but chat fails | Run the [configuration check](#check-configuration-and-manage-the-service). Verify the model server is available and the address, API key and model ID match its settings. |
+| Configuration changes prevent startup | Run the configuration check and fix the reported errors. Use spaces for YAML indentation, avoid duplicate sections and compare settings with the [configuration reference](configs/config.yaml). |
+| HTTPS fails after restart | Read the service logs above. Check that the hostname matches the certificate and that Mullsmith can read its certificate copies; see [HTTPS setup](#internet-access-and-https). |
+| Enabling code execution prevents startup | Read the startup error in the logs. Check that bubblewrap is installed and follow the [code execution setup and platform notes](#optional-code-execution). Keep the service's isolation settings enabled. |
+| Thinking menu is missing | Check that the selected model has the right `thinking_profile` and that its controls are supported by your endpoint; see [thinking controls](#choose-thinking-controls-and-image-support). |
+| Users cannot sign up | Check the [registration mode](#registration-modes). For invite-only registration, issue a valid invitation; if email confirmation is enabled, check the user's inbox. Read any displayed limit message before retrying. |
+| Reset email does not arrive | Check junk mail and the service logs, then verify the [email settings](#password-reset--email-confirmation). Send a new test request after correcting them. |
+| Uploading or writing a file fails | Read the displayed error and check server free space. Review the user's storage quota, file-size and file-count limits in the [configuration reference](configs/config.yaml). |
 
-`/healthz` indicates the HTTP service responds; it does not prove model generation,
-SMTP delivery or every tool is working. Verify those features with real actions.
-Use the original sandbox probe error to diagnose execution problems rather than
-removing its isolation or running Mullsmith as root.
+After correcting a problem, test the affected action: sign in, send a message,
+upload a file or request an email. A running service alone does not confirm that
+its model and other connections are working.
 
 ## Building from source
 
@@ -846,19 +810,16 @@ The resulting `bin/mullsmith` contains the web application. To install it as a
 systemd service, run `sudo ./packaging/install.sh`, then follow
 [account setup](#create-your-first-account) and [model configuration](#models-and-thinking-controls).
 
-The [Makefile](Makefile) also provides test, race, browser and security-check
-targets for development; these are not required to build or run Mullsmith.
-
 ## Upgrade or remove
 
-Install the newer package with the same `apt` or `dnf` command. For a tar install,
+Install the newer package using the [Quick start package commands](QUICKSTART.md#1-install-mullsmith). For a tar install,
 stop the service and run the new archive's installer; it starts the service again.
 Review configuration changes and check the logs after upgrading. The tar installer
 preserves existing configuration files and updates its supplied systemd unit.
 A unit customised with `systemctl edit --full mullsmith` remains under `/etc`
 and continues to override the supplied unit; review new unit changes when upgrading.
 
-Database upgrades apply ordered schema migrations automatically. Back up the
+Mullsmith updates the database automatically when needed. Back up the
 database before upgrading, and do not start an older Mullsmith binary against a
 database that has already been opened by a newer release.
 

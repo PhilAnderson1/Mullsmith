@@ -94,7 +94,8 @@ llm:
 ```
 
 Edit these entries within the existing section, keeping its other settings and
-the rest of the file. Do not add a second `llm:` section. Use 2 spaces rather than
+the rest of the file. You can add as many models as you like but do not add a
+second `llm:` section (only 1 is supported). Use 2 spaces rather than
 a tab to indent, otherwise the YAML config file won't load.
 
 Replace `your-model-id` with the exact ID shown by your model server.
