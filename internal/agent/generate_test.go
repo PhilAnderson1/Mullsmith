@@ -82,7 +82,7 @@ func TestRoundDropsNamelessCall(t *testing.T) {
 
 func TestRoundContentAndReasoningSeparate(t *testing.T) {
 	ts := sseServer(t,
-		`{"choices":[{"delta":{"reasoning_content":"think "}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"think ","reasoning_details":[{"type":"reasoning.text","text":"think ","index":0}]}}]}`,
 		`{"choices":[{"delta":{"content":"answer"}}]}`,
 		`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":42}}`,
 	)
@@ -94,6 +94,9 @@ func TestRoundContentAndReasoningSeparate(t *testing.T) {
 	})
 	if res.Content != "answer" || res.Reasoning != "think " {
 		t.Fatalf("content=%q reasoning=%q", res.Content, res.Reasoning)
+	}
+	if len(res.ReasoningDetails) != 1 {
+		t.Fatalf("reasoning details = %s", res.ReasoningDetails)
 	}
 	want := []string{EventReasoning + ":think ", EventToken + ":answer"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

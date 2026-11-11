@@ -644,3 +644,54 @@ func TestReasoningAliasesDedupe(t *testing.T) {
 		t.Errorf("reasoning = %q, want thinkonlyrc (no duplication)", reasoning)
 	}
 }
+
+func TestChatMessageMarshalsCatalogueSelectedReasoning(t *testing.T) {
+	detail := json.RawMessage(`{"type":"reasoning.text","text":"signed","signature":"sig"}`)
+	cases := []struct {
+		name string
+		msg  ChatMessage
+		want string
+	}{
+		{"legacy text", ChatMessage{Role: "assistant", Content: "answer", Reasoning: "think", ReasoningField: "reasoning_content"}, "reasoning_content"},
+		{"current text", ChatMessage{Role: "assistant", Content: "answer", Reasoning: "think", ReasoningField: "reasoning"}, "reasoning"},
+		{"structured", ChatMessage{Role: "assistant", Content: "answer", ReasoningDetails: []json.RawMessage{detail}, ReasoningDetailsField: "reasoning_details"}, "reasoning_details"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := got[tc.want]; !ok {
+				t.Fatalf("message = %s, missing %q", b, tc.want)
+			}
+		})
+	}
+}
+
+func TestReasoningDetailsPreserveStreamOrder(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"one","index":0}]}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"two","index":1}]}}]}`,
+		``,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		``,
+	}, "\n")
+	ts := sseServer(t, body)
+	var details []json.RawMessage
+	err := clientFor(ts, nil).StreamTools(context.Background(), "", nil, nil, nil, func(d Delta) error {
+		details = append(details, d.ReasoningDetails...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details) != 2 || !strings.Contains(string(details[0]), `"one"`) || !strings.Contains(string(details[1]), `"two"`) {
+		t.Fatalf("details = %s", details)
+	}
+}

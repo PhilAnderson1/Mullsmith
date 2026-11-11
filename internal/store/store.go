@@ -19,12 +19,16 @@ import (
 //go:embed schema/schema.sql
 var migrationV1SQL string
 
-const currentSchemaVersion = 1
+//go:embed schema/002_reasoning.sql
+var migrationV2SQL string
+
+const currentSchemaVersion = 2
 
 // schemaMigrations is indexed by target version: element 0 migrates version
 // 0 to version 1. Keep old entries immutable and append each new migration.
 var schemaMigrations = [...]string{
 	migrationV1SQL,
+	migrationV2SQL,
 }
 
 // DB wraps the sql database handle.

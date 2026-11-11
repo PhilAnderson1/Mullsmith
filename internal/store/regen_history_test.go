@@ -45,6 +45,38 @@ func TestContextHistoryCapRefusesExplicitly(t *testing.T) {
 	}
 }
 
+func TestContextHistoryIncludesOnlyReplayableAbortedAssistantRows(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	u := mkUser("stopped-history@x.io")
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	conv := Conversation{ID: id.New(), UserID: u.ID}
+	if err := db.CreateConversation(ctx, &conv); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := []*Message{
+		{ConversationID: conv.ID, Role: "user", Content: "question", Status: "complete"},
+		{ConversationID: conv.ID, Role: "assistant", Content: "partial", Status: "aborted"},
+		{ConversationID: conv.ID, Role: "assistant", Content: "failed", Status: "error"},
+	}
+	for _, m := range rows {
+		if err := db.AddMessage(ctx, u.ID, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hist, err := db.ContextHistory(ctx, conv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 || hist[0].Role != "user" || hist[1].Status != "aborted" {
+		t.Fatalf("history = %+v, want complete user plus aborted assistant", hist)
+	}
+}
+
 // Finding 4: AddMessageWithFiles lands the turn and its attachment links
 // together — the projection sees both, or (as one transaction) neither.
 func TestAddMessageWithFiles(t *testing.T) {
@@ -137,7 +169,7 @@ func TestBeginRegeneration(t *testing.T) {
 
 	// The generation completes into the placeholder — final history is the
 	// user turn plus the regenerated answer, exactly one reply deep.
-	if err := db.FinalizeMessage(ctx, ph.ID, "new answer", "complete", "", 1, 1, 1); err != nil {
+	if err := db.FinalizeMessage(ctx, ph.ID, "new answer", "", "complete", "", 1, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	hist, _ = db.ContextHistory(ctx, conv.ID, "")

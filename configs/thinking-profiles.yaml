@@ -1,8 +1,10 @@
-schema_version: 2
+schema_version: 3
 profiles:
   none:
     options: []
+    reasoning_history: omit
   qwen3_5:
+    reasoning_history: preserve
     options:
       - id: 'off'
         label: 'Off'
@@ -13,6 +15,7 @@ profiles:
     template_parameters:
       thinking_toggle: enable_thinking
   qwen3_6:
+    reasoning_history: preserve
     options:
       - id: 'off'
         label: 'Off'
@@ -23,6 +26,7 @@ profiles:
     template_parameters:
       thinking_toggle: enable_thinking
   qwen3_8:
+    reasoning_history: preserve
     options:
       - id: 'off'
         label: 'Off'
@@ -42,6 +46,7 @@ profiles:
     template_parameters:
       thinking_toggle: enable_thinking
   qwen3_8_thinking_only:
+    reasoning_history: preserve
     options:
       - id: low
         label: Low
@@ -58,6 +63,7 @@ profiles:
     template_parameters:
       thinking_toggle: enable_thinking
   gpt_oss:
+    reasoning_history: preserve
     options:
       - id: low
         label: Low
@@ -72,6 +78,7 @@ profiles:
         mode: effort
         effort: high
   gemma4:
+    reasoning_history: preserve
     options:
       - id: 'off'
         label: 'Off'
@@ -80,6 +87,7 @@ profiles:
         label: 'On'
         mode: 'on'
   deepseek_v4:
+    reasoning_history: latest
     options:
       - id: 'off'
         label: 'Off'
@@ -93,6 +101,7 @@ profiles:
         mode: effort
         effort: max
   deepseek_v4_1:
+    reasoning_history: latest
     options:
       - id: 'off'
         label: 'Off'
@@ -110,6 +119,7 @@ profiles:
         mode: effort
         effort: max
   glm5_3:
+    reasoning_history: preserve
     options:
       - id: low
         label: Low
@@ -124,6 +134,7 @@ profiles:
         mode: effort
         effort: max
   kimi_k2_6:
+    reasoning_history: latest
     template_parameters:
       thinking_toggle: thinking
     options:
@@ -134,10 +145,12 @@ profiles:
         label: 'On'
         mode: 'on'
   kimi_k2_7_code:
+    reasoning_history: latest
     template_parameters:
       thinking_toggle: null
     options: []
   kimi_k3:
+    reasoning_history: preserve
     template_parameters:
       thinking_toggle: null
     options:
@@ -154,10 +167,12 @@ profiles:
         mode: effort
         effort: max
   minimax_m2_7:
+    reasoning_history: latest
     template_parameters:
       thinking_toggle: null
     options: []
   minimax_m3_1_flash:
+    reasoning_history: preserve
     template_parameters:
       thinking_toggle: null
     options:
@@ -182,6 +197,7 @@ profiles:
         mode: effort
         effort: max
   step3_7_flash:
+    reasoning_history: latest
     template_parameters:
       thinking_toggle: null
     options:
@@ -198,6 +214,7 @@ profiles:
         mode: effort
         effort: high
   step5_preview:
+    reasoning_history: latest
     template_parameters:
       thinking_toggle: null
     options:

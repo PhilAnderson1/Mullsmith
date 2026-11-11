@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -23,13 +24,14 @@ var ErrClientGone = errors.New("client disconnected")
 
 // Result carries the final state of a generation for persistence.
 type Result struct {
-	Content    string
-	Reasoning  string
-	Status     string // complete | aborted | error
-	Usage      int64  // upstream total_tokens, else an estimate
-	Completion int64  // upstream completion_tokens, else an estimate
-	Err        error  // upstream transport/protocol failure; expected stops use Note
-	Note       string // durable explanation when upstream stops an incomplete reply
+	Content          string
+	Reasoning        string
+	ReasoningDetails []json.RawMessage
+	Status           string // complete | aborted | error
+	Usage            int64  // upstream total_tokens, else an estimate
+	Completion       int64  // upstream completion_tokens, else an estimate
+	Err              error  // upstream transport/protocol failure; expected stops use Note
+	Note             string // durable explanation when upstream stops an incomplete reply
 	// ToolCalls holds the complete calls the model proposed this round
 	// (empty when it just answered), ordered by stream index.
 	ToolCalls []llm.ChatToolCall
@@ -54,11 +56,12 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	emit func(kind, text string) error,
 ) Result {
 	var (
-		content    strings.Builder
-		reasoning  strings.Builder
-		usage      int64
-		completion int64
-		finish     string
+		content          strings.Builder
+		reasoning        strings.Builder
+		usage            int64
+		completion       int64
+		reasoningDetails []json.RawMessage
+		finish           string
 	)
 	acc := map[int]*callAccumulator{}
 	var order []int
@@ -90,6 +93,7 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 				return err
 			}
 		}
+		reasoningDetails = append(reasoningDetails, d.ReasoningDetails...)
 		if d.Content != "" {
 			content.WriteString(d.Content)
 			if err := emit(EventToken, d.Content); err != nil {
@@ -100,10 +104,11 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	})
 
 	res := Result{
-		Content:    content.String(),
-		Reasoning:  reasoning.String(),
-		Usage:      usage,
-		Completion: completion,
+		Content:          content.String(),
+		Reasoning:        reasoning.String(),
+		ReasoningDetails: reasoningDetails,
+		Usage:            usage,
+		Completion:       completion,
 	}
 	sort.Ints(order) // fragments may arrive out of index order; calls follow it
 	for _, idx := range order {

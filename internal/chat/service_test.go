@@ -13,6 +13,7 @@ import (
 	"mullsmith/internal/config"
 	"mullsmith/internal/llm"
 	"mullsmith/internal/store"
+	"mullsmith/internal/thinking"
 	"mullsmith/internal/tools"
 )
 
@@ -43,6 +44,86 @@ func chatFixture(t *testing.T) (*Service, *store.DB, *store.Conversation) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(cfg, db, logger, tools.BuildFor(cfg, logger, nil, nil, nil)), db, conv
+}
+
+func TestStoredReasoningUsesResolvedWireShape(t *testing.T) {
+	detail := json.RawMessage(`{"type":"reasoning.text","text":"signed","signature":"sig"}`)
+	raw := encodeStoredReasoning("plain", []json.RawMessage{detail})
+
+	var structured llm.ChatMessage
+	applyStoredReasoning(&structured, raw, thinking.ReplayPolicy{
+		History: "preserve", TextField: "reasoning", DetailsField: "reasoning_details",
+	})
+	if len(structured.ReasoningDetails) != 1 || structured.Reasoning != "" {
+		t.Fatalf("structured replay = %+v", structured)
+	}
+
+	var text llm.ChatMessage
+	applyStoredReasoning(&text, raw, thinking.ReplayPolicy{
+		History: "preserve", TextField: "reasoning_content",
+	})
+	if text.Reasoning != "plain" || text.ReasoningField != "reasoning_content" {
+		t.Fatalf("text replay = %+v", text)
+	}
+}
+
+func TestLatestReasoningPolicyKeepsOnlyCurrentUserTurn(t *testing.T) {
+	cfg := config.Defaults()
+	rt, err := thinking.Build(thinking.Settings{
+		EndpointType: "gufo", ProfileID: "deepseek_v4",
+		EndpointsFile: filepath.Join("..", "..", "configs", "endpoints.yaml"),
+		ProfilesFile:  filepath.Join("..", "..", "configs", "thinking-profiles.yaml"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Thinking = rt
+	s := &Service{cfg: cfg}
+	raw := encodeStoredReasoning("trace", nil)
+	hist := []store.Message{
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", Content: "old answer", ReasoningData: raw},
+		{Role: "user", Content: "current question"},
+		{Role: "assistant", Content: "tool proposal", ReasoningData: raw},
+	}
+	out := s.HistoryToLLM(hist, true, false, "", "model")
+	if out[1].Reasoning != "" {
+		t.Fatalf("old reasoning was replayed: %+v", out[1])
+	}
+	if out[3].Reasoning != "trace" || out[3].ReasoningField != "reasoning_content" {
+		t.Fatalf("current-turn reasoning missing: %+v", out[3])
+	}
+}
+
+func TestAbortedAssistantPreservesTurnBoundaryWithoutPrivateState(t *testing.T) {
+	s := &Service{cfg: config.Defaults()}
+	raw := encodeStoredReasoning("unfinished private reasoning", nil)
+	hist := []store.Message{
+		{Role: "user", Content: "first request", Status: "complete"},
+		{Role: "assistant", Content: "partial answer", Status: "aborted", ReasoningData: raw,
+			Calls: []store.ToolCall{{LLMCallID: "unfinished", Tool: "code_run", Arguments: `{}`}}},
+		{Role: "tool", Content: "must not replay", Status: "complete", ToolCallID: "unfinished"},
+		{Role: "user", Content: "next request", Status: "complete"},
+	}
+
+	out := s.HistoryToLLM(hist, true, false, "")
+	if len(out) != 3 {
+		t.Fatalf("history = %+v, want user/assistant/user only", out)
+	}
+	if out[0].Role != "user" || out[1].Role != "assistant" || out[2].Role != "user" {
+		t.Fatalf("roles = %q/%q/%q, want user/assistant/user", out[0].Role, out[1].Role, out[2].Role)
+	}
+	if out[1].Content != "partial answer\n\n"+stoppedResponseMarker {
+		t.Errorf("stopped content = %q", out[1].Content)
+	}
+	if out[1].Reasoning != "" || len(out[1].ReasoningDetails) != 0 || len(out[1].ToolCalls) != 0 {
+		t.Errorf("stopped private/protocol state replayed: %+v", out[1])
+	}
+
+	empty := s.HistoryToLLM([]store.Message{{Role: "assistant", Status: "aborted"}}, true, false, "")
+	if len(empty) != 1 || empty[0].Content != emptyStoppedResponseMarker {
+		t.Errorf("empty stopped response = %+v", empty)
+	}
 }
 
 func TestToolTimeoutsHonorConfiguration(t *testing.T) {

@@ -441,9 +441,13 @@ func (s *Service) nameConversation(parent context.Context, conv *store.Conversat
 // The error reaches the orchestrator (finding 4) so terminal events can
 // distinguish "saved" from "announced but not durable".
 func (s *Service) finishMessage(msgID, content, status, note string, usage, completion, durationMS int64) error {
+	return s.finishMessageWithReasoning(msgID, content, "", status, note, usage, completion, durationMS)
+}
+
+func (s *Service) finishMessageWithReasoning(msgID, content, reasoningData, status, note string, usage, completion, durationMS int64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.store.FinalizeMessage(ctx, msgID, content, status, note, usage, completion, durationMS); err != nil {
+	if err := s.store.FinalizeMessage(ctx, msgID, content, reasoningData, status, note, usage, completion, durationMS); err != nil {
 		s.logger.Error("failed to persist message final state", "error", err, "message", msgID)
 		return err
 	}

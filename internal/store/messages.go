@@ -16,8 +16,11 @@ type Message struct {
 	ConversationID string
 	Role           string // user | assistant | system | tool
 	Content        string
-	Status         string // streaming | complete | error | aborted
-	TokenCount     *int64
+	// ReasoningData is a versioned provider-neutral JSON trace for assistant
+	// history replay. It is never projected into the transcript API.
+	ReasoningData string
+	Status        string // streaming | complete | error | aborted
+	TokenCount    *int64
 	// CompletionTokens and DurationMS are the generation stats of an
 	// assistant reply (upstream usage + round wall time; nil when the
 	// endpoint never reported and nothing was produced). UI readouts
@@ -397,7 +400,7 @@ func (d *DB) BeginTurnRegeneration(ctx context.Context, userID, convID, oldMsgID
 // FinalizeMessage writes the produced content and status once a generation
 // ends (complete | aborted | error). Non-positive completion/duration store
 // NULL: an absent statistic is never faked with a zero.
-func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, status, note string, tokens, completion, durationMS int64) error {
+func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, reasoningData, status, note string, tokens, completion, durationMS int64) error {
 	var comp, dur any
 	if completion > 0 {
 		comp = completion
@@ -406,8 +409,8 @@ func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, status, note s
 		dur = durationMS
 	}
 	res, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE messages SET content = ?, status = ?, status_note = ?, token_count = ?, completion_tokens = ?, duration_ms = ? WHERE id = ?`,
-		content, status, note, tokens, comp, dur, msgID)
+		`UPDATE messages SET content = ?, reasoning_data = ?, status = ?, status_note = ?, token_count = ?, completion_tokens = ?, duration_ms = ? WHERE id = ?`,
+		content, reasoningData, status, note, tokens, comp, dur, msgID)
 	if err != nil {
 		return err
 	}
@@ -471,8 +474,12 @@ func (d *DB) ExecForTest(q string, args ...any) error {
 	return err
 }
 
-// ContextHistory returns the conversation's completed messages (chronological,
-// excluding excludeID) for prompt assembly and the overflow estimate. The
+// ContextHistory returns the conversation's replayable messages (chronological,
+// excluding excludeID) for prompt assembly and the overflow estimate. Completed
+// rows replay normally; an aborted assistant row also replays so it can preserve
+// the user/assistant turn boundary. The chat layer turns that row into plain
+// partial text plus a stopped marker and strips incomplete reasoning/tool
+// protocol. Streaming and error rows remain excluded. The
 // request is append-only: when the row cap is exceeded, ContextHistory does
 // NOT return a silently-truncated oldest slice — it fails with
 // ErrHistoryLimit (finding 2). The server's overflow gate turns that into an
@@ -491,8 +498,9 @@ func (d *DB) ContextHistory(ctx context.Context, convID string, excludeIDs ...st
 			skip = append(skip, id)
 		}
 	}
-	q := `SELECT id, conversation_id, role, content, status, token_count, created_at, tool_call_id, synthetic
-	      FROM messages WHERE conversation_id = ? AND status = 'complete'`
+	q := `SELECT id, conversation_id, role, content, reasoning_data, status, token_count, created_at, tool_call_id, synthetic
+	      FROM messages WHERE conversation_id = ?
+	        AND (status = 'complete' OR (role = 'assistant' AND status = 'aborted'))`
 	args := []any{convID}
 	if len(skip) > 0 {
 		// #nosec G202 -- placeholders() emits only "?, ?, ..." literals.
@@ -516,7 +524,7 @@ func (d *DB) ContextHistory(ctx context.Context, convID string, excludeIDs ...st
 			tok     sql.NullInt64
 			created int64
 		)
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status, &tok, &created, &m.ToolCallID, &m.Synthetic); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ReasoningData, &m.Status, &tok, &created, &m.ToolCallID, &m.Synthetic); err != nil {
 			return nil, err
 		}
 		if tok.Valid {

@@ -32,6 +32,12 @@ type ChatMessage struct {
 	ToolCalls  []ChatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Images     []string       `json:"-"`
+	// Reasoning is provider-neutral in memory. The catalogue-selected field
+	// names are applied only while marshaling the request.
+	Reasoning             string            `json:"-"`
+	ReasoningDetails      []json.RawMessage `json:"-"`
+	ReasoningField        string            `json:"-"`
+	ReasoningDetailsField string            `json:"-"`
 }
 
 // MarshalJSON speaks both content shapes: the plain string content every
@@ -40,20 +46,33 @@ type ChatMessage struct {
 // shown the array shape: ChatMessages only get Images when the running
 // model's entry spells vision: true (§2.2).
 func (m ChatMessage) MarshalJSON() ([]byte, error) {
-	if len(m.Images) == 0 {
-		type plain ChatMessage
-		return json.Marshal(plain(m))
+	var content any = m.Content
+	if len(m.Images) > 0 {
+		parts := make([]any, 0, len(m.Images)+1)
+		if m.Content != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+		}
+		for _, url := range m.Images {
+			parts = append(parts, map[string]any{
+				"type": "image_url", "image_url": map[string]any{"url": url},
+			})
+		}
+		content = parts
 	}
-	parts := make([]any, 0, len(m.Images)+1)
-	if m.Content != "" {
-		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	out := map[string]any{"role": m.Role, "content": content}
+	if len(m.ToolCalls) > 0 {
+		out["tool_calls"] = m.ToolCalls
 	}
-	for _, url := range m.Images {
-		parts = append(parts, map[string]any{
-			"type": "image_url", "image_url": map[string]any{"url": url},
-		})
+	if m.ToolCallID != "" {
+		out["tool_call_id"] = m.ToolCallID
 	}
-	return json.Marshal(map[string]any{"role": m.Role, "content": parts})
+	if m.Reasoning != "" && (m.ReasoningField == "reasoning" || m.ReasoningField == "reasoning_content") {
+		out[m.ReasoningField] = m.Reasoning
+	}
+	if len(m.ReasoningDetails) > 0 && m.ReasoningDetailsField == "reasoning_details" {
+		out[m.ReasoningDetailsField] = m.ReasoningDetails
+	}
+	return json.Marshal(out)
 }
 
 // ChatToolCall is a function call as replayed inside an assistant message.
@@ -82,13 +101,16 @@ type ToolFunction struct {
 
 // Delta is one parsed streaming update.
 type Delta struct {
-	Content    string // answer text
-	Reasoning  string // chain-of-thought, never part of Content (spec §6.2)
-	ToolCalls  []ToolCallDelta
-	Finish     string // finish_reason when seen ("stop", "tool_calls", …)
-	Done       bool   // finish_reason seen
-	Usage      int64  // total tokens if the upstream reported one
-	Completion int64  // completion tokens if the upstream reported them
+	Content   string // answer text
+	Reasoning string // chain-of-thought, never part of Content (spec §6.2)
+	// ReasoningDetails preserves structured/signed provider blocks in their
+	// streamed order; flattening these to Reasoning would make replay invalid.
+	ReasoningDetails []json.RawMessage
+	ToolCalls        []ToolCallDelta
+	Finish           string // finish_reason when seen ("stop", "tool_calls", …)
+	Done             bool   // finish_reason seen
+	Usage            int64  // total tokens if the upstream reported one
+	Completion       int64  // completion tokens if the upstream reported them
 }
 
 // ToolCallDelta is a fragment of a streamed tool call. Fragments of the same
@@ -441,9 +463,10 @@ type chunk struct {
 			// trace, only one may reach the stream — double-appending a
 			// thought duplicates every word of it (thinking-control-
 			// specification.md §7).
-			ReasoningContent string `json:"reasoning_content"`
-			Reasoning        string `json:"reasoning"`
-			Role             string `json:"role"`
+			ReasoningContent string            `json:"reasoning_content"`
+			Reasoning        string            `json:"reasoning"`
+			ReasoningDetails []json.RawMessage `json:"reasoning_details"`
+			Role             string            `json:"role"`
 			ToolCalls        []struct {
 				Index    *int   `json:"index"`
 				ID       string `json:"id"`
@@ -499,6 +522,7 @@ func parseSSE(r io.Reader, onDelta func(Delta) error, abort func() error) error 
 			if d.Reasoning == "" {
 				d.Reasoning = cch.Delta.Reasoning
 			}
+			d.ReasoningDetails = append(d.ReasoningDetails, cch.Delta.ReasoningDetails...)
 			for pos, tc := range cch.Delta.ToolCalls {
 				idx := pos // servers may omit index on the first fragment
 				if tc.Index != nil {
@@ -517,7 +541,7 @@ func parseSSE(r io.Reader, onDelta func(Delta) error, abort func() error) error 
 				finished = true
 			}
 		}
-		if d.Content == "" && d.Reasoning == "" && d.Usage == 0 && d.Completion == 0 && !d.Done && len(d.ToolCalls) == 0 {
+		if d.Content == "" && d.Reasoning == "" && len(d.ReasoningDetails) == 0 && d.Usage == 0 && d.Completion == 0 && !d.Done && len(d.ToolCalls) == 0 {
 			return nil
 		}
 		return onDelta(d)

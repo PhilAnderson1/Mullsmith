@@ -502,7 +502,24 @@ func TestChatPerUserStreamLimit(t *testing.T) {
 }
 
 func TestChatAbortEndpoint(t *testing.T) {
+	type wireMessage struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	}
+	var upstreamCalls int32
+	replayed := make(chan []wireMessage, 1)
 	fake := newFakeLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&upstreamCalls, 1) > 1 {
+			var body struct {
+				Messages []wireMessage `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode follow-up request: %v", err)
+			}
+			replayed <- body.Messages
+			scriptReply("recovered")(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		for i := 0; i < 500; i++ {
@@ -561,6 +578,26 @@ func TestChatAbortEndpoint(t *testing.T) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A later send must retain an assistant boundary between the original
+	// and follow-up user messages. Otherwise chat templates commonly merge
+	// the adjacent user rows and call the follow-up the first message.
+	follow := sendChat(t, a, c.ID, "what was the original request?")
+	drainSSE(t, newSSEReader(t, follow))
+	follow.Body.Close()
+	wire := <-replayed
+	if len(wire) < 3 {
+		t.Fatalf("follow-up wire history = %+v", wire)
+	}
+	last := wire[len(wire)-3:]
+	if last[0].Role != "user" || last[1].Role != "assistant" || last[2].Role != "user" {
+		t.Fatalf("follow-up roles = %+v, want user/assistant/user", last)
+	}
+	partial, ok := last[1].Content.(string)
+	if !ok || !strings.Contains(partial, "w0 ") ||
+		!strings.Contains(partial, "[The user stopped this response before it finished.]") {
+		t.Errorf("stopped assistant replay = %#v", last[1].Content)
 	}
 }
 

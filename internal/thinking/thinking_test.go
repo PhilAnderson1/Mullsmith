@@ -212,6 +212,34 @@ func TestShippedEndpointsUseImplementedProtocol(t *testing.T) {
 	}
 }
 
+func TestShippedReasoningReplayCatalogueIsComplete(t *testing.T) {
+	endpoints, profiles, err := loadCatalogues(Settings{
+		EndpointsFile: repoEndpoints, ProfilesFile: repoProfiles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, ep := range endpoints {
+		if ep.ReasoningReplay.TextField == "" || ep.ReasoningReplay.TextField == "none" {
+			t.Errorf("endpoint %q has no reasoning replay field", id)
+		}
+	}
+	for id, profile := range profiles {
+		if profile.ReasoningHistory == "" {
+			t.Errorf("profile %q has no reasoning history policy", id)
+		}
+	}
+
+	lm := mustBuild(t, catSettings(Settings{EndpointType: "lm_studio", ProfileID: "gpt_oss"}))
+	if got := lm.ReasoningReplay(""); got.TextField != "reasoning" || got.History != "preserve" {
+		t.Errorf("LM Studio/GPT-OSS replay = %+v", got)
+	}
+	or := mustBuild(t, catSettings(Settings{EndpointType: "openrouter", ProfileID: "qwen3_8"}))
+	if got := or.ReasoningReplay(""); got.TextField != "reasoning" || got.DetailsField != "reasoning_details" {
+		t.Errorf("OpenRouter replay = %+v", got)
+	}
+}
+
 // Budget presets: valid ones survive with the integer substituted, ones
 // outside the endpoint range are hidden with a warning, and one that
 // would swallow the whole output allowance rejects the configuration.
@@ -460,9 +488,9 @@ func TestStrictParsing(t *testing.T) {
 		{"dup key", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", ""},
 		{"unknown field", "e", "schema_version: 2\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n    discover: true\n", "discover"},
 		{"schema v1 endpoints", "e", "schema_version: 1\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
-		{"schema v3 endpoints", "e", "schema_version: 3\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
+		{"schema v4 endpoints", "e", "schema_version: 4\nendpoints:\n  a:\n    protocol: openai_chat\n    path: /c\n    requests: {'off': {x: 1}}\n", "schema_version"},
 		{"schema v1 profiles", "p", "schema_version: 1\nprofiles:\n  a:\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "schema_version"},
-		{"schema v3 profiles", "p", "schema_version: 3\nprofiles:\n  a:\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "schema_version"},
+		{"schema v4 profiles", "p", "schema_version: 4\nprofiles:\n  a:\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "schema_version"},
 		{"unknown template parameter", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_tgl: thinking}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "unknown template parameter"},
 		{"template parameter not a name", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_toggle: a.b}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "not a single property name"},
 		{"template parameter wrong type", "p", "schema_version: 2\nprofiles:\n  a:\n    template_parameters: {thinking_toggle: true}\n    options: [{id: 'off', label: 'Off', mode: 'off'}]\n", "property name or null"},

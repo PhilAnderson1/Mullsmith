@@ -12,6 +12,12 @@ import (
 	"mullsmith/internal/llm"
 	"mullsmith/internal/scratch"
 	"mullsmith/internal/store"
+	"mullsmith/internal/thinking"
+)
+
+const (
+	stoppedResponseMarker      = "[The user stopped this response before it finished.]"
+	emptyStoppedResponseMarker = "[The user stopped this response before it produced an answer.]"
 )
 
 // buildRequest is THE prompt builder (finding 7): stored history becomes the
@@ -44,7 +50,7 @@ func (s *Service) BuildRequest(conv *store.Conversation, userID string, hist []s
 			sysPrompt += agent.CodeRunGuidance
 		}
 	}
-	return agent.BuildContext(sysPrompt, s.HistoryToLLM(hist, len(toolSpecs) > 0, visionOn, userID)), toolSpecs
+	return agent.BuildContext(sysPrompt, s.HistoryToLLM(hist, len(toolSpecs) > 0, visionOn, userID, s.Model(conv.Model))), toolSpecs
 }
 
 // --- history replay ----------------------------------------------------------------
@@ -60,7 +66,16 @@ func (s *Service) BuildRequest(conv *store.Conversation, userID string, hist []s
 // model's entry flag (§7.2): with it off the manifest names no view_image
 // and no synthetic turn embeds bytes — history replayed to a text-only
 // model is text-only, whatever model wrote the rows.
-func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool, userID string) []llm.ChatMessage {
+func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool, userID string, models ...string) []llm.ChatMessage {
+	policy := thinkingReplayPolicy(s, models)
+	lastUser := -1
+	if policy.History == "latest" {
+		for i, m := range hist {
+			if m.Role == "user" && !m.Synthetic {
+				lastUser = i
+			}
+		}
+	}
 	answered := map[string]bool{}
 	for _, m := range hist {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -70,7 +85,7 @@ func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool
 	// Pass 1: which calls survive (answered AND from an assistant row).
 	replayed := map[string]bool{}
 	for _, m := range hist {
-		if m.Role != "assistant" {
+		if m.Role != "assistant" || m.Status == "aborted" {
 			continue
 		}
 		for _, c := range m.Calls {
@@ -85,7 +100,7 @@ func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool
 	if visionOn {
 		imagesLeft = s.visionMaxImages()
 	}
-	for _, m := range hist {
+	for i, m := range hist {
 		switch m.Role {
 		case "tool":
 			if !replayed[m.ToolCallID] {
@@ -93,6 +108,19 @@ func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool
 			}
 			out = append(out, llm.ChatMessage{Role: "tool", Content: m.Content, ToolCallID: m.ToolCallID})
 		case "assistant":
+			// The provider protocol has no stopped flag. Preserve the role
+			// boundary with model-facing text, but never replay a partial
+			// reasoning trace or tool proposal from an interrupted round.
+			if m.Status == "aborted" {
+				content := m.Content
+				if content == "" {
+					content = emptyStoppedResponseMarker
+				} else {
+					content += "\n\n" + stoppedResponseMarker
+				}
+				out = append(out, llm.ChatMessage{Role: "assistant", Content: content})
+				continue
+			}
 			var replay []llm.ChatToolCall
 			for _, c := range m.Calls {
 				if replayed[c.LLMCallID] {
@@ -102,7 +130,11 @@ func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool
 					})
 				}
 			}
-			out = append(out, llm.ChatMessage{Role: "assistant", Content: m.Content, ToolCalls: replay})
+			msg := llm.ChatMessage{Role: "assistant", Content: m.Content, ToolCalls: replay}
+			if policy.History == "preserve" || (policy.History == "latest" && i > lastUser) {
+				applyStoredReasoning(&msg, m.ReasoningData, policy)
+			}
+			out = append(out, msg)
 		default:
 			content := m.Content
 			var imgs []string
@@ -140,6 +172,53 @@ func (s *Service) HistoryToLLM(hist []store.Message, toolsEnabled, visionOn bool
 		return clean
 	}
 	return out
+}
+
+type storedReasoning struct {
+	Version int               `json:"version"`
+	Text    string            `json:"text,omitempty"`
+	Details []json.RawMessage `json:"details,omitempty"`
+}
+
+func encodeStoredReasoning(text string, details []json.RawMessage) string {
+	if text == "" && len(details) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(storedReasoning{Version: 1, Text: text, Details: details})
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func thinkingReplayPolicy(s *Service, models []string) thinking.ReplayPolicy {
+	if s == nil || s.cfg == nil || s.cfg.Thinking == nil || len(models) == 0 {
+		return thinking.ReplayPolicy{History: "omit", TextField: "none"}
+	}
+	return s.cfg.Thinking.ReasoningReplay(models[0])
+}
+
+func applyStoredReasoning(msg *llm.ChatMessage, raw string, policy thinking.ReplayPolicy) {
+	if raw == "" || policy.History == "omit" {
+		return
+	}
+	var trace storedReasoning
+	if err := json.Unmarshal([]byte(raw), &trace); err != nil || trace.Version != 1 {
+		return
+	}
+	applyReasoning(msg, trace.Text, trace.Details, policy)
+}
+
+func applyReasoning(msg *llm.ChatMessage, text string, details []json.RawMessage, policy thinking.ReplayPolicy) {
+	if len(details) > 0 && policy.DetailsField == "reasoning_details" {
+		msg.ReasoningDetails = details
+		msg.ReasoningDetailsField = policy.DetailsField
+		return
+	}
+	if text != "" && policy.TextField != "none" {
+		msg.Reasoning = text
+		msg.ReasoningField = policy.TextField
+	}
 }
 
 // jsonQuote marshals one string, for embedding sanitized error text.

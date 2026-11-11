@@ -82,6 +82,19 @@ type Endpoint struct {
 	EffortValues     []string       `yaml:"effort_values"`
 	BudgetMin        int            `yaml:"budget_min"`
 	BudgetMax        int            `yaml:"budget_max"` // 0 = no catalogue ceiling
+	// ReasoningReplay describes how completed assistant reasoning is sent
+	// back in a later OpenAI chat message. TextField is the endpoint's
+	// normal spelling; DetailsField preserves structured provider blocks
+	// when it is available. ProfileTextFields covers endpoint-specific
+	// exceptions (for example LM Studio exposes GPT-OSS reasoning under a
+	// different field from its llama.cpp-family models).
+	ReasoningReplay ReasoningReplay `yaml:"reasoning_replay"`
+}
+
+type ReasoningReplay struct {
+	TextField         string            `yaml:"text_field"`
+	DetailsField      string            `yaml:"details_field"`
+	ProfileTextFields map[string]string `yaml:"profile_text_fields"`
 }
 
 // Option is one entry of a profile's ordered options array.
@@ -96,6 +109,10 @@ type Option struct {
 // Profile is one entry under `profiles`.
 type Profile struct {
 	Options []Option `yaml:"options"`
+	// ReasoningHistory says which stored traces belong in a later request:
+	// preserve keeps every assistant trace, latest keeps only traces after
+	// the latest user turn (tool continuations), and omit sends none.
+	ReasoningHistory string `yaml:"reasoning_history"`
 	// TemplateParameters names this model family's template conventions:
 	// the property its chat template calls its thinking switch, or an
 	// explicit null when the template has no such argument. Absent means
@@ -140,6 +157,7 @@ type Settings struct {
 // exclusions produced.
 type modelState struct {
 	profID   string
+	history  string
 	choices  []Option
 	compiled map[string]map[string]any // choice id → immutable rendered fragment
 	warnings []string
@@ -306,7 +324,7 @@ func loadCatalogues(set Settings) (map[string]*Endpoint, map[string]*Profile, er
 	if p, ok := pf[profileNone]; ok && len(p.Options) > 0 {
 		return nil, nil, fmt.Errorf("%s: profile %q is the built-in no-choices entry and must have no options", set.ProfilesFile, profileNone)
 	}
-	pf[profileNone] = &Profile{}
+	pf[profileNone] = &Profile{ReasoningHistory: "omit"}
 	for id, ep := range ef {
 		if err := validateEndpoint(id, ep); err != nil {
 			return nil, nil, err
@@ -328,21 +346,26 @@ func readFile(path string) ([]byte, error) {
 	return raw, nil
 }
 
-// schemaVersion is the only catalogue version this build speaks. Version 1
-// is not translated: an operator's file either says 2 or startup fails with
-// the reason, rather than silently running a different dialect.
-const schemaVersion = 2
+// schemaVersion is the current catalogue version. Version 2 remains readable
+// for existing installations, with reasoning replay disabled: an old file
+// must never silently start sending private reasoning it did not opt into.
+const schemaVersion = 3
 
 func decodeEndpoints(raw []byte, src string) (map[string]*Endpoint, error) {
 	var f endpointsFile
 	if err := decodeStrict(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	if f.SchemaVersion != schemaVersion {
+	if f.SchemaVersion != 2 && f.SchemaVersion != schemaVersion {
 		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks %d)", src, f.SchemaVersion, schemaVersion)
 	}
 	if len(f.Endpoints) == 0 {
 		return nil, fmt.Errorf("%s: no endpoints defined", src)
+	}
+	if f.SchemaVersion == 2 {
+		for _, ep := range f.Endpoints {
+			ep.ReasoningReplay.TextField = "none"
+		}
 	}
 	return f.Endpoints, nil
 }
@@ -352,11 +375,16 @@ func decodeProfiles(raw []byte, src string) (map[string]*Profile, error) {
 	if err := decodeStrict(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	if f.SchemaVersion != schemaVersion {
+	if f.SchemaVersion != 2 && f.SchemaVersion != schemaVersion {
 		return nil, fmt.Errorf("%s: unsupported schema_version %d (this build speaks %d)", src, f.SchemaVersion, schemaVersion)
 	}
 	if len(f.Profiles) == 0 {
 		return nil, fmt.Errorf("%s: no profiles defined", src)
+	}
+	if f.SchemaVersion == 2 {
+		for _, p := range f.Profiles {
+			p.ReasoningHistory = "omit"
+		}
 	}
 	return f.Profiles, nil
 }
@@ -418,6 +446,20 @@ func validateEndpoint(id string, ep *Endpoint) error {
 	}
 	if ep.BudgetMin > 0 && ep.BudgetMax > 0 && ep.BudgetMax < ep.BudgetMin {
 		return fmt.Errorf("endpoint %q: budget_max %d is below budget_min %d", id, ep.BudgetMax, ep.BudgetMin)
+	}
+	if !slices.Contains([]string{"none", "reasoning_content", "reasoning"}, ep.ReasoningReplay.TextField) {
+		return fmt.Errorf("endpoint %q: reasoning_replay.text_field %q is invalid (want none, reasoning_content or reasoning)", id, ep.ReasoningReplay.TextField)
+	}
+	if ep.ReasoningReplay.DetailsField != "" && ep.ReasoningReplay.DetailsField != "reasoning_details" {
+		return fmt.Errorf("endpoint %q: reasoning_replay.details_field %q is invalid (want reasoning_details or omit it)", id, ep.ReasoningReplay.DetailsField)
+	}
+	for pid, field := range ep.ReasoningReplay.ProfileTextFields {
+		if pid == "" {
+			return fmt.Errorf("endpoint %q: reasoning_replay.profile_text_fields has an empty profile ID", id)
+		}
+		if !slices.Contains([]string{"none", "reasoning_content", "reasoning"}, field) {
+			return fmt.Errorf("endpoint %q: reasoning_replay.profile_text_fields[%q] %q is invalid", id, pid, field)
+		}
 	}
 	return nil
 }
@@ -501,6 +543,9 @@ func validateProfile(id string, p *Profile) error {
 	if id == "" {
 		return errors.New("profiles: an entry has an empty ID")
 	}
+	if !slices.Contains([]string{"preserve", "latest", "omit"}, p.ReasoningHistory) {
+		return fmt.Errorf("profile %q: reasoning_history %q is invalid (want preserve, latest or omit)", id, p.ReasoningHistory)
+	}
 	seen := map[string]bool{}
 	for i, o := range p.Options {
 		if o.ID == "" {
@@ -563,6 +608,7 @@ func (r *Runtime) buildState(profID string, prof *Profile) (*modelState, error) 
 	pr := resolveParams(r.ep, prof)
 	st := &modelState{
 		profID:   profID,
+		history:  prof.ReasoningHistory,
 		compiled: map[string]map[string]any{},
 		canon:    canonical(profileCanon(prof, pr)),
 	}
@@ -659,6 +705,7 @@ func endpointCanon(ep *Endpoint) any {
 		"budget_min":        ep.BudgetMin,
 		"budget_max":        ep.BudgetMax,
 		"template_defaults": params(ep.TemplateDefaults).canon(),
+		"reasoning_replay":  ep.ReasoningReplay,
 	}
 }
 
@@ -671,7 +718,8 @@ func profileCanon(prof *Profile, pr params) any {
 		})
 	}
 	return map[string]any{
-		"options": opts,
+		"options":           opts,
+		"reasoning_history": prof.ReasoningHistory,
 		// The resolved pair view, so an endpoint default this profile
 		// relies on counts as part of the profile's meaning too.
 		"template_parameters": pr.canon(),
@@ -706,6 +754,37 @@ type PublicChoice struct {
 // the default /chat/completions suffix even when no profile choices are
 // selected ("none").
 func (r *Runtime) Enabled() bool { return r != nil && r.ep != nil }
+
+// ReplayPolicy is the resolved reasoning-history contract for one model on
+// the configured endpoint. The chat layer uses it when turning a stored
+// provider-neutral trace back into an assistant message.
+type ReplayPolicy struct {
+	History      string
+	TextField    string
+	DetailsField string
+}
+
+// ReasoningReplay resolves endpoint defaults and endpoint-specific profile
+// exceptions. A nil runtime, an old v2 catalogue or an omit profile all
+// return a disabled policy.
+func (r *Runtime) ReasoningReplay(model string) ReplayPolicy {
+	if r == nil || r.ep == nil {
+		return ReplayPolicy{History: "omit", TextField: "none"}
+	}
+	st := r.stateFor(model)
+	p := ReplayPolicy{
+		History:      st.history,
+		TextField:    r.ep.ReasoningReplay.TextField,
+		DetailsField: r.ep.ReasoningReplay.DetailsField,
+	}
+	if field, ok := r.ep.ReasoningReplay.ProfileTextFields[st.profID]; ok {
+		p.TextField = field
+	}
+	if p.History == "omit" || p.TextField == "none" {
+		p.History, p.TextField, p.DetailsField = "omit", "none", ""
+	}
+	return p
+}
 
 // SelectorVisible reports that some picker model has at least one usable
 // option. All-"none" (or a legacy config) hides the selector entirely:

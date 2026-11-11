@@ -1,8 +1,10 @@
-schema_version: 2
+schema_version: 3
 endpoints:
   gufo:
     protocol: openai_chat
     path: /chat/completions
+    reasoning_replay:
+      text_field: reasoning_content
     requests:
       'off':
         chat_template_kwargs:
@@ -32,6 +34,8 @@ endpoints:
   llama_cpp:
     protocol: openai_chat
     path: /chat/completions
+    reasoning_replay:
+      text_field: reasoning_content
     requests:
       'off':
         chat_template_kwargs:
@@ -54,6 +58,8 @@ endpoints:
   vllm:
     protocol: openai_chat
     path: /chat/completions
+    reasoning_replay:
+      text_field: reasoning
     requests:
       'off':
         chat_template_kwargs:
@@ -82,6 +88,10 @@ endpoints:
   lm_studio:
     protocol: openai_chat
     path: /chat/completions
+    reasoning_replay:
+      text_field: reasoning_content
+      profile_text_fields:
+        gpt_oss: reasoning
     requests:
       'off':
         reasoning_effort: none
@@ -90,6 +100,8 @@ endpoints:
   ollama_openai:
     protocol: openai_chat
     path: /chat/completions
+    reasoning_replay:
+      text_field: reasoning
     requests:
       'off':
         reasoning_effort: none
@@ -100,6 +112,9 @@ endpoints:
   openrouter:
     protocol: openai_chat
     path: /chat/completions
+    reasoning_replay:
+      text_field: reasoning
+      details_field: reasoning_details
     requests:
       'off':
         reasoning:

@@ -50,6 +50,7 @@ func (op *Operation) Run(emit Emit) {
 	// selector change during the stream only reaches the NEXT generation
 	// (thinking-control-specification.md §5).
 	thinkFrag := s.ThinkingSnapshot(conv)
+	replayPolicy := thinkingReplayPolicy(s, []string{s.Model(conv.Model)})
 	maxRounds := s.cfg.Tools.Agent.MaxToolRounds
 	if maxRounds < 0 {
 		maxRounds = 0
@@ -82,8 +83,8 @@ func (op *Operation) Run(emit Emit) {
 	rounds := []RoundOutcome{}
 	// finRound finalises one round row and records what was persisted, so
 	// the terminal event describes the writes rather than intentions.
-	finRound := func(msgID, content, status, note string, usage, completion, durMS int64) error {
-		ferr := s.finishMessage(msgID, content, status, note, usage, completion, durMS)
+	finRound := func(msgID, content, reasoningData, status, note string, usage, completion, durMS int64) error {
+		ferr := s.finishMessageWithReasoning(msgID, content, reasoningData, status, note, usage, completion, durMS)
 		if ferr == nil {
 			rounds = append(rounds, RoundOutcome{
 				MsgID: msgID, Status: status, Note: note, Completion: completion, DurationMS: durMS,
@@ -122,7 +123,7 @@ func (op *Operation) Run(emit Emit) {
 			// stays durable, this still-empty draft row is the only
 			// casualty.
 			midFull = true
-			if ferr := finRound(am.ID, "", "aborted", "", 0, 0, 0); ferr != nil {
+			if ferr := finRound(am.ID, "", "", "aborted", "", 0, 0, 0); ferr != nil {
 				storeErr = ferr
 			}
 			break
@@ -133,13 +134,13 @@ func (op *Operation) Run(emit Emit) {
 		roundMS := time.Since(roundStart).Milliseconds()
 
 		if res.Status != "complete" {
-			if ferr := finRound(am.ID, res.Content, res.Status, res.Note, res.Usage, res.Completion, roundMS); ferr != nil {
+			if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), res.Status, res.Note, res.Usage, res.Completion, roundMS); ferr != nil {
 				storeErr = ferr
 			}
 			break
 		}
 		if len(res.ToolCalls) == 0 {
-			if ferr := finRound(am.ID, res.Content, "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
+			if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
 				storeErr = ferr
 			}
 			break
@@ -148,7 +149,7 @@ func (op *Operation) Run(emit Emit) {
 		// Persist the answered assistant turn, then execute every call
 		// (the protocol requires one answer per call) and continue with a
 		// fresh placeholder row. runToolCall owns the audit rows.
-		if ferr := finRound(am.ID, res.Content, "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
+		if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
 			if isCancellation(ferr, genCtx) {
 				cancelledOut = true // deletion/abort ended it, not storage
 			} else {
@@ -162,7 +163,9 @@ func (op *Operation) Run(emit Emit) {
 			break
 		}
 
-		msgs = append(msgs, llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls})
+		assistant := llm.ChatMessage{Role: "assistant", Content: res.Content, ToolCalls: res.ToolCalls}
+		applyReasoning(&assistant, res.Reasoning, res.ReasoningDetails, replayPolicy)
+		msgs = append(msgs, assistant)
 		var perr error
 		limitedThisRound := false
 		for _, call := range res.ToolCalls {

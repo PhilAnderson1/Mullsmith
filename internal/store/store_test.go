@@ -61,7 +61,7 @@ func TestSchemaRejectsNewerDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+	if _, err := raw.Exec(`PRAGMA user_version = 3`); err != nil {
 		raw.Close()
 		t.Fatal(err)
 	}
@@ -72,6 +72,64 @@ func TestSchemaRejectsNewerDatabase(t *testing.T) {
 	_, err = Open(path)
 	if err == nil || !strings.Contains(err.Error(), "newer than this application supports") {
 		t.Fatalf("Open newer database error = %v, want unsupported-version error", err)
+	}
+}
+
+func TestSchemaMigratesExistingMessagesForReasoning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(migrationV1SQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'reasoning_data'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reasoning_data columns = %d, want 1", count)
+	}
+}
+
+func TestAssistantReasoningRoundTripsThroughContextHistory(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	u := mkUser("reasoning@example.test")
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	c := &Conversation{UserID: u.ID}
+	if err := db.CreateConversation(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	m := &Message{ConversationID: c.ID, Role: "assistant", Status: "streaming"}
+	if err := db.AddMessage(ctx, u.ID, m); err != nil {
+		t.Fatal(err)
+	}
+	const trace = `{"version":1,"text":"kept"}`
+	if err := db.FinalizeMessage(ctx, m.ID, "answer", trace, "complete", "", 2, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	hist, err := db.ContextHistory(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || hist[0].ReasoningData != trace {
+		t.Fatalf("history = %+v", hist)
 	}
 }
 
