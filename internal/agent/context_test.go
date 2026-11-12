@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -24,6 +25,25 @@ func TestEstimateTokens(t *testing.T) {
 		if got := EstimateTokens(c.in); got != c.want {
 			t.Errorf("EstimateTokens(%q) = %d, want %d", c.in, got, c.want)
 		}
+	}
+}
+
+func TestEstimateRequestTokensIncludesReasoning(t *testing.T) {
+	plain := []llm.ChatMessage{{Role: "assistant", Content: "answer"}}
+	base := EstimateRequestTokens(plain, nil)
+
+	withText := append([]llm.ChatMessage(nil), plain...)
+	withText[0].Reasoning = "private reasoning trace"
+	withText[0].ReasoningField = "reasoning_content"
+	if got := EstimateRequestTokens(withText, nil); got <= base {
+		t.Fatalf("text reasoning estimate = %d, want more than base %d", got, base)
+	}
+
+	withDetails := append([]llm.ChatMessage(nil), plain...)
+	withDetails[0].ReasoningDetails = []json.RawMessage{json.RawMessage(`{"type":"reasoning.text","text":"structured trace","signature":"signed"}`)}
+	withDetails[0].ReasoningDetailsField = "reasoning_details"
+	if got := EstimateRequestTokens(withDetails, nil); got <= base {
+		t.Fatalf("structured reasoning estimate = %d, want more than base %d", got, base)
 	}
 }
 

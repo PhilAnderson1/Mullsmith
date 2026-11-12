@@ -229,9 +229,23 @@ func TestShippedReasoningReplayCatalogueIsComplete(t *testing.T) {
 			t.Errorf("profile %q has no reasoning history policy", id)
 		}
 	}
+	// Mullsmith advertises tools, so these profiles must retain the complete
+	// reasoning history required by their tool-capable chat templates.
+	for _, id := range []string{"deepseek_v4", "deepseek_v4_1", "kimi_k2_7_code", "step5_preview"} {
+		if got := profiles[id].ReasoningHistory; got != "preserve" {
+			t.Errorf("profile %q reasoning history = %q, want preserve", id, got)
+		}
+	}
+	// These templates retain reasoning through the current user/tool turn,
+	// then discard it once the model has produced its final answer.
+	for _, id := range []string{"qwen3_5", "qwen3_6", "gpt_oss", "gemma4"} {
+		if got := profiles[id].ReasoningHistory; got != "latest" {
+			t.Errorf("profile %q reasoning history = %q, want latest", id, got)
+		}
+	}
 
 	lm := mustBuild(t, catSettings(Settings{EndpointType: "lm_studio", ProfileID: "gpt_oss"}))
-	if got := lm.ReasoningReplay(""); got.TextField != "reasoning" || got.History != "preserve" {
+	if got := lm.ReasoningReplay(""); got.TextField != "reasoning" || got.History != "latest" {
 		t.Errorf("LM Studio/GPT-OSS replay = %+v", got)
 	}
 	or := mustBuild(t, catSettings(Settings{EndpointType: "openrouter", ProfileID: "qwen3_8"}))

@@ -123,16 +123,37 @@ func TestRoundCompletionTokens(t *testing.T) {
 	}
 }
 
+func TestRoundUsageEstimateUsesReportedCompletion(t *testing.T) {
+	ts := sseServer(t,
+		`{"choices":[{"delta":{"content":"answer"}}],"usage":{"completion_tokens":17}}`,
+	)
+	g := genFor(t, ts)
+	msgs := []llm.ChatMessage{{Role: "user", Content: "question"}}
+	res := g.Round(context.Background(), "", msgs, nil, nil, func(string, string) error { return nil })
+	want := EstimateRequestTokens(msgs, nil) + 17
+	if res.Usage != want || res.Completion != 17 {
+		t.Errorf("usage=%d completion=%d, want %d/17", res.Usage, res.Completion, want)
+	}
+}
+
 func TestRoundUsageEstimatedWhenUnreported(t *testing.T) {
 	ts := sseServer(t,
+		`{"choices":[{"delta":{"reasoning_content":"consider this"}}]}`,
 		`{"choices":[{"delta":{"content":"some words came back"}}]}`,
 		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
 	)
 	g := genFor(t, ts)
-	res := g.Round(context.Background(), "", nil, nil, nil, func(string, string) error { return nil })
-	if res.Usage <= 0 || res.Completion <= 0 {
-		t.Errorf("no upstream usage: usage=%d completion=%d, want estimates > 0",
-			res.Usage, res.Completion)
+	msgs := []llm.ChatMessage{{Role: "assistant", Content: "earlier answer",
+		Reasoning: "earlier reasoning", ReasoningField: "reasoning_content"}}
+	tools := []llm.ToolSpec{{Type: "function", Function: llm.ToolFunction{
+		Name: "lookup", Description: "look something up", Parameters: map[string]any{"type": "object"},
+	}}}
+	res := g.Round(context.Background(), "", msgs, tools, nil, func(string, string) error { return nil })
+	wantCompletion := int64(EstimateTokens("some words came back") + EstimateTokens("consider this"))
+	wantUsage := EstimateRequestTokens(msgs, tools) + wantCompletion
+	if res.Usage != wantUsage || res.Completion != wantCompletion {
+		t.Errorf("no upstream usage: usage=%d completion=%d, want %d/%d",
+			res.Usage, res.Completion, wantUsage, wantCompletion)
 	}
 }
 

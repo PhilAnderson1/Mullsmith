@@ -70,7 +70,7 @@ func TestStoredReasoningUsesResolvedWireShape(t *testing.T) {
 func TestLatestReasoningPolicyKeepsOnlyCurrentUserTurn(t *testing.T) {
 	cfg := config.Defaults()
 	rt, err := thinking.Build(thinking.Settings{
-		EndpointType: "gufo", ProfileID: "deepseek_v4",
+		EndpointType: "gufo", ProfileID: "kimi_k2_6",
 		EndpointsFile: filepath.Join("..", "..", "configs", "endpoints.yaml"),
 		ProfilesFile:  filepath.Join("..", "..", "configs", "thinking-profiles.yaml"),
 	})

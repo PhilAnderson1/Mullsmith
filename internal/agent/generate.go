@@ -138,13 +138,29 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		res.Status = "error"
 		res.Err = err
 	}
+	completionEstimate := EstimateTokens(res.Content) + EstimateTokens(res.Reasoning)
+	// Structured reasoning normally replaces the plain reasoning field on
+	// replay. Some endpoints emit both views of the same trace, so count the
+	// structured form only when no plain text was supplied rather than
+	// double-counting one thought.
+	if res.Reasoning == "" && len(res.ReasoningDetails) > 0 {
+		if b, err := json.Marshal(res.ReasoningDetails); err == nil {
+			completionEstimate += EstimateTokens(string(b))
+		}
+	}
+	for _, tc := range res.ToolCalls {
+		completionEstimate += EstimateTokens(tc.Function.Name + tc.Function.Arguments)
+	}
 	if res.Usage == 0 {
-		res.Usage = int64(EstimateTokens(res.Content) + EstimateTokens(res.Reasoning))
+		completionForTotal := int64(completionEstimate)
+		if res.Completion > 0 {
+			completionForTotal = res.Completion
+		}
+		res.Usage = EstimateRequestTokens(msgs, tools) + completionForTotal
 	}
 	if res.Completion == 0 {
-		// Generated output = answer + reasoning; the same estimate the
-		// total falls back to (an endpoint may report only one or neither).
-		res.Completion = int64(EstimateTokens(res.Content) + EstimateTokens(res.Reasoning))
+		// Generated output = answer + reasoning + any tool proposal.
+		res.Completion = int64(completionEstimate)
 	}
 	return res
 }

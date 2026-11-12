@@ -2,7 +2,6 @@ package chat
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -12,19 +11,7 @@ import (
 )
 
 func RequestTokens(msgs []llm.ChatMessage, specs []llm.ToolSpec) int64 {
-	var used int64
-	for _, m := range msgs {
-		used += int64(agent.EstimateTokens(m.Content))
-		for _, tc := range m.ToolCalls {
-			used += int64(agent.EstimateTokens(tc.Function.Name + tc.Function.Arguments))
-		}
-	}
-	if len(specs) > 0 {
-		if b, err := json.Marshal(specs); err == nil {
-			used += int64(agent.EstimateTokens(string(b)))
-		}
-	}
-	return used
+	return agent.EstimateRequestTokens(msgs, specs)
 }
 
 // admission is the typed verdict of the send gate (C1). A successful
