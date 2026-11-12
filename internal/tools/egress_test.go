@@ -212,8 +212,21 @@ func TestGuardedDialLiteralIP(t *testing.T) {
 
 func TestGuardedDialEmptyAnswers(t *testing.T) {
 	tr := &GuardedTransport{LookupHost: fakeLookup()}
-	if err := dialThrough(tr, "nowhere.example"); !errors.Is(err, errBlockedHost) {
-		t.Fatalf("err = %v, want errBlockedHost", err)
+	if err := dialThrough(tr, "nowhere.example"); !errors.Is(err, errHostNotFound) {
+		t.Fatalf("err = %v, want errHostNotFound", err)
+	}
+}
+
+func TestGuardedDialLookupFailureIsNotBlockedHost(t *testing.T) {
+	tr := &GuardedTransport{LookupHost: func(context.Context, string) ([]string, error) {
+		return nil, errors.New("no such host")
+	}}
+	err := dialThrough(tr, "nowhere.example")
+	if !errors.Is(err, errHostNotFound) {
+		t.Fatalf("err = %v, want errHostNotFound", err)
+	}
+	if errors.Is(err, errBlockedHost) {
+		t.Fatalf("DNS failure was misclassified as a blocked host: %v", err)
 	}
 }
 

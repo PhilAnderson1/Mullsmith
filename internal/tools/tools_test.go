@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -245,6 +246,16 @@ func TestWebFetchRejectsBadSchemes(t *testing.T) {
 		if _, err := w.Execute(context.Background(), Invocation{Arguments: `{"url":"` + u + `"}`}); err == nil {
 			t.Errorf("%s accepted", u)
 		}
+	}
+}
+
+func TestWebFetchReportsHostNotFound(t *testing.T) {
+	w := NewWebFetch(&http.Client{Transport: egressRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("dial failed: %w", errHostNotFound)
+	})}, 1<<20)
+	_, err := w.Execute(context.Background(), Invocation{Arguments: `{"url":"https://nowhere.example"}`})
+	if err == nil || err.Error() != "web_fetch: host not found" {
+		t.Fatalf("error = %v, want host-not-found message", err)
 	}
 }
 

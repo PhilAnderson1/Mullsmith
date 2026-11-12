@@ -86,6 +86,9 @@ func (w *WebDownload) Execute(ctx context.Context, inv Invocation) (Result, erro
 		if errors.Is(err, errBlockedHost) {
 			return Result{}, errors.New("web_download: that address is not reachable from this server (private or reserved ranges are blocked)")
 		}
+		if errors.Is(err, errHostNotFound) {
+			return Result{}, errors.New("web_download: host not found")
+		}
 		return Result{}, errors.New("web_download: request failed")
 	}
 	defer resp.Body.Close()

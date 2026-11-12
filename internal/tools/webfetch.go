@@ -113,6 +113,9 @@ func (w *WebFetch) Execute(ctx context.Context, inv Invocation) (Result, error) 
 		if errors.Is(err, errBlockedHost) {
 			return Result{}, errors.New("web_fetch: that address is not reachable from this server (private or reserved ranges are blocked)")
 		}
+		if errors.Is(err, errHostNotFound) {
+			return Result{}, errors.New("web_fetch: host not found")
+		}
 		return Result{}, errors.New("web_fetch: request failed")
 	}
 	defer resp.Body.Close()

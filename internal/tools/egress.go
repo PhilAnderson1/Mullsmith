@@ -26,7 +26,10 @@ type GuardedTransport struct {
 	Dialer         *net.Dialer // nil ⇒ 10 s dial timeout
 }
 
-var errBlockedHost = errors.New("target address is not publicly routable")
+var (
+	errBlockedHost  = errors.New("target address is not publicly routable")
+	errHostNotFound = errors.New("target host could not be resolved")
+)
 
 // blockedCIDRs complements netip's predicates using the IANA special-purpose
 // registries. Deliberately exclude whole protocol/transition ranges, including
@@ -88,8 +91,11 @@ func (t *GuardedTransport) validateHost(ctx context.Context, host string) ([]net
 		var err error
 		hosts, err = t.lookup(ctx, host)
 		if err != nil {
-			return nil, fmt.Errorf("resolve %q: %w", host, errBlockedHost)
+			return nil, fmt.Errorf("resolve %q: %w", host, errHostNotFound)
 		}
+	}
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("resolve %q: %w", host, errHostNotFound)
 	}
 	out := make([]netip.Addr, 0, len(hosts))
 	for _, h := range hosts {
@@ -98,9 +104,6 @@ func (t *GuardedTransport) validateHost(ctx context.Context, host string) ([]net
 			return nil, errBlockedHost // any private answer poisons the set
 		}
 		out = append(out, ip)
-	}
-	if len(out) == 0 {
-		return nil, errBlockedHost
 	}
 	interfaceAddrs := t.InterfaceAddrs
 	if interfaceAddrs == nil {
