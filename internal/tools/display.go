@@ -6,9 +6,8 @@ import (
 
 // DisplayBudget bounds one card payload (tool_calls.display, C7). The card
 // and the model-facing `result` are separate concerns: `result` is
-// middle-elided because the MODEL has a context window, a card is elided by
-// DROP — never by cutting a JSON structure in half, which is exactly how
-// links and download cards used to disappear on reload.
+// preserved for the model; oversized card data is dropped rather than
+// cutting JSON in half, so download and image cards stay well-formed.
 const DisplayBudget = 8 * 1024
 
 // Card is the one stored-and-sent shape of a tool card's payload:

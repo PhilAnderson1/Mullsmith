@@ -75,8 +75,6 @@ func (o *Operation) AbortBeforeStart() {
 
 var ApprovalTimeout = 10 * time.Minute
 
-const ToolResultBudgetRunes = 8 * 1024
-
 type RoundOutcome struct {
 	MsgID         string `json:"message_id"`
 	Status        string `json:"status"`

@@ -58,7 +58,7 @@ func (s *Service) execTimeout(tool string) time.Duration {
 }
 
 // runToolCall executes one proposed call: audit row, optional approval,
-// execution, truncated result message, tool_end event. Returns the content
+// execution, complete result message, tool_end event. Returns the content
 // to hand back to the model (always a valid tool message — denied and
 // failed calls are reported as such, keeping the protocol intact) plus any
 // image path the result asks the loop to attach (view_image; "" otherwise).
@@ -77,7 +77,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 	// One clamped card, emitted live AND stored (C7): the identical
 	// {summary,data,truncated} goes into the tool_end event and into
 	// tool_calls.display, so no card can be built one way live and another
-	// way from history — and neither view re-parses the middle-elided
+	// way from history — and neither view re-parses the model-facing
 	// model-facing text. Over the display budget the DATA drops and the
 	// SUMMARY stays with a flag; a JSON structure is never cut in half.
 	card := tools.ClampCard
@@ -203,7 +203,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		return content, "", persistErr
 	}
 	if tres.Failed {
-		content := tools.TruncateMiddle(tres.Content, ToolResultBudgetRunes)
+		content := tres.Content
 		c := card(tres.Summary, tres.Data)
 		if ferr := s.finalizeToolCall(tc.ID, resultMsg.ID, "error", content, c.JSON(),
 			dur, callID); ferr != nil {
@@ -213,7 +213,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 		return content, tres.AttachPath, persistErr
 	}
 
-	content := tools.TruncateMiddle(tres.Content, ToolResultBudgetRunes)
+	content := tres.Content
 	c := card(tres.Summary, tres.Data, tres.StatusOnly || tres.Data == nil)
 	if ferr := s.finalizeToolCall(tc.ID, resultMsg.ID, "ok", content, c.JSON(),
 		dur, callID); ferr != nil {

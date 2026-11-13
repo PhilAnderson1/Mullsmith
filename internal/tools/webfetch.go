@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -141,22 +143,28 @@ func (w *WebFetch) Execute(ctx context.Context, inv Invocation) (Result, error) 
 		}
 	}
 
-	ct := resp.Header.Get("Content-Type")
-	bodyStr := string(raw)
-	var title, text string
-	switch {
-	case strings.Contains(ct, "html") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(bodyStr)), "<!doctype html"):
-		title, text = htmlToText(bodyStr)
-	case utf8.Valid(raw):
-		text = strings.TrimSpace(reWS.ReplaceAllString(reBlankLines.ReplaceAllString(bodyStr, "\n\n"), " "))
-		if len(text) > 4000 && !strings.Contains(ct, "text/") {
-			return Result{}, errors.New("web_fetch: response is not readable text")
-		}
-	default:
-		return Result{}, errors.New("web_fetch: response is binary, not text")
+	mediaType, _, parseErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if parseErr != nil && strings.TrimSpace(resp.Header.Get("Content-Type")) != "" {
+		return Result{}, errors.New("web_fetch: invalid response content type; use web_download to save the file")
 	}
-	if text == "" {
-		text = "(empty page)"
+	generic := mediaType == "" || mediaType == "application/octet-stream"
+	if !generic && !fetchTextType(mediaType) {
+		return Result{}, errors.New("web_fetch: unsupported response content type; use web_download to save the file")
+	}
+	if !readableUTF8(raw) {
+		return Result{}, errors.New("web_fetch: response is not readable UTF-8 text; use web_download to save the file")
+	}
+	var title string
+	text := string(raw)
+	htmlType := mediaType == "text/html" || mediaType == "application/xhtml+xml"
+	if generic {
+		htmlType = strings.HasPrefix(http.DetectContentType(raw), "text/html")
+	}
+	if htmlType {
+		title, text = htmlToText(text)
+		if text == "" {
+			text = "(empty page)"
+		}
 	}
 
 	content, err := json.Marshal(map[string]any{
@@ -176,4 +184,36 @@ func (w *WebFetch) Execute(ctx context.Context, inv Invocation) (Result, error) 
 		Summary: fmt.Sprintf("Fetched %s — %d KB%s", Elide(host, 60), len(text)/1024,
 			map[bool]string{true: " (truncated)", false: ""}[truncated]),
 	}, nil
+}
+
+// fetchTextType recognizes media types whose bodies are useful as model text.
+// Generic or missing types are handled separately by inspecting the body.
+func fetchTextType(mediaType string) bool {
+	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	if strings.HasPrefix(mediaType, "application/") &&
+		(strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")) {
+		return true
+	}
+	switch mediaType {
+	case "application/json", "application/xml", "application/yaml", "application/x-yaml",
+		"application/javascript", "application/x-javascript", "application/ecmascript",
+		"application/x-www-form-urlencoded":
+		return true
+	}
+	return false
+}
+
+// Valid UTF-8 alone does not distinguish text from ASCII-compatible binary data.
+func readableUTF8(raw []byte) bool {
+	if !utf8.Valid(raw) {
+		return false
+	}
+	for _, r := range string(raw) {
+		if unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r' && r != '\f' {
+			return false
+		}
+	}
+	return true
 }

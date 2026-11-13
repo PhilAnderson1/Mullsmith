@@ -24,7 +24,7 @@ type ToolCall struct {
 	Result    string
 	// Display is the card payload (C7): the bounded JSON
 	// {"summary","data","truncated"} the live tool_end event carried, kept
-	// separate from Result, which is the middle-elided text the MODEL saw.
+	// separate from Result, which is the complete text the model saw.
 	// Rebuilding a card out of that string could cut its JSON in half —
 	// links and download cards vanished on reload.
 	Display    string

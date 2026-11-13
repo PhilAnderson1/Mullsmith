@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -285,6 +286,35 @@ func TestWebFetchMaxBytes(t *testing.T) {
 	}
 }
 
+func TestWebFetchLargeUTF8Responses(t *testing.T) {
+	body := `{"description":"` + strings.Repeat("x", 5000) + `"}`
+	for _, contentType := range []string{"application/json", "application/vnd.github+json", "application/xml", "application/octet-stream", ""} {
+		t.Run(contentType, func(t *testing.T) {
+			client := &http.Client{Transport: egressRoundTripper(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}},
+					Body: io.NopCloser(strings.NewReader(body)), Request: req,
+				}, nil
+			})}
+			fetch := NewWebFetch(client, 16<<10)
+			res, err := fetch.Execute(context.Background(), Invocation{Arguments: `{"url":"https://example.com/data"}`})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload struct {
+				Text      string `json:"text"`
+				Truncated bool   `json:"truncated"`
+			}
+			if err := json.Unmarshal([]byte(res.Content), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Text != body || payload.Truncated {
+				t.Fatalf("response changed or truncated: length=%d, truncated=%v", len(payload.Text), payload.Truncated)
+			}
+		})
+	}
+}
+
 func TestWebFetchBinaryRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -324,27 +354,6 @@ func TestWebFetchTruncatesAtUTF8Boundary(t *testing.T) {
 }
 
 // --- budget helpers --------------------------------------------------------------
-
-func TestTruncateMiddle(t *testing.T) {
-	if got := TruncateMiddle("short", 100); got != "short" {
-		t.Errorf("under budget modified: %q", got)
-	}
-	huge := strings.Repeat("a", 1000) + "NEEDLE" + strings.Repeat("b", 1000)
-	got := TruncateMiddle(huge, 200)
-	r := []rune(got)
-	if len(r) > 200+64 { // head+tail+marker bound; marker adds known text
-		t.Fatalf("output too long: %d runes", len(r))
-	}
-	if !strings.Contains(got, "elided") {
-		t.Error("missing elision marker")
-	}
-	if !strings.HasPrefix(got, "aaaa") || !strings.HasSuffix(got, "bbbb") {
-		t.Error("head/tail not preserved")
-	}
-	if strings.Contains(got, "NEEDLE") {
-		t.Error("middle survived")
-	}
-}
 
 func TestElide(t *testing.T) {
 	if got := Elide("  a \n b ", 10); got != "a b" {

@@ -715,8 +715,8 @@ func TestUnknownToolReportedToModel(t *testing.T) {
 	}
 }
 
-func TestToolResultTruncatedForModelAndStore(t *testing.T) {
-	huge := strings.Repeat("ü", 20_000) // runes: exercise the rune-based budget
+func TestToolResultPreservedForModelAndStore(t *testing.T) {
+	huge := `{"content":"` + strings.Repeat("ü", 20_000) + `","truncated":false}`
 	search := &fakeTool{name: "web_search", content: huge, summary: "big"}
 	reg := registryFor(map[string]string{"web_search": "auto"}, search)
 	cfg := toolChatCfg(t, 4, map[string]string{"web_search": "auto"})
@@ -742,16 +742,16 @@ func TestToolResultTruncatedForModelAndStore(t *testing.T) {
 	if toolRow == nil {
 		t.Fatal("no tool row persisted")
 	}
-	if n := len([]rune(toolRow.Content)); n > chat.ToolResultBudgetRunes+100 {
-		t.Errorf("tool row %d runes, budget %d", n, chat.ToolResultBudgetRunes)
+	if toolRow.Content != huge {
+		t.Error("stored tool result was altered")
 	}
-	if !strings.Contains(toolRow.Content, "elided") {
-		t.Error("tool row lacks elision marker")
+	// The model receives the complete structured result, matching persistence.
+	results := payloadRole(t, script.roundBody(1), "tool")
+	if len(results) != 1 || results[0]["content"] != huge {
+		t.Error("model did not receive the complete tool result")
 	}
-	// The model sees exactly the stored (truncated) content.
-	b2, _ := json.Marshal(script.roundBody(1))
-	if !strings.Contains(string(b2), "elided") {
-		t.Error("replayed content not truncated")
+	if !json.Valid([]byte(toolRow.Content)) {
+		t.Error("stored result is not valid JSON")
 	}
 }
 

@@ -7,7 +7,6 @@ package tools
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -23,8 +22,7 @@ type Invocation struct {
 
 // Result is what a tool hands back.
 type Result struct {
-	// Content is the JSON (or text) sent to the model; the loop truncates
-	// it to the per-call budget before storing/forwarding.
+	// Content is the JSON (or text) stored and sent to the model unchanged.
 	Content string
 	// Summary is the one-line UI card text (§10.2).
 	Summary string
@@ -210,23 +208,6 @@ func (r *Registry) Names() []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// TruncateMiddle reduces s to at most maxRunes keeping head and tail with
-// an elision marker (spec §6.1 step 5: results truncated, middle-elided).
-func TruncateMiddle(s string, maxRunes int) string {
-	r := []rune(s)
-	if len(r) <= maxRunes {
-		return s
-	}
-	if maxRunes < 32 { // no room for a marker; plain head cut
-		return string(r[:maxRunes])
-	}
-	keep := maxRunes - 24
-	head := keep * 2 / 3
-	tail := keep - head
-	return fmt.Sprintf("%s\n…[elided %d runes]…\n%s",
-		string(r[:head]), len(r)-keep, string(r[len(r)-tail:]))
 }
 
 // Elide one-line text for log/card previews.
