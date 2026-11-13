@@ -75,10 +75,9 @@ func TestBuildContextEmptyHistory(t *testing.T) {
 	}
 }
 
-func TestToolGuidanceUploadsPngs(t *testing.T) {
-	// The model must know fs_delete reaches uploads/ files (so it can offer
-	// to clean up attachments) — and that those calls ask the user first.
-	if !strings.Contains(ToolGuidance, "uploads/") || !strings.Contains(ToolGuidance, "confirmation") {
-		t.Errorf("ToolGuidance must state the fs_delete uploads right and its confirmation gate:\n%s", ToolGuidance)
+func TestToolGuidanceApproval(t *testing.T) {
+	// Approval depends on the configured tool policy.
+	if !strings.Contains(ToolGuidance, "Tool calls may require user approval before execution.") {
+		t.Errorf("ToolGuidance must describe conditional user approval:\n%s", ToolGuidance)
 	}
 }

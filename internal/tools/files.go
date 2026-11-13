@@ -49,17 +49,16 @@ type FsList struct{}
 func (FsList) Name() string { return "fs_list" }
 
 func (FsList) Description() string {
-	return "List files and directories in the user's scratchpad. Pass no path (or \".\") " +
-		"for the root. Returns JSON entries {name, dir, bytes}, capped at 200; if the response " +
-		"says truncated, more entries exist. Paths are relative to the " +
-		"scratchpad root; uploads/ holds the user's uploads, you write under work/ or artifacts/."
+	return "List a scratchpad directory's immediate contents. Returns up to 200 entries " +
+		"with name, dir (true for directories), and bytes (file size, omitted when zero). " +
+		"If truncated is true, more entries exist; pagination is not supported."
 }
 
 func (FsList) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "Relative directory path; default is the scratchpad root."},
+			"path": map[string]any{"type": "string", "description": "Optional. Directory relative to the scratchpad root, e.g. \"uploads\" or \"work\". Omit or use \".\" to list the root."},
 		},
 	}
 }
@@ -127,16 +126,16 @@ type FsRead struct{}
 func (FsRead) Name() string { return "fs_read" }
 
 func (FsRead) Description() string {
-	return "Read a text file from the user's scratchpad (max 256 KiB; longer files come back " +
-		"truncated). Attachments the user adds appear under uploads/ with the path given in " +
-		"the message manifest."
+	return "Read a UTF-8 text file from the scratchpad. Returns content and truncated. " +
+		"Reads only the first 256 KiB; truncated is true if more data exists. " +
+		"Reading later portions is not supported."
 }
 
 func (FsRead) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "Relative file path, e.g. uploads/01HX...csv"},
+			"path": map[string]any{"type": "string", "description": "Required. File path relative to the scratchpad root, e.g. \"work/report.txt\". For attachments, use the path supplied in the user's message."},
 		},
 		"required": []string{"path"},
 	}
@@ -174,6 +173,15 @@ func (FsRead) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	truncated := len(buf) > fsReadLimit
 	if truncated {
 		buf = buf[:fsReadLimit]
+		// Drop only an incomplete final rune caused by the byte cap.
+		// Invalid bytes elsewhere still fail the UTF-8 validation below.
+		start := len(buf) - 1
+		for start > 0 && !utf8.RuneStart(buf[start]) {
+			start--
+		}
+		if !utf8.FullRune(buf[start:]) {
+			buf = buf[:start]
+		}
 	}
 	if !utf8.Valid(buf) {
 		return Result{}, errors.New("file is not valid UTF-8 text (binary files are not supported)")
@@ -195,18 +203,16 @@ type FsWrite struct{ Files *managed.Service }
 func (FsWrite) Name() string { return "fs_write" }
 
 func (FsWrite) Description() string {
-	return "Write a UTF-8 text file inside the scratchpad, creating parent directories. " +
-		"Only paths under work/ (working files) or artifacts/ (finished, downloadable " +
-		"files) are writable; the scratchpad root, uploads/ and every other location " +
-		"are refused."
+	return "Create or replace a UTF-8 text file in the scratchpad. Creates missing parent directories. " +
+		"Replaces the entire file; does not append. Returns path and bytes_written."
 }
 
 func (FsWrite) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":    map[string]any{"type": "string", "description": "Relative file path under work/ or artifacts/, e.g. work/report.md"},
-			"content": map[string]any{"type": "string", "description": "Full file content (UTF-8 text)."},
+			"path":    map[string]any{"type": "string", "description": "Required. File path under work/ or artifacts/, e.g. \"work/report.md\"."},
+			"content": map[string]any{"type": "string", "description": "Required. Complete text to write. An empty string creates an empty file or clears an existing file."},
 		},
 		"required": []string{"path", "content"},
 	}
@@ -275,17 +281,16 @@ type FsDelete struct{}
 func (FsDelete) Name() string { return "fs_delete" }
 
 func (FsDelete) Description() string {
-	return "Delete one file under work/, artifacts/ or uploads/ (an empty " +
-		"directory too, under work/ and artifacts/ only). Deleting one of the " +
-		"user's own uploads asks them for confirmation first, so keep the " +
-		"reason obvious and state in your answer what you deleted."
+	return "Permanently delete one scratchpad file, or an empty directory under work/ or artifacts/. " +
+		"Cannot delete non-empty directories or the top-level scratchpad directories. " +
+		"State why deletion is needed and report what you deleted. Returns deleted with the removed path."
 }
 
 func (FsDelete) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "File to delete under work/, artifacts/ or uploads/."},
+			"path": map[string]any{"type": "string", "description": "Required. Relative path to a file under uploads/, work/ or artifacts/, or an empty directory inside work/ or artifacts/."},
 		},
 		"required": []string{"path"},
 	}
@@ -356,21 +361,18 @@ func (FilesShare) Name() string      { return "files_share" }
 func (FilesShare) HasRichCard() bool { return true }
 
 func (FilesShare) Description() string {
-	return "Present an existing scratchpad file to the user as a download card. Call this " +
-		"after writing a report or generated file the user asked for. The file is copied " +
-		"into artifacts/ (each share is a fresh snapshot — re-sharing after edits creates " +
-		"'name (1).ext' and leaves earlier cards intact); sharing a file already under " +
-		"artifacts/ delivers it as-is. Args: path (required), note (optional one-liner " +
-		"shown on the card). Files under uploads/ cannot be shared — they are the user's " +
-		"own data and already downloadable from the Files page."
+	return "Post an existing file as a download card in the chat. Files from work/ are copied into artifacts/ " +
+		"with a unique name; files already in artifacts/ are shared without copying or renewing expiry. " +
+		"Do not modify shared artifacts if earlier cards should keep their original content. " +
+		"Returns path, name, bytes, url and note."
 }
 
 func (FilesShare) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string", "description": "Relative path of the file to share."},
-			"note": map[string]any{"type": "string", "description": "Optional note for the user."},
+			"path": map[string]any{"type": "string", "description": "Required. Relative path to an existing file under work/ or artifacts/, e.g. \"work/report.pdf\". Files under uploads/ cannot be shared."},
+			"note": map[string]any{"type": "string", "description": "Optional. Short message shown on the download card."},
 		},
 		"required": []string{"path"},
 	}

@@ -26,20 +26,18 @@ type DisplayImage struct {
 func (DisplayImage) Name() string { return DisplayImageName }
 
 func (DisplayImage) Description() string {
-	return "Display a local image inline in the chat for the user. Use this when the " +
-		"user should see a generated or downloaded picture without a download card. The " +
-		"image is snapshotted into artifacts/ so the chat keeps the displayed version until " +
-		"artifact expiry. Args: path (PNG/JPEG/WebP under uploads/, work/ or artifacts/), caption " +
-		"(optional short text shown below it). This shows the image to the user; use " +
-		"view_image instead when you need to inspect it yourself."
+	return "Show an existing image inline in the chat for the user. Images from uploads/ or work/ " +
+		"are copied into artifacts/; images already there are displayed without copying or renewing expiry. " +
+		"Do not modify displayed artifacts if earlier images should remain unchanged. " +
+		"Returns displayed (artifact path) and caption."
 }
 
 func (DisplayImage) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":    map[string]any{"type": "string", "description": "Relative path of the PNG, JPEG or WebP image."},
-			"caption": map[string]any{"type": "string", "description": "Optional short caption shown below the image."},
+			"path":    map[string]any{"type": "string", "description": "Required. Relative path to a PNG, JPEG or WebP file under uploads/, work/ or artifacts/, e.g. \"work/chart.png\"."},
+			"caption": map[string]any{"type": "string", "description": "Optional. Short text shown below the image; long captions are truncated."},
 		},
 		"required": []string{"path"},
 	}

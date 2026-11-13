@@ -144,25 +144,13 @@ func (c CodeRun) watchStorage(ctx context.Context, cancel context.CancelFunc, ro
 func (CodeRun) Name() string { return "code_run" }
 
 func (c CodeRun) Description() string {
-	// The network sentence must match what the jail really does: the Runner
-	// keeps or drops the net namespace by the same allow_network flag (§9.9),
-	// and a stale "NO network" here would stop the model from ever trying
-	// something network-dependent on a server that allows it.
-	netDesc := "The script has NO network and no secrets."
+	netDesc := "Network access is disabled."
 	if c.AllowNetwork {
-		netDesc = "The script has no secrets; this server has network access ENABLED, so the script may reach the network."
+		netDesc = "Network access is enabled."
 	}
-	return "Run a script in the user's scratchpad with an allowlisted runtime " +
-		"(see the runtime enum). Inside the run the scratchpad is mounted at /scratchpad " +
-		"(also the working directory) with the same layout as the fs_* tools: uploads/ " +
-		"is readable but read-only, work/ and artifacts/ are writable. " +
-		netDesc + " Existing files (e.g. an upload) are already visible " +
-		"at their relative path, such as uploads/sales.csv; the optional files argument " +
-		"additionally copies them into work/ to open as work/<name>. Write generated " +
-		"output to work/; a finished file may go straight to artifacts/, where the user " +
-		"sees it on the Files page — share it with files_share to also post a download " +
-		"card in the chat. Returns exit_code, " +
-		"stdout and stderr (both truncated)."
+	return "Execute a script in a sandbox. " +
+		"The working directory is /scratchpad; existing files are readable at their relative paths. " +
+		"Write only under work/ or artifacts/. " + netDesc + " Returns exit_code, stdout and stderr."
 }
 
 func (c CodeRun) Parameters() map[string]any {
@@ -176,18 +164,18 @@ func (c CodeRun) Parameters() map[string]any {
 			"runtime": map[string]any{
 				"type":        "string",
 				"enum":        ids,
-				"description": "Allowlisted interpreter id from the server config.",
+				"description": "Required. Interpreter to run the script; choose a value from the enum.",
 			},
 			"script": map[string]any{
 				"type":        "string",
-				"description": "Program text fed to the interpreter on stdin. No shell wrapper.",
+				"description": "Required. Source code for the selected runtime, passed through stdin.",
 			},
 			"files": map[string]any{
-				"type":  "array",
-				"items": map[string]any{"type": "string"},
-				"description": "Optional scratchpad-relative paths (e.g. \"uploads/sales.csv\") " +
-					"also copied into work/ before the run, so the script can open them as " +
-					"work/<base name>. They are already readable in place under /scratchpad.",
+				"type":     "array",
+				"items":    map[string]any{"type": "string"},
+				"maxItems": maxStagedFiles,
+				"description": "Optional. Copy these scratchpad paths into work/ before execution, preserving base names. " +
+					"Example: uploads/data.csv becomes work/data.csv. Omit to read inputs directly.",
 			},
 		},
 		"required": []string{"runtime", "script"},
@@ -211,10 +199,14 @@ func (c CodeRun) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		return Result{}, err
 	}
 
+	if args.Runtime == "" {
+		return Result{}, fmt.Errorf("code_run: missing required argument \"runtime\". Choose %s and supply \"script\".",
+			strings.Join(runtimeIDs(c.Runtimes), " or "))
+	}
 	binary, ok := c.lookupRuntime(args.Runtime)
 	if !ok {
-		return Result{}, fmt.Errorf("code_run: runtime %q is not allowlisted (allowed: %s)",
-			args.Runtime, strings.Join(runtimeIDs(c.Runtimes), ", "))
+		return Result{}, fmt.Errorf("code_run: unsupported runtime %q. Choose %s.",
+			args.Runtime, strings.Join(runtimeIDs(c.Runtimes), " or "))
 	}
 	if strings.TrimSpace(args.Script) == "" {
 		return Result{}, errors.New("code_run: script is empty")

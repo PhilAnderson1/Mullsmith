@@ -3,11 +3,11 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"mullsmith/internal/agent"
 	"mullsmith/internal/store"
 )
 
@@ -38,7 +38,7 @@ func titleFake(reply []string, titleFn func() (int, string), hits *atomic.Int64)
 		for _, m := range msgs {
 			mm, _ := m.(map[string]any)
 			s, _ := mm["content"].(string)
-			if mm["role"] == "system" && strings.Contains(s, "titles for chat conversations") {
+			if mm["role"] == "system" && s == agent.TitleSystemPrompt {
 				okSys = true
 			}
 			if mm["role"] == "user" && s != "" {

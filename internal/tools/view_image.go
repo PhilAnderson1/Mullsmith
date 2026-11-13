@@ -36,13 +36,9 @@ type ViewImage struct {
 func (ViewImage) Name() string { return ViewImageName }
 
 func (ViewImage) Description() string {
-	return "Look at an image already on the server. Tool answers are text, so this " +
-		"call attaches the picture itself: it joins the conversation as a new message " +
-		"and you see it from the next turn onwards (and on every later turn — the picture " +
-		"stays). Use it whenever the user asks about an image that is not already visible " +
-		"to you inline: uploads/ files the user sent earlier, or pictures in work/ and " +
-		"artifacts/ that you produced. Args: path (PNG/JPEG/WebP within the vision size " +
-		"cap)."
+	return "Inspect an existing image in the scratchpad. Adds the image to your context so you can answer questions about it. " +
+		"Supports PNG, JPEG and WebP, subject to configured size and image-count limits. " +
+		"Later turns reload the file while it remains available."
 }
 
 func (ViewImage) Parameters() map[string]any {
@@ -50,7 +46,7 @@ func (ViewImage) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"path": map[string]any{"type": "string",
-				"description": `Relative path of the picture, e.g. "uploads/photo.png".`},
+				"description": `Required. File path relative to the scratchpad root, e.g. "uploads/photo.png" or "work/chart.png". For attachments, use the path supplied in the user's message.`},
 		},
 		"required": []string{"path"},
 	}
@@ -114,7 +110,7 @@ func (v ViewImage) Execute(ctx context.Context, inv Invocation) (Result, error) 
 
 	body, _ := json.Marshal(map[string]any{
 		"attached": rel,
-		"note":     "the picture joins the conversation as the next message; you will see it from the next turn onwards",
+		"note":     "Image included in the following message.",
 	})
 	return Result{
 		Content:    string(body),

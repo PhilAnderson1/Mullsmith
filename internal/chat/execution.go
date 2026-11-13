@@ -384,7 +384,7 @@ func (s *Service) attachImageView(userID, convID, rel, genID string) (llm.ChatMe
 		return llm.ChatMessage{}, false, nil
 	}
 	note := ViewTurnMarker + jsonQuote(att.Name()) +
-		" so you can see it; it stays in this conversation for later turns]"
+		" for inspection]"
 	ctx, cancel := detachedCtx()
 	defer cancel()
 	m := &store.Message{

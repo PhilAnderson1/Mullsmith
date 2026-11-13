@@ -304,6 +304,50 @@ func TestFsReadTruncationAndBinary(t *testing.T) {
 	}
 }
 
+func TestFsReadUTF8Boundary(t *testing.T) {
+	for _, char := range []string{"é", "€", "😀"} {
+		for kept := 1; kept <= len(char); kept++ {
+			t.Run(fmt.Sprintf("%s/%d", char, kept), func(t *testing.T) {
+				root := toolRoot(t)
+				prefix := strings.Repeat("a", fsReadLimit-kept)
+				writeDirect(t, root, "work/text.txt", prefix+char+"tail")
+				res, err := run(t, FsRead{}, root, `{"path":"work/text.txt"}`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var out struct {
+					Content   string `json:"content"`
+					Truncated bool   `json:"truncated"`
+				}
+				if err := json.Unmarshal([]byte(res.Content), &out); err != nil {
+					t.Fatal(err)
+				}
+				want := prefix
+				if kept == len(char) {
+					want += char
+				}
+				if out.Content != want || !out.Truncated {
+					t.Fatalf("incorrect boundary content (bytes=%d, truncated=%v)", len(out.Content), out.Truncated)
+				}
+			})
+		}
+	}
+	for name, content := range map[string]string{
+		"invalid before split":          "\xff" + strings.Repeat("a", fsReadLimit-2) + "€tail",
+		"invalid at boundary":           strings.Repeat("a", fsReadLimit-1) + "\xfftail",
+		"incomplete without truncation": "text\xe2\x82",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := toolRoot(t)
+			writeDirect(t, root, "work/invalid.txt", content)
+			_, err := run(t, FsRead{}, root, `{"path":"work/invalid.txt"}`)
+			if err == nil || !strings.Contains(err.Error(), "UTF-8") {
+				t.Fatalf("expected UTF-8 rejection, got %v", err)
+			}
+		})
+	}
+}
+
 func TestFsDelete(t *testing.T) {
 	root := toolRoot(t)
 	writeDirect(t, root, "work/gone.txt", "bye")

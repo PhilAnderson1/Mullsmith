@@ -46,9 +46,6 @@ func (s *Service) BuildRequest(conv *store.Conversation, userID string, hist []s
 	sysPrompt := conv.SystemPrompt
 	if len(toolSpecs) > 0 {
 		sysPrompt += agent.ToolGuidance
-		if _, hasCode := s.Tools.Get("code_run"); hasCode {
-			sysPrompt += agent.CodeRunGuidance
-		}
 	}
 	return agent.BuildContext(sysPrompt, s.HistoryToLLM(hist, len(toolSpecs) > 0, visionOn, userID, s.Model(conv.Model))), toolSpecs
 }
@@ -262,6 +259,9 @@ func attachmentManifest(root, userID string, atts []store.Attachment,
 	head := "\n\n[Attached files — stored in your scratchpad; open them with fs_read"
 	if o.visionOn {
 		head += "; to see an image, call view_image with its path"
+	}
+	if o.embed {
+		head = "\n\n[Attached image"
 	}
 	b.WriteString(head + ":]")
 	for _, a := range atts {

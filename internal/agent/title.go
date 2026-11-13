@@ -9,15 +9,9 @@ import (
 	"mullsmith/internal/llm"
 )
 
-// TitleSystemPrompt asks the model for a conversation name. The phrase
-// "titles for chat conversations" doubles as the marker tests use to
-// tell title requests apart from real chat requests. The user's message
-// is attached as the following user turn. The "5 words" rule is a
-// request, not a guarantee — SanitizeTitle enforces the same cap in code.
-const TitleSystemPrompt = "You produce 5 word titles for chat conversations. " +
-	"Generate a title with at maximum 5 words that describes the task involved " +
-	"in answering the following prompt. For complex tasks, just provide a " +
-	"simple abstract title for the task."
+// TitleSystemPrompt asks for a conversation name based on the following
+// user message. SanitizeTitle also enforces the word cap in code.
+const TitleSystemPrompt = "Write a chat title of at most five words describing the user's topic or task. Return only the title."
 
 // titleMaxRunes caps stored titles; generous but keeps sidebar rows sane.
 const titleMaxRunes = 60
