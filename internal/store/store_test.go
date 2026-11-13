@@ -61,7 +61,7 @@ func TestSchemaRejectsNewerDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.Exec(`PRAGMA user_version = 4`); err != nil {
+	if _, err := raw.Exec(`PRAGMA user_version = 999`); err != nil {
 		raw.Close()
 		t.Fatal(err)
 	}
@@ -361,5 +361,50 @@ func TestSchemaUserStatusDefault(t *testing.T) {
 	user, err := db.UserByID(context.Background(), "default-status")
 	if err != nil || user == nil || user.Status != "enabled" {
 		t.Fatalf("default user=%+v err=%v", user, err)
+	}
+}
+
+func TestMCPLoadingMigratesAndSurvivesReopen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v3.db")
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range []string{migrationV1SQL, migrationV2SQL, migrationV3SQL, "PRAGMA user_version = 3"} {
+		if _, err := raw.Exec(migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw.Close()
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	user := mkUser("mcp@example.com")
+	if err := db.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	conv := &Conversation{UserID: user.ID}
+	if err := db.CreateConversation(ctx, conv); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := db.LoadMCPServer(ctx, user.ID, conv.ID, "tasks"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	db, err = Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	saved, err := db.ConversationForUser(ctx, user.ID, conv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.LoadedMCP) != 1 || saved.LoadedMCP[0] != "tasks" {
+		t.Fatalf("saved activation: %v", saved.LoadedMCP)
 	}
 }

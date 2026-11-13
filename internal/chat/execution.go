@@ -64,7 +64,7 @@ func (s *Service) execTimeout(tool string) time.Duration {
 // image path the result asks the loop to attach (view_image; "" otherwise).
 // call.ID is guaranteed non-empty by runModelRound.
 func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
-	userID, convID, assistantMsgID string, call llm.ChatToolCall, visionOn bool,
+	userID, convID, assistantMsgID string, call llm.ChatToolCall, visionOn bool, loaders ...*mcpLoader,
 ) (string, string, error) {
 	callID := call.ID
 	name := call.Function.Name
@@ -86,6 +86,10 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 	}
 
 	tool, known := s.Tools.GetFor(userID, name)
+	loading := len(loaders) > 0 && loaders[0] != nil
+	if loading {
+		tool, known = loaders[0], true
+	}
 	if !known {
 		content, err := s.rejectToolCall(ctx, conn, userID, convID, assistantMsgID, g.ID, call, "unknown tool: "+name)
 		return content, "", err
@@ -102,7 +106,7 @@ func (s *Service) runToolCall(ctx context.Context, g *Generation, conn sink,
 	status := "running"
 	// Remembered code execution and MCP function approvals skip later
 	// prompts for code execution or that MCP server in this conversation.
-	needApproval := s.Tools.PolicyFor(userID, name) == tools.ApprovalConfirm &&
+	needApproval := !loading && s.Tools.PolicyFor(userID, name) == tools.ApprovalConfirm &&
 		(key == "" || !s.Approvals.Remembered(convID, key))
 	if needApproval {
 		status = "pending_approval"

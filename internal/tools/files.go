@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"unicode/utf8"
 
@@ -50,7 +51,7 @@ func (FsList) Name() string { return "fs_list" }
 
 func (FsList) Description() string {
 	return "List a scratchpad directory's immediate contents. Returns up to 200 entries " +
-		"with name, dir (true for directories), and bytes (file size, omitted when zero). " +
+		"with name, dir (true for directories), and bytes. " +
 		"If truncated is true, more entries exist; pagination is not supported."
 }
 
@@ -91,7 +92,7 @@ func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
 	type entry struct {
 		Name  string `json:"name"`
 		Dir   bool   `json:"dir"`
-		Bytes int64  `json:"bytes,omitempty"`
+		Bytes *int64 `json:"bytes,omitempty"`
 	}
 	outs := make([]entry, 0, len(entries))
 	for _, e := range entries {
@@ -100,8 +101,12 @@ func (FsList) Execute(ctx context.Context, inv Invocation) (Result, error) {
 		}
 		en := entry{Name: e.Name(), Dir: e.IsDir()}
 		if !en.Dir {
-			if fi, err := e.Info(); err == nil {
-				en.Bytes = fi.Size()
+			// DirEntry.Info resolves against the os.File name, which is
+			// only a path component for our descriptor-based directory opens.
+			// Resolve metadata through the sandbox instead; never follow links.
+			if fi, err := scratch.Stat(root, inv.UserID, path.Join(rel, e.Name())); err == nil && fi.Mode().IsRegular() {
+				size := fi.Size()
+				en.Bytes = &size
 			}
 		}
 		outs = append(outs, en)

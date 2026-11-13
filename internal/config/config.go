@@ -424,18 +424,20 @@ type MCPOAuth struct {
 }
 
 type MCPServer struct {
-	ID          string            `yaml:"id"`
-	Name        string            `yaml:"name"`
-	Transport   string            `yaml:"transport"`
-	URL         string            `yaml:"url"`
-	BearerToken string            `yaml:"bearer_token"`
-	Headers     map[string]string `yaml:"headers"`
-	OAuth       *MCPOAuth         `yaml:"oauth"`
-	Command     string            `yaml:"command"`
-	Args        []string          `yaml:"args"`
-	Environment map[string]string `yaml:"environment"`
-	Approval    string            `yaml:"approval"`
-	StateDir    string            `yaml:"-"`
+	DeferredLoad    bool              `yaml:"deferred_load"`
+	ProvidesSummary string            `yaml:"provides_summary"`
+	ID              string            `yaml:"id"`
+	Name            string            `yaml:"name"`
+	Transport       string            `yaml:"transport"`
+	URL             string            `yaml:"url"`
+	BearerToken     string            `yaml:"bearer_token"`
+	Headers         map[string]string `yaml:"headers"`
+	OAuth           *MCPOAuth         `yaml:"oauth"`
+	Command         string            `yaml:"command"`
+	Args            []string          `yaml:"args"`
+	Environment     map[string]string `yaml:"environment"`
+	Approval        string            `yaml:"approval"`
+	StateDir        string            `yaml:"-"`
 }
 
 // validApprovalTool keeps approval policy fail-fast: a misspelled tool name
@@ -1249,6 +1251,15 @@ func (c *Config) Validate() error {
 	mcpIDs := map[string]bool{}
 	for i, server := range c.MCP.Servers {
 		prefix := fmt.Sprintf("mcp.servers[%d]", i)
+		if server.DeferredLoad && strings.TrimSpace(server.ProvidesSummary) == "" {
+			f.bad("%s.provides_summary: required when deferred_load is true", prefix)
+		}
+		if len([]rune(server.ProvidesSummary)) > 1000 {
+			f.bad("%s.provides_summary: must be at most 1000 characters", prefix)
+		}
+		if server.DeferredLoad && validApprovalTool(server.ID+"_load") {
+			f.bad("%s.id: generated loader name collides with a built-in tool", prefix)
+		}
 		if server.ID == "" || len(server.ID) > 24 {
 			f.bad("%s.id: required and must be at most 24 characters", prefix)
 		} else {

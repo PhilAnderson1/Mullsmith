@@ -141,7 +141,7 @@ func registerMCP(cfg *config.Config, logger *slog.Logger, reg *Registry, policie
 		valid := true
 		for _, remote := range remoteTools {
 			name := mcpToolName(server.ID, remote.Name)
-			if name == "" || len(name) > 64 || seen[name] {
+			if name == "" || len(name) > 64 || seen[name] || reservedMCPLoader(cfg, name) {
 				logger.Warn("MCP server advertised unusable tool names; server skipped", "server", server.ID)
 				valid = false
 				break
@@ -374,4 +374,13 @@ func mcpToolName(serverID, remote string) string {
 		return ""
 	}
 	return "mcp_" + serverID + "_" + name
+}
+
+func reservedMCPLoader(cfg *config.Config, name string) bool {
+	for _, server := range cfg.MCP.Servers {
+		if server.DeferredLoad && name == server.ID+"_load" {
+			return true
+		}
+	}
+	return false
 }

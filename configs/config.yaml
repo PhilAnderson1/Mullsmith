@@ -241,6 +241,12 @@ mcp:
   # To keep this secret in a separate environment file, use the following environment variable:
   # token_encryption_key: "${MULLSMITH_MCP_TOKEN_KEY:-}"
 
+  # Per-server deferred loading (optional; false by default):
+  # deferred_load: true
+  # provides_summary: "Describe the capabilities the model can load."
+  # Initially offers <id>_load instead of the server's full tool schemas.
+  # Loading persists for the conversation; tool approvals are unchanged.
+  # provides_summary is required when deferred_load is true (max 1000 characters).
   servers: []
 
   # Unauthenticated Streamable HTTP examples (remove servers: [] before use):

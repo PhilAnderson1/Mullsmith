@@ -266,7 +266,7 @@ func (m *MCPOAuthManager) install(userID string, server config.MCPServer, remote
 	for _, remote := range remoteTools {
 		name := mcpToolName(server.ID, remote.Name)
 		params, err := mcpParameters(remote.InputSchema)
-		if name == "" || len(name) > 64 || err != nil || adapted[name] != nil {
+		if name == "" || len(name) > 64 || err != nil || adapted[name] != nil || reservedMCPLoader(m.cfg, name) {
 			return errors.New("MCP server advertised invalid tools")
 		}
 		desc := strings.TrimSpace(remote.Description)

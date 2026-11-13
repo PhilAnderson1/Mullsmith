@@ -261,3 +261,18 @@ func TestMCPToolNamesAndSchemasAreBounded(t *testing.T) {
 		t.Fatal("deep schema accepted")
 	}
 }
+
+func TestMCPLoaderNamesReserved(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.MCP.Servers = []config.MCPServer{{ID: "mcp_docs", DeferredLoad: true, ProvidesSummary: "Read docs."}}
+	if !reservedMCPLoader(cfg, mcpToolName("docs", "load")) {
+		t.Fatal("loader collision not reserved")
+	}
+	if reservedMCPLoader(cfg, mcpToolName("docs", "read")) {
+		t.Fatal("unrelated tool reserved")
+	}
+	cfg.MCP.Servers[0].DeferredLoad = false
+	if reservedMCPLoader(cfg, mcpToolName("docs", "load")) {
+		t.Fatal("nondeferred name reserved")
+	}
+}

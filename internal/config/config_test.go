@@ -1628,3 +1628,32 @@ func TestScratchpadEntryLimitConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPDeferredLoadingConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, summary       string
+		deferred, wantError bool
+	}{
+		{"default", "", false, false},
+		{"missing summary", "", true, true},
+		{"blank summary", "  ", true, true},
+		{"summary", "Manage tasks.", true, false},
+		{"long summary", strings.Repeat("x", 1001), true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeCfg(t, minimalYAML+fmt.Sprintf(`
+mcp:
+  servers:
+    - id: tasks
+      name: Tasks
+      transport: streamable_http
+      url: https://example.com/mcp
+      deferred_load: %t
+      provides_summary: %q
+`, tc.deferred, tc.summary)))
+			if (err != nil) != tc.wantError {
+				t.Fatalf("Prepare: %v", err)
+			}
+		})
+	}
+}

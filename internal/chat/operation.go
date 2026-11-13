@@ -117,6 +117,7 @@ func (op *Operation) Run(emit Emit) {
 	}
 	round := 0
 	for {
+		toolSpecs = s.conversationTools(conv, userID)
 		if round > 0 && s.continuationFull(conv, msgs, toolSpecs) {
 			// Every tool result so far rides msgs; a continuation the
 			// admission gate never saw can now cross the line itself.
@@ -197,8 +198,11 @@ func (op *Operation) Run(emit Emit) {
 				requestImageCount(msgs) >= s.visionMaxImages() {
 				result, terr = s.rejectToolCall(genCtx, conn, userID, conv.ID, am.ID, g.ID,
 					call, "image limit reached for this request; start a new chat to view another image")
+			} else if !advertisedTool(toolSpecs, call.Function.Name) {
+				result, terr = s.rejectToolCall(genCtx, conn, userID, conv.ID, am.ID, g.ID, call, s.unavailableToolMessage(userID, call.Function.Name, visionOn))
 			} else {
-				result, attach, terr = s.runToolCall(genCtx, g, conn, userID, conv.ID, am.ID, call, visionOn)
+				result, attach, terr = s.runToolCall(genCtx, g, conn, userID, conv.ID, am.ID, call, visionOn,
+					s.loaderFor(conv, userID, call.Function.Name, msgs))
 			}
 			perr = terr
 			msgs = append(msgs, llm.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})

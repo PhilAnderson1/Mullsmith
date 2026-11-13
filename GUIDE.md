@@ -490,6 +490,32 @@ Connect MCP servers to give your assistant access to additional tools and
 services. You can connect a remote service or run an installed tool server
 locally. No MCP servers are enabled by default.
 
+#### Load MCP tools on demand
+
+For servers with many tools, add these fields to their entry under
+`mcp.servers`:
+
+```yaml
+deferred_load: true
+provides_summary: "Manage tasks, projects, sections and comments."
+```
+
+Mullsmith initially advertises a small `<id>_load` tool using this summary.
+When the model calls it, the server's full tools become available on the next
+model round and remain loaded for that conversation, including after a restart.
+Loading requires no approval; actual tool calls retain their configured approval
+policy. Current user access is still required, including OAuth connections.
+
+Discovery still occurs when the server connects. This option reduces model
+context, not connection traffic. Loading is refused if the expanded definitions
+exceed the known remaining context budget. When the model's context size is
+unknown, its endpoint remains responsible for enforcing that limit.
+
+`deferred_load` defaults to `false`. A non-empty `provides_summary` of at most
+1000 characters is required when enabled. Describe capabilities clearly so the
+model knows when to load the server. Generated loader names are reserved:
+colliding remote tools cause discovery of that server to be rejected.
+
 #### Connect a remote server
 
 Add the service to the top-level `mcp` section:

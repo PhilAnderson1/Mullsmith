@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ var ErrConversationNotFound = errors.New("conversation not found")
 
 // Conversation is a conversations-table row.
 type Conversation struct {
+	LoadedMCP    []string
 	ID           string
 	UserID       string
 	Title        string
@@ -105,18 +107,22 @@ func (d *DB) CreateConversation(ctx context.Context, c *Conversation) error {
 func (d *DB) ConversationForUser(ctx context.Context, userID, convID string) (*Conversation, error) {
 	var (
 		c                Conversation
+		loaded           string
 		created, updated int64
 	)
 	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at
+		`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at, loaded_mcp
 		 FROM conversations WHERE id = ? AND user_id = ?`,
 		convID, userID).
 		Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt,
-			&c.Thinking, &c.ThinkingCtx, &created, &updated)
+			&c.Thinking, &c.ThinkingCtx, &created, &updated, &loaded)
 	if errors.Is(err, ErrNoRows) {
 		return nil, ErrConversationNotFound
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(loaded), &c.LoadedMCP); err != nil {
 		return nil, err
 	}
 	c.CreatedAt = time.Unix(created, 0)
@@ -320,4 +326,24 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 		next = encodeCursor(last.UpdatedAt.Unix(), last.ID)
 	}
 	return items, next, nil
+}
+
+// LoadMCPServer persists activation without granting access to the server.
+func (d *DB) LoadMCPServer(ctx context.Context, userID, convID, serverID string) error {
+	result, err := d.sqlDB.ExecContext(ctx, `UPDATE conversations
+ SET loaded_mcp = json_insert(loaded_mcp, '$[#]', ?)
+ WHERE id = ? AND user_id = ?
+ AND NOT EXISTS (SELECT 1 FROM json_each(loaded_mcp) WHERE value = ?)`,
+		serverID, convID, userID, serverID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		_, err = d.ConversationForUser(ctx, userID, convID)
+	}
+	return err
 }

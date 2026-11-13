@@ -104,6 +104,63 @@ func TestFsWriteReadListRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFsListFileSizes(t *testing.T) {
+	root := toolRoot(t)
+	// A matching path in the process working directory must not supply
+	// metadata for a different user's sandbox file.
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.MkdirAll(filepath.Join(cwd, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "nested", "text.txt"), []byte("wrong metadata"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeDirect(t, root, "work/nested/text.txt", "hello")
+	writeDirect(t, root, "work/nested/empty.txt", "")
+	if err := os.Mkdir(filepath.Join(root, toolUser, "work/nested/subdir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(cwd, "nested/text.txt"), filepath.Join(root, toolUser, "work/nested/link")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, FsList{}, root, `{"path":"work/nested"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Entries []struct {
+			Name  string `json:"name"`
+			Dir   bool   `json:"dir"`
+			Bytes *int64 `json:"bytes"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(res.Content), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Entries) != 4 {
+		t.Fatalf("got %d entries, want 4", len(out.Entries))
+	}
+	for _, e := range out.Entries {
+		switch e.Name {
+		case "text.txt", "empty.txt":
+			want := int64(0)
+			if e.Name == "text.txt" {
+				want = 5
+			}
+			if e.Dir || e.Bytes == nil || *e.Bytes != want {
+				t.Errorf("%s: bytes=%v dir=%v, want %d bytes", e.Name, e.Bytes, e.Dir, want)
+			}
+		case "subdir", "link":
+			if e.Bytes != nil || e.Dir != (e.Name == "subdir") {
+				t.Errorf("unexpected metadata for %s: %+v", e.Name, e)
+			}
+		default:
+			t.Errorf("unexpected entry %q", e.Name)
+		}
+	}
+}
+
 // Astra finding 5: a script can mint hundreds of thousands of zero-byte
 // files; fs_list must read a bounded listing and say so, never load the
 // flood into daemon memory.

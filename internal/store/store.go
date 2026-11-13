@@ -25,7 +25,10 @@ var migrationV2SQL string
 //go:embed schema/003_generation_timings.sql
 var migrationV3SQL string
 
-const currentSchemaVersion = 3
+//go:embed schema/004_mcp_loading.sql
+var migrationV4SQL string
+
+const currentSchemaVersion = 4
 
 // schemaMigrations is indexed by target version: element 0 migrates version
 // 0 to version 1. Keep old entries immutable and append each new migration.
@@ -33,6 +36,7 @@ var schemaMigrations = [...]string{
 	migrationV1SQL,
 	migrationV2SQL,
 	migrationV3SQL,
+	migrationV4SQL,
 }
 
 // DB wraps the sql database handle.
