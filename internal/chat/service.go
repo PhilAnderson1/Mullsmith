@@ -70,7 +70,7 @@ func (o *Operation) Close() {
 	o.once.Do(func() { o.stop(); o.cancel(); o.service.Generations.Finish(o.generation) })
 }
 func (o *Operation) AbortBeforeStart() {
-	_ = o.service.finishMessage(o.draft.ID, "", "aborted", "", 0, 0, 0)
+	_ = o.service.finishMessage(o.draft.ID, "", "aborted", "", 0, 0, 0, 0, 0)
 }
 
 var ApprovalTimeout = 10 * time.Minute
@@ -78,11 +78,13 @@ var ApprovalTimeout = 10 * time.Minute
 const ToolResultBudgetRunes = 8 * 1024
 
 type RoundOutcome struct {
-	MsgID      string `json:"message_id"`
-	Status     string `json:"status"`
-	Completion int64  `json:"completion_tokens,omitempty"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	Note       string `json:"note,omitempty"`
+	MsgID         string `json:"message_id"`
+	Status        string `json:"status"`
+	Completion    int64  `json:"completion_tokens,omitempty"`
+	DurationMS    int64  `json:"duration_ms,omitempty"`
+	FirstAnswerMS int64  `json:"first_answer_ms,omitempty"`
+	GenerationMS  int64  `json:"generation_ms,omitempty"`
+	Note          string `json:"note,omitempty"`
 }
 
 // Terminal notes (C7). The reason a transcript whose rows all saved cleanly

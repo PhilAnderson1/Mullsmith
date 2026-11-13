@@ -169,7 +169,7 @@ func TestBeginRegeneration(t *testing.T) {
 
 	// The generation completes into the placeholder — final history is the
 	// user turn plus the regenerated answer, exactly one reply deep.
-	if err := db.FinalizeMessage(ctx, ph.ID, "new answer", "", "complete", "", 1, 1, 1); err != nil {
+	if err := db.FinalizeMessage(ctx, ph.ID, "new answer", "", "complete", "", 1, 1, 1, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	hist, _ = db.ContextHistory(ctx, conv.ID, "")

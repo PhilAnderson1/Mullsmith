@@ -510,12 +510,12 @@ body.drawer-open #sidebar { transform: translateX(0); }
 }
 .msg-role { font-weight: 600; color: var(--fg); }
 .msg-meta time { font-size: 0.92em; font-variant-numeric: tabular-nums; }
-/* Footnote row under the answer, right-aligned: the round's tok/s and,
+/* Footnote row under the answer, right-aligned: the round's performance and,
    furthest right, the regenerate button — both belong to the last
    assistant reply only, so older messages show neither. Hidden until it
-   has something to show — a tok/s figure (app.js adds .on) or the
+   has something to show — performance figures (app.js adds .on) or the
    regenerate button. Both live on one line: they are footnotes on the
-   same answer, and tok/s keeps its place when the button comes and goes. */
+   same answer, and the figures keep their place when the button comes and goes. */
 .msg-foot {
   display: none;
   justify-content: flex-end;
@@ -526,8 +526,8 @@ body.drawer-open #sidebar { transform: translateX(0); }
   font-size: 0.78em;
 }
 .msg-foot.on, .msg.last-assistant .msg-foot { display: flex; }
-.msg-tps { display: none; font-variant-numeric: tabular-nums; }
-.msg.last-assistant .msg-tps { display: inline; }
+.msg-performance { display: none; font-variant-numeric: tabular-nums; }
+.msg.last-assistant .msg-performance { display: inline; }
 .msg-status { margin: 0.3rem 0 0; font-size: 0.82em; }
 .load-earlier { max-width: var(--thread-max); margin: 0 auto; }
 

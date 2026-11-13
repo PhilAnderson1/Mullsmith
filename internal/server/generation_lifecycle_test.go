@@ -141,7 +141,7 @@ func TestRequiredUpdatesReportRowGone(t *testing.T) {
 	if err := db.DeleteConversation(ctx, u.ID, conv.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.FinalizeMessage(ctx, m.ID, "late", "", "complete", "", 0, 0, 0); err != store.ErrRowGone {
+	if err := db.FinalizeMessage(ctx, m.ID, "late", "", "complete", "", 0, 0, 0, 0, 0); err != store.ErrRowGone {
 		t.Errorf("FinalizeMessage over a deleted row = %v, want ErrRowGone", err)
 	}
 	if err := db.UpdateToolCallStatus(ctx, tc.ID, "approved", ""); err != store.ErrRowGone {

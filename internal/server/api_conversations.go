@@ -66,6 +66,12 @@ func (s *Server) messageJSON(m *store.Message, userID string) map[string]any {
 	if m.DurationMS != nil && *m.DurationMS > 0 {
 		j["duration_ms"] = *m.DurationMS
 	}
+	if m.FirstAnswerMS != nil && *m.FirstAnswerMS > 0 {
+		j["first_answer_ms"] = *m.FirstAnswerMS
+	}
+	if m.GenerationMS != nil && *m.GenerationMS > 0 {
+		j["generation_ms"] = *m.GenerationMS
+	}
 	if m.GenerationID != "" {
 		// Which generation produced this round.
 		j["generation_id"] = m.GenerationID

@@ -61,7 +61,7 @@ func TestSchemaRejectsNewerDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.Exec(`PRAGMA user_version = 3`); err != nil {
+	if _, err := raw.Exec(`PRAGMA user_version = 4`); err != nil {
 		raw.Close()
 		t.Fatal(err)
 	}
@@ -103,6 +103,14 @@ func TestSchemaMigratesExistingMessagesForReasoning(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("reasoning_data columns = %d, want 1", count)
 	}
+	for _, column := range []string{"first_answer_ms", "generation_ms"} {
+		if err := db.sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = ?`, column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s columns = %d, want 1", column, count)
+		}
+	}
 }
 
 func TestAssistantReasoningRoundTripsThroughContextHistory(t *testing.T) {
@@ -121,7 +129,7 @@ func TestAssistantReasoningRoundTripsThroughContextHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	const trace = `{"version":1,"text":"kept"}`
-	if err := db.FinalizeMessage(ctx, m.ID, "answer", trace, "complete", "", 2, 1, 1); err != nil {
+	if err := db.FinalizeMessage(ctx, m.ID, "answer", trace, "complete", "", 2, 1, 1, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	hist, err := db.ContextHistory(ctx, c.ID)

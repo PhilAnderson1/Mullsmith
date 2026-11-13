@@ -3,6 +3,8 @@
 import { renderMarkdown } from "/assets/app/markdown.js";
 import { humanSize, fileApiUrl } from "/assets/app/file-presenter.js";
 import { callFromStored, buildCallCard, toolCardsHost, sharedFileFor, displayedImageFor, roundStatusNote, paintToolArgs, syncAssistantVisibility } from "/assets/app/thread.js";
+import { performanceText } from "/assets/app/performance.js";
+
 export function createThreadRenderer({
   onRegenerate, onEarlier, onApproval, updateCtxMeter, recordActivity, toast, getMeta = () => ({})
 }) {
@@ -43,7 +45,8 @@ export function createThreadRenderer({
     time.textContent = new Date(m.created_at).toLocaleString();
     // tok/s only rates text the user can read — tool-only turns stay silent.
     if (m.role === "assistant" && m.content && m.content.trim()) {
-      tpsNote(el, m.completion_tokens, m.duration_ms);
+      performanceNote(el, m.first_answer_ms, m.completion_tokens,
+        m.generation_ms || m.duration_ms);
     }
 
     const body = el.querySelector(".msg-body");
@@ -108,19 +111,14 @@ export function createThreadRenderer({
     return 0;
   }
 
-  function msgTps(completion, durationMS) {
-    if (!(completion > 0) || !(durationMS > 0)) return null;
-    const tps = (completion / durationMS) * 1000;
-    return tps >= 100 ? String(Math.round(tps)) : tps.toFixed(1);
-  }
-
-  function tpsNote(el, completion, durationMS) {
-    const tps = msgTps(completion, durationMS);
-    if (!tps) return;
+  function performanceNote(el, firstAnswerMS, completion, durationMS) {
+    const text = performanceText(firstAnswerMS, completion, durationMS);
+    if (!text) return;
     const foot = el.querySelector(".msg-foot");
-    const span = el.querySelector(".msg-tps");
+    const span = el.querySelector(".msg-performance");
     if (!foot || !span || span.textContent) return;
-    span.textContent = `${tps} tok/s`;
+    span.textContent = text;
+    span.title = firstAnswerMS > 0 ? "Time from sending the model request to the first visible answer text." : "";
     foot.classList.add("on"); // the row shows when it has a figure or a button
   }
 
@@ -344,7 +342,7 @@ export function createThreadRenderer({
     r.nodes.body.hidden = !r.raw.trim() && !r.nodes.body.querySelector(".spinner");
   }
 
-  function settleRound(r, status, note, completion, durationMS, errorMessage) {
+  function settleRound(r, status, note, completion, durationMS, firstAnswerMS, generationMS, errorMessage) {
     const nodes = r.nodes;
     if (nodes.think) {
       nodes.think.open = false;
@@ -364,7 +362,7 @@ export function createThreadRenderer({
     const text = roundStatusNote(status, note, status === "error" ? errorMessage : "");
     if (text) showStatusNote(nodes.el, text);
     // Rate the prose only: a turn whose body is empty (tool card alone) shows nothing.
-    if (r.raw.trim()) tpsNote(nodes.el, completion, durationMS);
+    if (r.raw.trim()) performanceNote(nodes.el, firstAnswerMS, completion, generationMS || durationMS);
     syncAssistantVisibility(nodes.el);
   }
 

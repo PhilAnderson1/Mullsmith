@@ -262,12 +262,13 @@ export function createGenerationController({
       const entry = outcomes.get(r.id);
       if (entry) {
         settleRound(r, entry.status, entry.note,
-          entry.completion_tokens, entry.duration_ms, err);
+          entry.completion_tokens, entry.duration_ms, entry.first_answer_ms,
+          entry.generation_ms, err);
       } else {
         // Transport loss or a failed save can leave an announced round
         // without a durable outcome. Keep its identity and mark it interrupted.
         settleRound(r, done.status === "complete" ? "lost" : (done.status || "lost"),
-          "", 0, 0, err);
+          "", 0, 0, 0, 0, err);
       }
     }
     if (done.usage_tokens > 0) updateCtxMeter(done.usage_tokens); // freshest fullness figure

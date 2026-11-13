@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"mullsmith/internal/id"
 	"mullsmith/internal/llm"
@@ -30,8 +31,14 @@ type Result struct {
 	Status           string // complete | aborted | error
 	Usage            int64  // upstream total_tokens, else an estimate
 	Completion       int64  // upstream completion_tokens, else an estimate
-	Err              error  // upstream transport/protocol failure; expected stops use Note
-	Note             string // durable explanation when upstream stops an incomplete reply
+	// FirstAnswerMS is request start to the first visible answer text. It
+	// includes prompt processing and any reasoning before that answer.
+	FirstAnswerMS int64
+	// GenerationMS is first generated output (reasoning, answer or tool call)
+	// to stream completion. It excludes time-to-first-token latency.
+	GenerationMS int64
+	Err          error  // upstream transport/protocol failure; expected stops use Note
+	Note         string // durable explanation when upstream stops an incomplete reply
 	// ToolCalls holds the complete calls the model proposed this round
 	// (empty when it just answered), ordered by stream index.
 	ToolCalls []llm.ChatToolCall
@@ -65,8 +72,18 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 	)
 	acc := map[int]*callAccumulator{}
 	var order []int
+	started := time.Now()
+	var firstGenerated time.Time
+	var firstAnswer time.Time
 
 	err := g.LLM.StreamTools(ctx, model, msgs, tools, thinking, func(d llm.Delta) error {
+		now := time.Now()
+		if firstGenerated.IsZero() && (d.Reasoning != "" || d.Content != "" || len(d.ToolCalls) > 0) {
+			firstGenerated = now
+		}
+		if firstAnswer.IsZero() && d.Content != "" {
+			firstAnswer = now
+		}
 		if d.Finish != "" {
 			finish = d.Finish
 		}
@@ -109,6 +126,13 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		ReasoningDetails: reasoningDetails,
 		Usage:            usage,
 		Completion:       completion,
+	}
+	finished := time.Now()
+	if !firstAnswer.IsZero() {
+		res.FirstAnswerMS = elapsedMilliseconds(started, firstAnswer)
+	}
+	if !firstGenerated.IsZero() {
+		res.GenerationMS = elapsedMilliseconds(firstGenerated, finished)
 	}
 	sort.Ints(order) // fragments may arrive out of index order; calls follow it
 	for _, idx := range order {
@@ -163,6 +187,16 @@ func (g *Generator) Round(ctx context.Context, model string, msgs []llm.ChatMess
 		res.Completion = int64(completionEstimate)
 	}
 	return res
+}
+
+// elapsedMilliseconds retains very fast local generations as measurable
+// rather than dropping a real interval after millisecond truncation.
+func elapsedMilliseconds(start, end time.Time) int64 {
+	ms := end.Sub(start).Milliseconds()
+	if ms < 1 {
+		return 1
+	}
+	return ms
 }
 
 // callAccumulator stitches streamed ToolCallDelta fragments (shared index)

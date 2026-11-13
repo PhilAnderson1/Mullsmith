@@ -145,7 +145,7 @@ func TestUnknownToolRefusalIsDurableAndRegenerable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer op.Close()
-	if err := s.finishMessage(op.draft.ID, "trying a tool", "complete", "", 0, 0, 0); err != nil {
+	if err := s.finishMessage(op.draft.ID, "trying a tool", "complete", "", 0, 0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	call := llm.ChatToolCall{ID: "canonical-call", Function: llm.ChatToolCallFunc{Name: `unknown"tool`, Arguments: `{}`}}

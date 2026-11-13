@@ -121,6 +121,9 @@ func TestRoundCompletionTokens(t *testing.T) {
 	if res.Usage != 42 || res.Completion != 9 {
 		t.Errorf("usage=%d completion=%d, want 42/9", res.Usage, res.Completion)
 	}
+	if res.FirstAnswerMS <= 0 || res.GenerationMS <= 0 {
+		t.Errorf("first_answer_ms=%d generation_ms=%d, want both > 0", res.FirstAnswerMS, res.GenerationMS)
+	}
 }
 
 func TestRoundUsageEstimateUsesReportedCompletion(t *testing.T) {

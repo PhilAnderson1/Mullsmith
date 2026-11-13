@@ -26,7 +26,7 @@ func (op *Operation) Run(emit Emit) {
 	// client keeps. Later rounds are announced by `round` events, so the
 	// client renders the same row boundaries a reload will show.
 	if err := conn.Send(RoundStarted{Initial: true, GenerationID: g.ID, MessageID: am.ID, ConversationID: conv.ID, Round: 0}); err != nil {
-		_ = s.finishMessage(am.ID, "", "aborted", "", 0, 0, 0) // swept if it fails too
+		_ = s.finishMessage(am.ID, "", "aborted", "", 0, 0, 0, 0, 0) // swept if it fails too
 		return
 	}
 
@@ -83,11 +83,12 @@ func (op *Operation) Run(emit Emit) {
 	rounds := []RoundOutcome{}
 	// finRound finalises one round row and records what was persisted, so
 	// the terminal event describes the writes rather than intentions.
-	finRound := func(msgID, content, reasoningData, status, note string, usage, completion, durMS int64) error {
-		ferr := s.finishMessageWithReasoning(msgID, content, reasoningData, status, note, usage, completion, durMS)
+	finRound := func(msgID, content, reasoningData, status, note string, usage, completion, durMS, firstAnswerMS, generationMS int64) error {
+		ferr := s.finishMessageWithReasoning(msgID, content, reasoningData, status, note, usage, completion, durMS, firstAnswerMS, generationMS)
 		if ferr == nil {
 			rounds = append(rounds, RoundOutcome{
 				MsgID: msgID, Status: status, Note: note, Completion: completion, DurationMS: durMS,
+				FirstAnswerMS: firstAnswerMS, GenerationMS: generationMS,
 			})
 		}
 		return ferr
@@ -123,7 +124,7 @@ func (op *Operation) Run(emit Emit) {
 			// stays durable, this still-empty draft row is the only
 			// casualty.
 			midFull = true
-			if ferr := finRound(am.ID, "", "", "aborted", "", 0, 0, 0); ferr != nil {
+			if ferr := finRound(am.ID, "", "", "aborted", "", 0, 0, 0, 0, 0); ferr != nil {
 				storeErr = ferr
 			}
 			break
@@ -134,13 +135,13 @@ func (op *Operation) Run(emit Emit) {
 		roundMS := time.Since(roundStart).Milliseconds()
 
 		if res.Status != "complete" {
-			if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), res.Status, res.Note, res.Usage, res.Completion, roundMS); ferr != nil {
+			if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), res.Status, res.Note, res.Usage, res.Completion, roundMS, res.FirstAnswerMS, res.GenerationMS); ferr != nil {
 				storeErr = ferr
 			}
 			break
 		}
 		if len(res.ToolCalls) == 0 {
-			if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
+			if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), "complete", "", res.Usage, res.Completion, roundMS, res.FirstAnswerMS, res.GenerationMS); ferr != nil {
 				storeErr = ferr
 			}
 			break
@@ -149,7 +150,7 @@ func (op *Operation) Run(emit Emit) {
 		// Persist the answered assistant turn, then execute every call
 		// (the protocol requires one answer per call) and continue with a
 		// fresh placeholder row. runToolCall owns the audit rows.
-		if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), "complete", "", res.Usage, res.Completion, roundMS); ferr != nil {
+		if ferr := finRound(am.ID, res.Content, encodeStoredReasoning(res.Reasoning, res.ReasoningDetails), "complete", "", res.Usage, res.Completion, roundMS, res.FirstAnswerMS, res.GenerationMS); ferr != nil {
 			if isCancellation(ferr, genCtx) {
 				cancelledOut = true // deletion/abort ended it, not storage
 			} else {

@@ -296,6 +296,12 @@ func TestChatDoneReportsUsageAndTiming(t *testing.T) {
 	if ms, _ := roundsOf(t, done)[0]["duration_ms"].(float64); ms <= 0 {
 		t.Errorf("done duration_ms = %v, want > 0", roundsOf(t, done)[0]["duration_ms"])
 	}
+	if ms, _ := roundsOf(t, done)[0]["first_answer_ms"].(float64); ms <= 0 {
+		t.Errorf("done first_answer_ms = %v, want > 0", roundsOf(t, done)[0]["first_answer_ms"])
+	}
+	if ms, _ := roundsOf(t, done)[0]["generation_ms"].(float64); ms <= 0 {
+		t.Errorf("done generation_ms = %v, want > 0", roundsOf(t, done)[0]["generation_ms"])
+	}
 
 	var page struct {
 		Items []struct {
@@ -303,6 +309,8 @@ func TestChatDoneReportsUsageAndTiming(t *testing.T) {
 			TokenCount       *int64 `json:"token_count"`
 			CompletionTokens *int64 `json:"completion_tokens"`
 			DurationMS       *int64 `json:"duration_ms"`
+			FirstAnswerMS    *int64 `json:"first_answer_ms"`
+			GenerationMS     *int64 `json:"generation_ms"`
 		} `json:"items"`
 	}
 	getJSON(t, a, "/api/v1/conversations/"+c.ID+"/messages", &page)
@@ -318,6 +326,12 @@ func TestChatDoneReportsUsageAndTiming(t *testing.T) {
 	}
 	if asst.DurationMS == nil || *asst.DurationMS <= 0 {
 		t.Errorf("stored duration_ms = %v, want > 0", asst.DurationMS)
+	}
+	if asst.FirstAnswerMS == nil || *asst.FirstAnswerMS <= 0 {
+		t.Errorf("stored first_answer_ms = %v, want > 0", asst.FirstAnswerMS)
+	}
+	if asst.GenerationMS == nil || *asst.GenerationMS <= 0 {
+		t.Errorf("stored generation_ms = %v, want > 0", asst.GenerationMS)
 	}
 }
 

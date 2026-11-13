@@ -21,12 +21,13 @@ type Message struct {
 	ReasoningData string
 	Status        string // streaming | complete | error | aborted
 	TokenCount    *int64
-	// CompletionTokens and DurationMS are the generation stats of an
-	// assistant reply (upstream usage + round wall time; nil when the
-	// endpoint never reported and nothing was produced). UI readouts
-	// (context meter, tok/s) project these; context replay ignores them.
+	// Generation statistics are projected to the UI but ignored by context
+	// replay. DurationMS retains total round wall time for compatibility;
+	// FirstAnswerMS is user-visible latency and GenerationMS drives tok/s.
 	CompletionTokens *int64
 	DurationMS       *int64
+	FirstAnswerMS    *int64
+	GenerationMS     *int64
 	CreatedAt        time.Time
 	// Synthetic marks rows the server inserted on its own behalf — today
 	// only the view_image turn (§7.2): role 'user' so its image replays,
@@ -400,17 +401,23 @@ func (d *DB) BeginTurnRegeneration(ctx context.Context, userID, convID, oldMsgID
 // FinalizeMessage writes the produced content and status once a generation
 // ends (complete | aborted | error). Non-positive completion/duration store
 // NULL: an absent statistic is never faked with a zero.
-func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, reasoningData, status, note string, tokens, completion, durationMS int64) error {
-	var comp, dur any
+func (d *DB) FinalizeMessage(ctx context.Context, msgID, content, reasoningData, status, note string, tokens, completion, durationMS, firstAnswerMS, generationMS int64) error {
+	var comp, dur, first, generation any
 	if completion > 0 {
 		comp = completion
 	}
 	if durationMS > 0 {
 		dur = durationMS
 	}
+	if firstAnswerMS > 0 {
+		first = firstAnswerMS
+	}
+	if generationMS > 0 {
+		generation = generationMS
+	}
 	res, err := d.sqlDB.ExecContext(ctx,
-		`UPDATE messages SET content = ?, reasoning_data = ?, status = ?, status_note = ?, token_count = ?, completion_tokens = ?, duration_ms = ? WHERE id = ?`,
-		content, reasoningData, status, note, tokens, comp, dur, msgID)
+		`UPDATE messages SET content = ?, reasoning_data = ?, status = ?, status_note = ?, token_count = ?, completion_tokens = ?, duration_ms = ?, first_answer_ms = ?, generation_ms = ? WHERE id = ?`,
+		content, reasoningData, status, note, tokens, comp, dur, first, generation, msgID)
 	if err != nil {
 		return err
 	}
@@ -611,7 +618,7 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 	}
 	sb := strings.Builder{}
 	sb.WriteString(`SELECT id, conversation_id, role, content, status, token_count,
-	                        completion_tokens, duration_ms, created_at, generation_id, status_note
+	                        completion_tokens, duration_ms, first_answer_ms, generation_ms, created_at, generation_id, status_note
 	                 FROM messages WHERE conversation_id = ? AND role <> 'tool' AND synthetic = 0`)
 	args := []any{convID}
 	if cursor != "" {
@@ -636,10 +643,12 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 			tok     sql.NullInt64
 			comp    sql.NullInt64
 			dur     sql.NullInt64
+			first   sql.NullInt64
+			gen     sql.NullInt64
 			created int64
 		)
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.Status,
-			&tok, &comp, &dur, &created, &m.GenerationID, &m.StatusNote); err != nil {
+			&tok, &comp, &dur, &first, &gen, &created, &m.GenerationID, &m.StatusNote); err != nil {
 			return nil, "", err
 		}
 		if tok.Valid {
@@ -653,6 +662,14 @@ func (d *DB) ListMessages(ctx context.Context, userID, convID, cursor string, li
 		if dur.Valid {
 			v := dur.Int64
 			m.DurationMS = &v
+		}
+		if first.Valid {
+			v := first.Int64
+			m.FirstAnswerMS = &v
+		}
+		if gen.Valid {
+			v := gen.Int64
+			m.GenerationMS = &v
 		}
 		m.CreatedAt = time.Unix(created, 0)
 		items = append(items, m)
