@@ -237,6 +237,7 @@ mcp:
   enable_oauth: false
 
   # Base64-encoded 32-byte key used to encrypt OAuth tokens in the database.
+  # Generate one on your computer with: openssl rand -base64 32
   token_encryption_key: ""
   # To keep this secret in a separate environment file, use the following environment variable:
   # token_encryption_key: "${MULLSMITH_MCP_TOKEN_KEY:-}"
@@ -252,12 +253,30 @@ mcp:
   # Unauthenticated Streamable HTTP examples (remove servers: [] before use):
   # servers:
   #   - id: "deepwiki"
+  #     deferred_load: true
+  #     provides_summary: "Read documentation and answer questions about GitHub repositories."
   #     name: "DeepWiki"
   #     transport: "streamable_http"
   #     url: "https://mcp.deepwiki.com/mcp"
   #     approval: "confirm"
+  #
+  #   - id: "weather"
+  #     deferred_load: true
+  #     provides_summary: "Look up weather conditions and forecasts."
+  #     name: "Weather"
+  #     transport: "streamable_http"
+  #     url: "https://weatherthatdoesntsuck.com/api/mcp"
+  #     approval: "confirm"
+  #
+  #   - id: "wikidata"
+  #     deferred_load: true
+  #     provides_summary: "Search Wikidata entities and query structured knowledge."
+  #     name: "Wikidata"
+  #     transport: "streamable_http"
+  #     url: "https://wd-mcp.wmcloud.org/mcp"
+  #     approval: "confirm"
 
-  # Per-user OAuth example. Register the callback URL shown by -check-config
+  # Per-user OAuth examples. Register the callback URL shown by -check-config
   # with the provider, then supply its client credentials.
   # servers:
   #   - id: "github"
@@ -270,10 +289,29 @@ mcp:
   #       issuer: "https://github.com"
   #     approval: "confirm"
   #
+  # Google Calendar OAuth example (use your registered client credentials):
+  #   - id: "google_calendar"
+  #     deferred_load: true
+  #     provides_summary: "Find and manage Google Calendar calendars and events."
+  #     name: "Google Calendar"
+  #     transport: "streamable_http"
+  #     url: "https://calendarmcp.googleapis.com/mcp/v1"
+  #     oauth:
+  #       client_id: "${GOOGLE_CALENDAR_CLIENT_ID}"
+  #       client_secret: "${GOOGLE_CALENDAR_CLIENT_SECRET}"
+  #       issuer: "https://accounts.google.com"
+  #       scopes:
+  #         - "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+  #         - "https://www.googleapis.com/auth/calendar.events.freebusy"
+  #         - "https://www.googleapis.com/auth/calendar.events.readonly"
+  #     approval: "confirm"
+  #
   # Servers that support dynamic client registration need no administrator-
   # supplied client ID or secret:
-  #
+  # servers:
   #   - id: "todoist"
+  #     deferred_load: true
+  #     provides_summary: "Manage Todoist tasks and projects."
   #     name: "Todoist"
   #     transport: "streamable_http"
   #     url: "https://ai.todoist.net/mcp"
@@ -281,18 +319,6 @@ mcp:
   #       dynamic_client_registration: true
   #       issuer: "https://todoist.com"
   #       scopes: ["data:read_write"]
-  #     approval: "confirm"
-  #
-  #   - id: "weather"
-  #     name: "Weather"
-  #     transport: "streamable_http"
-  #     url: "https://weatherthatdoesntsuck.com/api/mcp"
-  #     approval: "confirm"
-  #
-  #   - id: "wikidata"
-  #     name: "Wikidata"
-  #     transport: "streamable_http"
-  #     url: "https://wd-mcp.wmcloud.org/mcp"
   #     approval: "confirm"
 
   # Remote servers may use a shared bearer token or custom API-key headers.
