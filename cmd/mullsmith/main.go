@@ -185,7 +185,7 @@ func run(args []string) int {
 			"authenticated", cfg.Email.SMTP.AuthenticatedSMTP)
 	}
 
-	srv, err := server.New(cfg, db, logger, version, codeRunner, mailer)
+	srv, err := server.New(cfg, db, logger, version, codeRunner, mailer, commit)
 	if err != nil {
 		logger.Error("server construction failed", "error", err)
 		return 1

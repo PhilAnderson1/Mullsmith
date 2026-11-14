@@ -92,7 +92,7 @@ echo "Testing $(git rev-parse --short HEAD)..."
 go test ./cmd/... ./internal/...
 make test-js
 # Stamp like the Makefile does: -version prints version, commit and date.
-commit=$(git rev-parse --short HEAD)
+commit=$(git rev-parse --short=7 HEAD)
 build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 host_goos=$(go env GOHOSTOS)
 host_goarch=$(go env GOHOSTARCH)

@@ -8,7 +8,7 @@ import (
 
 func TestStaticResponsesCacheOnlySuccess(t *testing.T) {
 	for _, version := range []string{"", "build123"} {
-		s := newPreparedServer(t, testCfg(), testStore(t), discardLogger(), version, nil, nil)
+		s := newPreparedServer(t, testCfg(), testStore(t), discardLogger(), version, nil, nil, "abc1234")
 		for _, tc := range []struct {
 			method, path, byteRange string
 			status                  int
@@ -18,6 +18,17 @@ func TestStaticResponsesCacheOnlySuccess(t *testing.T) {
 			{"HEAD", "/assets/styles.css", "", 200, "public, max-age=3600"},
 			{"GET", "/assets/styles.css", "bytes=0-9", 206, "public, max-age=3600"},
 			{"GET", "/assets/styles.css", "bytes=999999999-", 416, "no-store"},
+			{"GET", s.assets.url("/assets/app/app.js"), "", 200, "public, max-age=2592000, immutable"},
+			{"HEAD", s.assets.url("/assets/styles.css"), "", 200, "public, max-age=2592000, immutable"},
+			{"GET", s.assets.url("/assets/styles.css"), "bytes=0-9", 206, "public, max-age=2592000, immutable"},
+			{"GET", s.assets.url("/assets/styles.css"), "bytes=999999999-", 416, "no-store"},
+			{"GET", "/assets/app/app.js?v=old-commit", "", 404, "no-store"},
+			{"GET", "/assets/styles.css?v=", "", 404, "no-store"},
+			{"GET", s.assets.url("/assets/styles.css") + "&v=other", "", 404, "no-store"},
+			{"GET", "/assets/vendor/katex-0.19.1/katex.mjs", "", 200, "public, max-age=2592000, immutable"},
+			{"GET", "/assets/vendor/katex-0.19.1/katex.min.css", "", 200, "public, max-age=2592000, immutable"},
+			{"GET", "/assets/vendor/katex-0.19.1/fonts/KaTeX_Main-Regular.woff2", "", 200, "public, max-age=2592000, immutable"},
+			{"GET", "/assets/vendor/katex-0.19.1/missing.js", "", 404, "no-store"},
 			{"GET", "/assets/manifest-v4.webmanifest", "", 200, "no-cache"},
 			{"GET", "/assets/missing.webmanifest", "", 404, "no-store"},
 			{"GET", "/assets/missing.js", "", 404, "no-store"},

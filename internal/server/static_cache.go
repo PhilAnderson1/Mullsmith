@@ -7,6 +7,7 @@ import "net/http"
 type assetCacheWriter struct {
 	http.ResponseWriter
 	manifest  bool
+	immutable bool
 	committed bool
 }
 
@@ -19,6 +20,9 @@ func (w *assetCacheWriter) WriteHeader(status int) {
 		policy := "no-store"
 		if status < 300 || status == http.StatusNotModified {
 			policy = "public, max-age=3600"
+			if w.immutable {
+				policy = "public, max-age=2592000, immutable"
+			}
 			if w.manifest {
 				policy = "no-cache"
 			}

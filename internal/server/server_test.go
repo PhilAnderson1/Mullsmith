@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -37,9 +36,13 @@ func testCfg() *config.Config {
 	return cfg
 }
 
-func newPreparedServer(t *testing.T, cfg *config.Config, db *store.DB, logger *slog.Logger, version string, code runner.Runner, mailer *mail.Outbox) *Server {
+func newPreparedServer(t *testing.T, cfg *config.Config, db *store.DB, logger *slog.Logger, version string, code runner.Runner, mailer *mail.Outbox, assetCommit ...string) *Server {
 	t.Helper()
-	s, err := New(cfg, db, logger, version, code, mailer)
+	commit := ""
+	if len(assetCommit) > 0 {
+		commit = assetCommit[0]
+	}
+	s, err := New(cfg, db, logger, version, code, mailer, commit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +213,7 @@ func TestIndexServed(t *testing.T) {
 	}
 	// The SPA loads as an external ES module and carries no inline scripts
 	// or handlers — CSP is script-src 'self' (spec §9.8). The URL may carry
-	// the ?v= build stamp (TestIndexAssetURLsAreVersioned).
+	// the ?v= commit stamp (TestIndexAssetURLsUseCommitStamps).
 	html := string(body)
 	if !strings.Contains(html, `type="module" src="/assets/app/app.js`) {
 		t.Error("index missing module entrypoint")
@@ -408,113 +411,6 @@ func TestBodyLimit(t *testing.T) {
 	}
 }
 
-// The app shell is no-store while assets cache for an hour, so a deploy
-// without URL versioning leaves browsers running the PREVIOUS app.js
-// until expiry — production proved it twice. Every build (version change)
-// must therefore rotate the asset URLs the shell references — and the
-// module imports inside app.js get the same stamp by request-time
-// rewriting (stampedModules), which TestStampedModuleImports pins.
-func TestIndexAssetURLsAreVersioned(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := newPreparedServer(t, testCfg(), testStore(t), logger, "abc123", nil, nil)
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET / = %d", rec.Code)
-	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		`/assets/app/app.js?v=abc123"`,
-		`/assets/styles.css?v=abc123"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("served index lacks %q", want)
-		}
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Errorf("index Content-Type = %q", ct)
-	}
-	// The stamp rides ldflags (operator input): anything that could break
-	// out of the URL attribute is stripped.
-	v := string(versionedIndex(`1.0 "evil`))
-	if strings.Contains(v, `%22`) || strings.Contains(v, `"evil`) ||
-		!strings.Contains(v, `app.js?v=1.0evil"`) {
-		t.Errorf("version not URL-safe: %q", v)
-	}
-	// No version → shell served unmodified (dev builds, tests).
-	if raw := string(versionedIndex("")); !strings.Contains(raw, `src="/assets/app/app.js"`) {
-		t.Error("empty version altered the shell")
-	}
-}
-
-// The mixed-version incident (twice: 405-delete, then api.deleteAccount
-// undefined on 2026-10-28) was a NEW app.js importing an hour-stale bare
-// /assets/app/api.js. Request-time rewriting must stamp EVERY inter-module
-// specifier — whichever module imports whichever other — so one deploy
-// rotates the whole module graph together. The expected set is derived
-// from the embed itself, so a new module is covered the moment it exists.
-func TestStampedModuleImports(t *testing.T) {
-	paths, err := fs.Glob(web.FS, "assets/app/*.js")
-	if err != nil || len(paths) < 4 {
-		t.Fatalf("glob of embedded modules = %v (%v), want at least the four app modules", paths, err)
-	}
-	stamped := stampedModules("abc123")
-	if len(stamped) != len(paths) {
-		t.Fatalf("stampedModules covered %d files, want all %d embedded modules", len(stamped), len(paths))
-	}
-	for _, p := range paths {
-		raw, err := web.FS.ReadFile(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := string(stamped["/"+p])
-		for _, q := range paths {
-			spec := "/" + q
-			if !strings.Contains(string(raw), `"`+spec+`"`) {
-				continue // this module never references that one
-			}
-			if !strings.Contains(body, `"`+spec+`?v=abc123"`) {
-				t.Errorf("%s: import of %s not stamped", p, spec)
-			}
-			if strings.Contains(body, `"`+spec+`"`) {
-				t.Errorf("%s still imports %s bare", p, spec)
-			}
-		}
-	}
-	// Files without imports keep their exact bytes.
-	apiRaw, err := web.FS.ReadFile("assets/app/api.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(stamped["/assets/app/api.js"], apiRaw) {
-		t.Error("api.js altered by rewriting")
-	}
-	// No usable stamp → nil map → the plain embedded server serves.
-	if stampedModules("") != nil {
-		t.Error("empty stamp must disable rewriting")
-	}
-
-	// End to end: a stamped server hands out rewritten modules through
-	// the /assets/ route with a JS content type.
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := newPreparedServer(t, testCfg(), testStore(t), logger, "abc123", nil, nil)
-	for _, path := range []string{"/assets/app/app.js", "/assets/app/sse.js?v=abc123"} {
-		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("GET %s = %d", path, rec.Code)
-		}
-		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
-			t.Errorf("GET %s Content-Type = %q", path, ct)
-		}
-	}
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/app/app.js", nil))
-	if !strings.Contains(rec.Body.String(), `"/assets/app/api.js?v=abc123"`) {
-		t.Error("served app.js lacks the stamped api.js import")
-	}
-}
-
 // TestModuleGraphImportsResolve is the completeness half of the stamping
 // contract (finding 10): request-time rewriting derives its module list
 // from the embed, which is only sound while every module import is an
@@ -540,6 +436,14 @@ func TestModuleGraphImportsResolve(t *testing.T) {
 		}
 		for _, m := range importRe.FindAllStringSubmatch(string(b), -1) {
 			spec := m[1]
+			// Vendored modules carry immutable versions in their URLs and do
+			// not need the application's commit-stamp rewriting.
+			if spec == "/assets/vendor/katex-0.19.1/katex.mjs" {
+				if _, err := web.FS.ReadFile(strings.TrimPrefix(spec, "/")); err != nil {
+					t.Errorf("%s imports missing vendored module %q: %v", p, spec, err)
+				}
+				continue
+			}
 			if !strings.HasPrefix(spec, "/assets/app/") || !strings.HasSuffix(spec, ".js") {
 				t.Errorf("%s imports %q: module imports must be absolute /assets/app/*.js URLs — stamping rewrites nothing else", p, spec)
 				continue
@@ -551,18 +455,14 @@ func TestModuleGraphImportsResolve(t *testing.T) {
 	}
 }
 
-// The owner-sanctioned asset caching contract (see middleware
-// cacheControl): assets are cacheable for exactly one hour, everything
-// else no-store. Pinned because a silent loosening here is what shipped
-// the stale-module 405 incident — if the hour ever bites again, the fix
-// is content-hashed URLs, never a longer max-age.
+// Bare asset URLs retain their short cache; HTML and APIs remain no-store.
+// Content-hashed URLs have a separate, longer policy tested below.
 func TestAssetCachingPolicy(t *testing.T) {
 	ts, _ := newTestServerWithDB(t, testCfg())
 	for _, tc := range []struct{ path, want string }{
 		{"/assets/app/app.js", "public, max-age=3600"},
 		{"/assets/app/api.js", "public, max-age=3600"},
 		{"/assets/styles.css", "public, max-age=3600"},
-		{"/assets/app/app.js?v=somebuild", "public, max-age=3600"}, // stamp rotates the key, not the policy
 		{"/", "no-store"},
 		{"/api/v1/auth/config", "no-store"},
 	} {

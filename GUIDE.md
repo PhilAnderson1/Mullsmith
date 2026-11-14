@@ -839,6 +839,10 @@ The resulting `bin/mullsmith` contains the web application. To install it as a
 systemd service, run `sudo ./packaging/install.sh`, then follow
 [account setup](#create-your-first-account) and [model configuration](#models-and-thinking-controls).
 
+Browser assets use the build's seven-character Git commit ID in their URLs and
+can be cached for a month. Commit local UI changes before rebuilding so browsers
+receive new asset URLs.
+
 ## Upgrade or remove
 
 Install the newer package using the [Quick start package commands](QUICKSTART.md#1-install-mullsmith). For a tar install,

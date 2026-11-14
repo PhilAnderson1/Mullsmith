@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,7 +30,8 @@ type Server struct {
 	store        *store.DB
 	logger       *slog.Logger
 	appVer       string
-	indexHTML    []byte // app shell with build-versioned asset URLs, built once
+	indexHTML    []byte // app shell with commit-stamped asset URLs, built once
+	assets       *assetBundle
 	limiter      *auth.Limiter
 	signupBudget *auth.SignupBudget
 	locks        *auth.LoginLocks
@@ -97,7 +97,7 @@ func buildUploadGate(cfg *config.Config) chan struct{} {
 // requestID → trustedProxyContext → logRequests → recoverPanics →
 // securityHeaders → request admission → csrfProtect → bodyLimit → routing. mailer may be nil (email features disabled).
 func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
-	code runner.Runner, mailer *mail.Outbox,
+	code runner.Runner, mailer *mail.Outbox, assetCommit string,
 ) (*Server, error) {
 	if err := cfg.Prepare(); err != nil {
 		return nil, err
@@ -106,6 +106,10 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		logger.Warn("thinking control", "warning", warning)
 	}
 	db = db.WithRecordLimits(cfg.AppLimits.MaxConversationsPerUser, cfg.AppLimits.MaxMessagesPerUser)
+	assets, err := newAssetBundle(web.FS, assetCommit)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		cfg:       cfg,
 		store:     db,
@@ -117,7 +121,8 @@ func New(cfg *config.Config, db *store.DB, logger *slog.Logger, appVer string,
 		uploadSem: buildUploadGate(cfg),
 		downloads: newUserTransferGate(cfg.AppLimits.ConcurrentDownloadsPerUser),
 		uploads:   newUserTransferGate(cfg.AppLimits.ConcurrentUploadsPerUser),
-		indexHTML: versionedIndex(appVer),
+		indexHTML: assets.index,
+		assets:    assets,
 		mailer:    mailer,
 	}
 	s.files = managed.New(int64(cfg.Scratchpad.UserQuota), cfg.Scratchpad.MaxEntries)
@@ -303,19 +308,29 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 
 // staticAssetsHandler serves embedded files under /assets/. A trailing-slash
 // directory request never yields a listing (spec §9.2). The app modules are
-// served from a startup-rewritten copy (stampedModules) so their import
-// specifiers rotate with the build stamp too; everything else rides the
-// plain embedded server.
+// served from a startup-rewritten copy so their imports use commit stamps;
+// everything else rides the plain embedded server.
 func (s *Server) staticAssetsHandler() http.HandlerFunc {
 	files := http.FileServerFS(web.FS)
-	stamped := stampedModules(buildStamp(s.appVer))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w = &assetCacheWriter{ResponseWriter: w, manifest: strings.HasSuffix(r.URL.Path, ".webmanifest")}
+		_, module := s.assets.modules[r.URL.Path]
+		application := module || r.URL.Path == "/assets/styles.css"
+		stamps := r.URL.Query()["v"]
+		if application && len(stamps) > 0 && (len(stamps) != 1 || stamps[0] != s.assets.stamp) {
+			// Never serve new bytes at an old commit URL. A page left open
+			// across a deployment must reload rather than mix module graphs.
+			s.handleNotFound(w, r)
+			return
+		}
+		immutable := (application && s.assets.stamp != "" && len(stamps) == 1) ||
+			strings.HasPrefix(r.URL.Path, "/assets/vendor/katex-0.19.1/")
+		w = &assetCacheWriter{ResponseWriter: w,
+			manifest: strings.HasSuffix(r.URL.Path, ".webmanifest"), immutable: immutable}
 		if strings.HasSuffix(r.URL.Path, "/") {
 			s.handleNotFound(w, r)
 			return
 		}
-		if body, ok := stamped[r.URL.Path]; ok {
+		if body, ok := s.assets.modules[r.URL.Path]; ok {
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 			_, _ = w.Write(body)
 			return
@@ -327,85 +342,6 @@ func (s *Server) staticAssetsHandler() http.HandlerFunc {
 		}
 		files.ServeHTTP(w, r)
 	})
-}
-
-// stampedModules returns every embedded /assets/app/*.js body with each
-// quoted inter-module import specifier carrying ?v=stamp, so module imports
-// rotate with each deploy. Without it the shell's stamp reaches app.js but
-// the modules' own imports ride bare URLs, and the one-hour asset cache
-// pairs NEW app.js with OLD api.js after a contract-changing deploy — it
-// bit once as the 405-delete incident and again as "api.deleteAccount is
-// not a function" (2026-10-28), which is what this rewriting closes.
-// Rewriting the import strings (rather than an inline import map) keeps CSP
-// at script-src 'self'.
-//
-// The module set is DERIVED from the embed (finding 10): a new module needs
-// no registration — the glob picks it up, and any quoted absolute specifier
-// pointing at it is stamped like the rest. TestModuleGraphImportsResolve
-// pins the contract that makes derivation sound: every import in the graph
-// is an absolute /assets/app/*.js URL naming an embedded file. An unusable
-// stamp (dev build) yields nil: the bare embedded files serve.
-func stampedModules(stamp string) map[string][]byte {
-	if stamp == "" {
-		return nil
-	}
-	paths, err := fs.Glob(web.FS, "assets/app/*.js")
-	if err != nil || len(paths) == 0 {
-		return nil
-	}
-	specs := make([]string, 0, len(paths))
-	for _, p := range paths {
-		specs = append(specs, "/"+p)
-	}
-	out := make(map[string][]byte, len(paths))
-	for _, p := range paths {
-		b, err := web.FS.ReadFile(p)
-		if err != nil {
-			return nil
-		}
-		h := string(b)
-		for _, spec := range specs {
-			// Only the quoted specifier is a replacement target, and the
-			// stamped form ("...js?v=stamp") never re-matches: no module
-			// can be double-stamped by a later pass.
-			h = strings.ReplaceAll(h, `"`+spec+`"`, `"`+spec+`?v=`+stamp+`"`)
-		}
-		out["/"+p] = []byte(h)
-	}
-	return out
-}
-
-// buildStamp sanitizes the ldflags version for embedding in URLs; "" means
-// no usable stamp (nothing may rotate, shell and modules serve bare).
-func buildStamp(ver string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
-			r == '.', r == '_', r == '-':
-			return r
-		}
-		return -1
-	}, ver)
-}
-
-// versionedIndex is the app shell with a build stamp appended to the
-// /assets/* URLs. Assets cache for an hour (middleware cacheControl), so
-// without rotating the URLs a deploy leaves browsers on the PREVIOUS
-// app.js until expiry. app.js's own module imports are rotated separately,
-// by the request-time rewriting in stampedModules.
-func versionedIndex(ver string) []byte {
-	b, err := web.FS.ReadFile("index.html")
-	if err != nil {
-		return nil
-	}
-	safe := buildStamp(ver)
-	if safe == "" {
-		return b
-	}
-	h := string(b)
-	h = strings.ReplaceAll(h, `href="/assets/styles.css"`, `href="/assets/styles.css?v=`+safe+`"`)
-	h = strings.ReplaceAll(h, `src="/assets/app/app.js"`, `src="/assets/app/app.js?v=`+safe+`"`)
-	return []byte(h)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

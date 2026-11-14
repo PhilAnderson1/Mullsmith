@@ -631,6 +631,67 @@ test("output-limit and filtering explanations survive reload", { timeout: 120_00
   }
 });
 
+test("math renders locally with code, currency, and reloads preserved", { timeout: 120_000 }, async () => {
+  const { ctx, page } = await newSession({ viewport: { width: 360, height: 800 } });
+  const requests = [];
+  page.on("request", (request) => requests.push(request.url()));
+  try {
+    await page.evaluate(() => {
+      window.mathCSP = [];
+      document.addEventListener("securitypolicyviolation", (event) => window.mathCSP.push(event.violatedDirective));
+    });
+    const formula = String.raw`e=\sum_{n=0}^{\infty}\frac{1}{n!}=1+\frac{1}{1!}+\frac{1}{2!}+\frac{1}{3!}+\cdots`;
+    const answer = [
+      "Formula used — the Taylor/Maclaurin series for the exponential at x = 1:",
+      `$$${formula}$$`,
+      String.raw`Inline $x^2$, \(y_1\), and **$z$**. Prices $5 and $10; escaped \$20. Then $w$.`,
+      String.raw`\[\frac{a}{b}\]`,
+      "$$", String.raw`\begin{aligned}a&=b+c\\d&=e\end{aligned}`, "$$",
+      "`$not_math$`", "```tex\n$$not_math$$\n```",
+      String.raw`Invalid $\frac{1}{$ and unfinished \(x+1.`,
+      String.raw`Unsafe $\href{javascript:alert(1)}{click}$ and <img src=x onerror=alert(1)>.`,
+      "| Value | Meaning |\n| --- | --- |\n| $|x|$ | absolute value |",
+    ].join("\n\n");
+    llm.queueScripts(textScript(answer, { pieces: 19, delayMs: 5 }));
+    await sendChat(page, "show the exponential series");
+    await waitIdle(page);
+    const inspect = () => {
+      const prose = document.querySelector(".from-assistant .stream-text.md");
+      const display = prose.querySelector(".md-math-display");
+      return {
+        sources: [...prose.querySelectorAll('annotation[encoding="application/x-tex"]')].map((node) => node.textContent),
+        displayCount: prose.querySelectorAll(".katex-display").length,
+        boldMath: prose.querySelector("strong .katex") !== null,
+        code: [...prose.querySelectorAll("code")].map((node) => node.textContent),
+        fallback: [...prose.querySelectorAll(".md-math-fallback")].map((node) => node.textContent),
+        text: prose.textContent,
+        unsafeNodes: prose.querySelectorAll('img, script, a[href^="javascript:"]').length,
+        displayOverflow: getComputedStyle(display).overflowX,
+        pageOverflows: document.documentElement.scrollWidth > innerWidth,
+        fontLoaded: document.fonts.check('16px "KaTeX_Main"'),
+      };
+    };
+    await page.evaluate(() => document.fonts.ready);
+    const live = await page.evaluate(inspect);
+    assert.deepEqual(live.sources, [formula, "x^2", "y_1", "z", "w", String.raw`\frac{a}{b}`, String.raw`\begin{aligned}a&=b+c\\d&=e\end{aligned}`, String.raw`\href{javascript:alert(1)}{click}`, "|x|"]);
+    assert.equal(live.displayCount, 3);
+    assert.equal(live.boldMath, true);
+    assert.deepEqual(live.code, ["$not_math$", "$$not_math$$"]);
+    assert.ok(live.fallback.includes(String.raw`$\frac{1}{$`));
+    assert.match(live.text, /Prices \$5 and \$10; escaped \$20/);
+    assert.ok(live.text.includes(String.raw`\(x+1.`));
+    assert.equal(live.unsafeNodes, 0);
+    assert.equal(live.displayOverflow, "auto");
+    assert.equal(live.pageOverflows, false);
+    assert.equal(live.fontLoaded, true);
+    assert.deepEqual(await page.evaluate(() => window.mathCSP), []);
+    assert.ok(requests.every((url) => url.startsWith(app.base)), "math must not fetch external assets");
+    await reloadAndWait(page);
+    await page.evaluate(() => document.fonts.ready);
+    assert.deepEqual(await page.evaluate(inspect), live);
+  } finally { await ctx.close(); }
+});
+
 test("markdown styles apply to the prose wrapper live and after reload", { timeout: 120_000 }, async () => {
   const { ctx, page } = await newSession({ viewport: { width: 360, height: 800 } });
   const styles = () => {

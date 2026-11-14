@@ -42,6 +42,10 @@ The Go toolchain and standard library — also BSD-3-Clause — are statically
 linked into the binary; their licence is part of the Go distribution
 (<https://go.dev/LICENSE>) and is not duplicated here.
 
-The web UI contains no third-party JavaScript or CSS: the app is hand-written
-vanilla ES modules and CSS with no build step, and icons are inline SVG.
-Fonts are the system stack. Nothing in `web/` carries upstream licence files.
+The web UI bundles **KaTeX v0.19.1** (MIT) for math rendering, including its
+JavaScript module, stylesheet, and WOFF2 fonts. Its license is included at
+`web/assets/vendor/katex-0.19.1/LICENSE` and embedded in the executable.
+The stylesheet is reduced to reference the bundled WOFF2 fonts only.
+Source: <https://github.com/KaTeX/KaTeX/releases/tag/v0.19.1>.
+The rest of the UI uses hand-written ES modules, CSS, and inline SVG with
+no build step. All math assets are served locally; no CDN is required.
