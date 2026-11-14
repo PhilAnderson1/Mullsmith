@@ -3,6 +3,17 @@ profiles:
   none:
     options: []
     reasoning_history: omit
+  minicpm5_2b:
+    reasoning_history: preserve
+    options:
+      - id: 'off'
+        label: 'Off'
+        mode: 'off'
+      - id: 'on'
+        label: 'On'
+        mode: 'on'
+    template_parameters:
+      thinking_toggle: enable_thinking
   qwen3_5:
     reasoning_history: latest
     options:

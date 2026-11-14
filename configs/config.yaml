@@ -79,7 +79,7 @@ llm:
       # Supported profiles: none, qwen3_5, qwen3_6, qwen3_8, qwen3_8_thinking_only,
       # gpt_oss, gemma4, deepseek_v4, deepseek_v4_1, glm5_3, kimi_k2_6,
       # kimi_k2_7_code, kimi_k3, minimax_m2_7, minimax_m3_1_flash,
-      # step3_7_flash, step5_preview.
+      # step3_7_flash, step5_preview, minicpm5_2b.
       # If the required profile is not listed, it can probably be added to thinking-profiles.yaml.
       thinking_profile: "qwen3_8"
 
