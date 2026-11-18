@@ -250,8 +250,10 @@ mcp:
   # provides_summary is required when deferred_load is true (max 1000 characters).
   servers: []
 
-  # Unauthenticated Streamable HTTP examples (remove servers: [] before use):
+  # Example MCP servers
   # servers:
+
+  # Unauthenticated Streamable HTTP examples (remove servers: [] before use):
   #   - id: "deepwiki"
   #     deferred_load: true
   #     provides_summary: "Read documentation and answer questions about GitHub repositories."
@@ -278,8 +280,9 @@ mcp:
 
   # Per-user OAuth examples. Register the callback URL shown by -check-config
   # with the provider, then supply its client credentials.
-  # servers:
   #   - id: "github"
+  #     deferred_load: true
+  #     provides_summary: "Search GitHub repositories and manage files, issues and pull requests."
   #     name: "GitHub"
   #     transport: "streamable_http"
   #     url: "https://api.githubcopilot.com/mcp/"
@@ -306,9 +309,9 @@ mcp:
   #         - "https://www.googleapis.com/auth/calendar.events.readonly"
   #     approval: "confirm"
   #
+
   # Servers that support dynamic client registration need no administrator-
   # supplied client ID or secret:
-  # servers:
   #   - id: "todoist"
   #     deferred_load: true
   #     provides_summary: "Manage Todoist tasks and projects."
@@ -323,7 +326,6 @@ mcp:
 
   # Remote servers may use a shared bearer token or custom API-key headers.
   # Keep secrets in the service environment rather than writing them here.
-  # servers:
   #   - id: "authenticated_service"
   #     name: "Authenticated service"
   #     transport: "streamable_http"
@@ -336,7 +338,6 @@ mcp:
 
   # Local stdio servers are administrator-installed programs. Mullsmith runs
   # the executable directly, without a shell, using its own state directory.
-  # servers:
   #   - id: "local_tools"
   #     name: "Local tools"
   #     transport: "stdio"
