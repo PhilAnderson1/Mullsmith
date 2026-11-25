@@ -337,6 +337,9 @@
   <template id="tpl-conv-item">
     <li class="conv-item">
       <button class="conv-open" type="button"><span class="conv-title"></span></button>
+      <span class="conv-pin" role="img" aria-label="Pinned" title="Pinned">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5-3 1-4 4v4l-2 2-3-4-5 5-1-1 5-5-4-3 2-2h4l4-4z" fill="currentColor"/></svg>
+      </span>
       <form class="conv-rename" hidden>
         <input type="text" maxlength="200" aria-label="New title">
       </form>
@@ -349,6 +352,10 @@
   <!-- Sidebar row actions, summoned by the "…" button or a long press.
        Lives outside the list; app.js points it at one row at a time. -->
   <div class="row-menu" id="conv-row-menu" role="menu" hidden>
+    <button class="row-menu-item" type="button" role="menuitem" data-action="pin">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5-3 1-4 4v4l-2 2-3-4-5 5-1-1 5-5-4-3 2-2h4l4-4z"/></svg>
+      <span class="pin-label">Pin</span>
+    </button>
     <button class="row-menu-item" type="button" role="menuitem" data-action="rename">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
       Rename

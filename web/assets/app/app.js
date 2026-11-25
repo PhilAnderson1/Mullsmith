@@ -560,6 +560,7 @@ async function onLogout() {
 function convRow(c) {
   const li = clone("tpl-conv-item");
   li.dataset.id = c.id;
+  li.classList.toggle("pinned", Boolean(c.pinned));
   li.querySelector(".conv-title").textContent = c.title;
   if (c.id === navigation.currentId) li.classList.add("active");
 
@@ -632,10 +633,21 @@ function convRow(c) {
     }
   };
 
+  const togglePin = async () => {
+    try {
+      const updated = await api.patchConversation(c.id, { pinned: !c.pinned });
+      if (c.id === navigation.currentId) {
+        navigation.updateConversation({ ...navigation.currentConv, pinned: updated.pinned });
+      }
+      await loadConversations();
+    } catch (err) { handleErr(err, "pin"); }
+  };
+  const menuTarget = () => ({ li, rename: startRename, del: confirmDelete, pin: togglePin, pinned: c.pinned });
+
   menuBtn.addEventListener("click", () => {
     // A simple toggle: the second press closes rather than re-summons.
     if (rowMenuTarget && rowMenuTarget.li === li && !$("#conv-row-menu").hidden) closeConvRowMenu();
-    else openConvRowMenu({ li, rename: startRename, del: confirmDelete });
+    else openConvRowMenu(menuTarget());
   });
   // Long press summons the row menu on touch devices. iOS browsers never
   // fire contextmenu (Android's does, inconsistently), so a touch timer
@@ -652,7 +664,7 @@ function convRow(c) {
     clearTimeout(pressTimer);
     pressTimer = setTimeout(() => {
       pressFired = true;
-      openConvRowMenu({ li, rename: startRename, del: confirmDelete }, pressPos);
+      openConvRowMenu(menuTarget(), pressPos);
     }, 500);
   }, { passive: true });
   li.addEventListener("touchmove", (ev) => {
@@ -699,6 +711,7 @@ function openConvRowMenu(target, ev) {
   closeConvRowMenu();
   rowMenuTarget = target;
   const menu = $("#conv-row-menu");
+  menu.querySelector("[data-action=pin] .pin-label").textContent = target.pinned ? "Unpin" : "Pin";
   show(menu, true);
   const pad = 8;
   const w = menu.offsetWidth, h = menu.offsetHeight;
@@ -732,17 +745,26 @@ function applyTitle(id, title) {
 
 // promoteConversation is a LOCAL mirror of server-side ordering: posting a
 // message bumps the conversation's updated_at (store AddMessage), so the
-// chat belongs at the top — reorder the list + DOM immediately instead of
+// chat belongs at the top of its pinned/unpinned group — reorder the list + DOM immediately instead of
 // waiting for the next load. Opening a chat is NOT activity (owner rule):
 // only posts move a conversation, so this is called from the send and
 // regenerate paths, never from selectConversation.
+function sortConversationRows() {
+  state.convs.sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))
+    || Date.parse(b.updated_at) - Date.parse(a.updated_at) || b.id.localeCompare(a.id));
+  const list = $("#conv-list");
+  const rows = new Map([...list.children].map((row) => [row.dataset.id, row]));
+  for (const c of state.convs) {
+    const row = rows.get(c.id);
+    if (row) list.append(row);
+  }
+}
+
 function promoteConversation(id) {
-  const i = state.convs.findIndex((c) => c.id === id);
-  if (i > 0) {
-    const [c] = state.convs.splice(i, 1);
-    state.convs.unshift(c);
-    const row = document.querySelector(`#conv-list .conv-item[data-id="${CSS.escape(id)}"]`);
-    if (row) $("#conv-list").prepend(row);
+  const c = state.convs.find((c) => c.id === id);
+  if (c) {
+    c.updated_at = new Date().toISOString();
+    sortConversationRows();
   }
 }
 
@@ -1461,6 +1483,7 @@ async function newChat() {
     // server — no extra round-trip here.
     const list = $("#conv-list");
     list.prepend(convRow(c));
+    sortConversationRows();
     markActive();
     // Open directly (awaited) so the composer is enabled and focused before
     // the hashchange round-trip; the later handler call is a no-op.
@@ -1756,9 +1779,10 @@ async function boot() {
   $("#conv-row-menu").addEventListener("click", (ev) => {
     const item = ev.target.closest(".row-menu-item");
     if (!rowMenuTarget || !item) return;
-    const { rename, del } = rowMenuTarget;
+    const { rename, del, pin } = rowMenuTarget;
     closeConvRowMenu();
     if (item.dataset.action === "rename") rename();
+    else if (item.dataset.action === "pin") pin();
     else del();
   });
   $("#thinking-select").addEventListener("change", (ev) => {

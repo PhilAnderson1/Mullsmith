@@ -19,6 +19,7 @@ var ErrConversationNotFound = errors.New("conversation not found")
 
 // Conversation is a conversations-table row.
 type Conversation struct {
+	Pinned       bool
 	LoadedMCP    []string
 	ID           string
 	UserID       string
@@ -111,11 +112,11 @@ func (d *DB) ConversationForUser(ctx context.Context, userID, convID string) (*C
 		created, updated int64
 	)
 	err := d.sqlDB.QueryRowContext(ctx,
-		`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at, loaded_mcp
+		`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at, loaded_mcp, pinned
 		 FROM conversations WHERE id = ? AND user_id = ?`,
 		convID, userID).
 		Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt,
-			&c.Thinking, &c.ThinkingCtx, &created, &updated, &loaded)
+			&c.Thinking, &c.ThinkingCtx, &created, &updated, &loaded, &c.Pinned)
 	if errors.Is(err, ErrNoRows) {
 		return nil, ErrConversationNotFound
 	}
@@ -132,6 +133,7 @@ func (d *DB) ConversationForUser(ctx context.Context, userID, convID string) (*C
 
 // ConversationPatch carries optional updates; nil fields stay untouched.
 type ConversationPatch struct {
+	Pinned       *bool
 	Title        *string
 	Model        *string
 	SystemPrompt *string
@@ -165,11 +167,18 @@ func (d *DB) UpdateConversation(ctx context.Context, userID, convID string, p Co
 		sets = append(sets, `thinking_ctx = ?`)
 		args = append(args, *p.ThinkingCtx)
 	}
+	if len(sets) > 0 {
+		sets = append(sets, `updated_at = ?`)
+		args = append(args, time.Now().Unix())
+	}
+	if p.Pinned != nil {
+		sets = append(sets, `pinned = ?`)
+		args = append(args, *p.Pinned)
+	}
 	if len(sets) == 0 {
 		return d.ConversationForUser(ctx, userID, convID)
 	}
-	sets = append(sets, `updated_at = ?`)
-	args = append(args, time.Now().Unix(), convID, userID)
+	args = append(args, convID, userID)
 	// #nosec G202 -- sets holds only hardcoded "col = ?" fragments; the join
 	// just wires them together, values bind as parameters.
 	q := `UPDATE conversations SET ` + strings.Join(sets, ", ") +
@@ -270,8 +279,8 @@ func (d *DB) PruneConversations(ctx context.Context, userID string, cutoff int64
 	return ids, tx.Commit()
 }
 
-// ListConversations returns the user's conversations, most recently
-// updated first. cursor is the opaque value from a previous page ("" for
+// ListConversations returns pinned conversations first, then most recently
+// updated first within each group. cursor is the opaque value from a previous page ("" for
 // the first). The returned next cursor is "" when exhausted.
 func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, limit int) (items []Conversation, next string, err error) {
 	if limit < 1 {
@@ -281,7 +290,7 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 		limit = 100
 	}
 	sb := strings.Builder{}
-	sb.WriteString(`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at
+	sb.WriteString(`SELECT id, user_id, title, model, system_prompt, thinking, thinking_ctx, created_at, updated_at, pinned
 	                 FROM conversations WHERE user_id = ?`)
 	args := []any{userID}
 	if q != "" {
@@ -289,14 +298,14 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 		args = append(args, "%"+escapeLike(q)+"%")
 	}
 	if cursor != "" {
-		ts, cid, ok := decodeCursor(cursor)
+		pinned, ts, cid, ok := decodeConversationCursor(cursor)
 		if !ok {
 			return nil, "", errors.New("invalid cursor")
 		}
-		sb.WriteString(` AND (updated_at < ? OR (updated_at = ? AND id < ?))`)
-		args = append(args, ts, ts, cid)
+		sb.WriteString(` AND (pinned < ? OR (pinned = ? AND (updated_at < ? OR (updated_at = ? AND id < ?))))`)
+		args = append(args, pinned, pinned, ts, ts, cid)
 	}
-	sb.WriteString(` ORDER BY updated_at DESC, id DESC LIMIT ?`)
+	sb.WriteString(` ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?`)
 	args = append(args, limit+1) // one extra row reveals has-more
 
 	rows, err := d.sqlDB.QueryContext(ctx, sb.String(), args...)
@@ -310,7 +319,7 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 			created, updated int64
 		)
 		if err := rows.Scan(&c.ID, &c.UserID, &c.Title, &c.Model, &c.SystemPrompt,
-			&c.Thinking, &c.ThinkingCtx, &created, &updated); err != nil {
+			&c.Thinking, &c.ThinkingCtx, &created, &updated, &c.Pinned); err != nil {
 			return nil, "", err
 		}
 		c.CreatedAt = time.Unix(created, 0)
@@ -323,7 +332,11 @@ func (d *DB) ListConversations(ctx context.Context, userID, q, cursor string, li
 	if len(items) > limit {
 		last := items[limit-1]
 		items = items[:limit]
-		next = encodeCursor(last.UpdatedAt.Unix(), last.ID)
+		flag := "0"
+		if last.Pinned {
+			flag = "1"
+		}
+		next = encodeCursor(last.UpdatedAt.Unix(), flag+":"+last.ID)
 	}
 	return items, next, nil
 }
@@ -346,4 +359,23 @@ func (d *DB) LoadMCPServer(ctx context.Context, userID, convID, serverID string)
 		_, err = d.ConversationForUser(ctx, userID, convID)
 	}
 	return err
+}
+
+// decodeConversationCursor includes the pin group in keyset pagination while
+// accepting legacy activity-only cursors as positions in the unpinned group.
+func decodeConversationCursor(cursor string) (pinned int, ts int64, id string, ok bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil || len(raw) > 80 {
+		return
+	}
+	parts := strings.SplitN(string(raw), ":", 3)
+	if len(parts) == 3 {
+		if parts[1] != "0" && parts[1] != "1" {
+			return
+		}
+		pinned, _ = strconv.Atoi(parts[1])
+		cursor = base64.RawURLEncoding.EncodeToString([]byte(parts[0] + ":" + parts[2]))
+	}
+	ts, id, ok = decodeCursor(cursor)
+	return
 }

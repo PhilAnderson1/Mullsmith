@@ -25,8 +25,9 @@ const (
 // shows exactly what the next request will send.
 func (s *Server) conversationJSON(c *store.Conversation) map[string]any {
 	j := map[string]any{
-		"id":    c.ID,
-		"title": c.Title,
+		"id":     c.ID,
+		"title":  c.Title,
+		"pinned": c.Pinned,
 		// The live model, not the raw column: a stored name the config
 		// no longer offers would strand the picker on a ghost (§10).
 		"model":         s.thinkingModel(c.Model),
@@ -274,15 +275,16 @@ func (s *Server) handleConversationPatch(w http.ResponseWriter, r *http.Request)
 		Model        *string `json:"model"`
 		SystemPrompt *string `json:"system_prompt"`
 		Thinking     *string `json:"thinking"`
+		Pinned       *bool   `json:"pinned"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if body.Title == nil && body.Model == nil && body.SystemPrompt == nil && body.Thinking == nil {
+	if body.Title == nil && body.Model == nil && body.SystemPrompt == nil && body.Thinking == nil && body.Pinned == nil {
 		writeAPIError(w, r, http.StatusBadRequest, "no_fields", "nothing to update")
 		return
 	}
-	p := store.ConversationPatch{}
+	p := store.ConversationPatch{Pinned: body.Pinned}
 	if body.Title != nil {
 		t := strings.TrimSpace(*body.Title)
 		if t == "" || utf8.RuneCountInString(t) > maxTitleLen {

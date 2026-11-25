@@ -1075,3 +1075,56 @@ test("over-limit scratchpads remain manageable in Files", async () => {
     await ctx.close();
   }
 });
+
+test("pinned chats stay first, swap the pin for actions, and unpin after reload", async () => {
+ const {ctx,page}=await newSession();
+ try {
+  const first=await page.evaluate(()=>location.hash.slice(4));
+  let row=page.locator(`.conv-item[data-id="${first}"]`);
+  await row.hover();
+  await row.locator(".conv-menu-btn").click();
+  await page.locator('#conv-row-menu [data-action="pin"]').click();
+  await page.waitForFunction(id=>document.querySelector(`.conv-item[data-id="${id}"]`)?.classList.contains("pinned"),first);
+  await page.mouse.move(900,700);
+  assert.equal(await row.locator(".conv-pin").evaluate(el=>getComputedStyle(el).opacity),"1");
+  await row.hover();
+  assert.equal(await row.locator(".conv-pin").evaluate(el=>getComputedStyle(el).opacity),"0");
+  await newConversation(page);
+  assert.equal(await page.locator("#conv-list .conv-item").first().getAttribute("data-id"),first);
+  await page.reload();
+  await waitForConversation(page);
+  row=page.locator(`.conv-item[data-id="${first}"]`);
+  assert.equal(await page.locator("#conv-list .conv-item").first().getAttribute("data-id"),first);
+  await row.hover();
+  await row.locator(".conv-menu-btn").click();
+  assert.equal(await page.locator('#conv-row-menu .pin-label').textContent(),"Unpin");
+  await page.locator('#conv-row-menu [data-action="pin"]').click();
+  await page.waitForFunction(id=>!document.querySelector(`.conv-item[data-id="${id}"]`)?.classList.contains("pinned"),first);
+  assert.notEqual(await page.locator("#conv-list .conv-item").first().getAttribute("data-id"),first);
+ } finally {await ctx.close();}
+});
+
+test("phone long press offers pin and unpin while retaining the pin indicator", async () => {
+ const {ctx,page}=await newSession({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+ try {
+  const id=await page.evaluate(()=>location.hash.slice(4));
+  if(await page.locator("#btn-menu").isVisible()) await page.locator("#btn-menu").click();
+  const row=page.locator(`.conv-item[data-id="${id}"]`);
+  async function longPress() {
+   const box=await row.boundingBox();
+   await row.dispatchEvent("touchstart",{touches:[{identifier:0,clientX:box.x+30,clientY:box.y+20}]});
+   await page.waitForFunction(()=>!document.querySelector("#conv-row-menu").hidden);
+   await row.dispatchEvent("touchend",{touches:[]});
+  }
+  await longPress();
+  assert.equal(await page.locator("#conv-row-menu .pin-label").textContent(),"Pin");
+  await page.locator('#conv-row-menu [data-action="pin"]').tap();
+  await page.waitForFunction(id=>document.querySelector(`.conv-item[data-id="${id}"]`)?.classList.contains("pinned"),id);
+  assert.equal(await row.locator(".conv-pin").evaluate(el=>getComputedStyle(el).opacity),"1");
+  assert.equal(await row.locator(".conv-menu-btn").evaluate(el=>getComputedStyle(el).opacity),"0");
+  await longPress();
+  assert.equal(await page.locator("#conv-row-menu .pin-label").textContent(),"Unpin");
+  await page.locator('#conv-row-menu [data-action="pin"]').tap();
+  await page.waitForFunction(id=>!document.querySelector(`.conv-item[data-id="${id}"]`)?.classList.contains("pinned"),id);
+ } finally {await ctx.close();}
+});

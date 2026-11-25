@@ -390,3 +390,45 @@ func TestStrictContentType(t *testing.T) {
 		t.Errorf("charset CT: %d, want 201", resp.StatusCode)
 	}
 }
+
+func TestConversationPinAPI(t *testing.T) {
+	a := signedIn(t)
+	c := createConv(t, a, map[string]any{"title": "Pin me"})
+	var before map[string]any
+	getJSON(t, a, "/api/v1/conversations/"+c.ID, &before)
+	if before["pinned"] != false {
+		t.Fatalf("default pinned: %v", before)
+	}
+	for _, pinned := range []bool{true, false} {
+		resp := a.do(http.MethodPatch, "/api/v1/conversations/"+c.ID, map[string]any{"pinned": pinned})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("patch: %d %s", resp.StatusCode, dumpBody(resp))
+		}
+		var updated map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if updated["pinned"] != pinned || updated["updated_at"] != before["updated_at"] {
+			t.Fatalf("pin response: %v", updated)
+		}
+		var listing struct {
+			Items []map[string]any `json:"items"`
+		}
+		getJSON(t, a, "/api/v1/conversations", &listing)
+		found := false
+		for _, item := range listing.Items {
+			if item["id"] == c.ID {
+				found = item["pinned"] == pinned
+			}
+		}
+		if !found {
+			t.Fatalf("pin missing from list: %v", listing)
+		}
+	}
+	resp := a.do(http.MethodPatch, "/api/v1/conversations/"+c.ID, map[string]any{"pinned": "true"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid pin: %d", resp.StatusCode)
+	}
+}

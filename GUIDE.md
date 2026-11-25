@@ -47,6 +47,14 @@ start to [create your account](QUICKSTART.md#2-create-your-account) and
 [check that you can sign in](QUICKSTART.md#3-check-mullsmith-is-running), then
 configure your model below.
 
+## Pin conversations
+
+Open a conversation's **…** menu in the left sidebar and choose **Pin**.
+On a phone, press and hold its title to open the same menu. Pinned
+conversations show a pin icon and appear before other conversations; each
+group is ordered by last activity. Choose **Unpin** in the menu to return
+a conversation to the regular list. Pinning does not change its activity date.
+
 ## Models and thinking controls
 
 The supplied configuration uses OpenRouter with Qwen3.8-27B and its thinking
